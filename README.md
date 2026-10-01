@@ -1,0 +1,111 @@
+# SantéFamille — Node.js/Express + React + PostgreSQL
+
+Réécriture du projet (initialement en Next.js) en architecture séparée :
+
+- **Backend/** — API REST Node.js + Express + PostgreSQL (via Drizzle ORM)
+- **Frontend/** — Application React (Vite) + React Router + Tailwind CSS
+
+## Prérequis
+
+- Node.js 18+
+- PostgreSQL (local ou distant)
+
+## Option A — Lancer avec Docker (recommandé)
+
+Le projet est entièrement dockerisé : PostgreSQL, backend et frontend démarrent
+ensemble avec une seule commande.
+
+```bash
+cp .env.example .env        # éditer si besoin (identifiants PostgreSQL, CORS)
+docker compose up --build
+```
+
+- Frontend (React servi par Nginx) : http://localhost:8080
+- Backend (API Express) : http://localhost:4000/api/health
+- PostgreSQL : exposé sur le port 5432 de la machine hôte
+
+Au démarrage, le conteneur backend applique automatiquement le schéma
+PostgreSQL (`drizzle-kit push`) avant de lancer le serveur — aucune commande
+manuelle de migration n'est nécessaire au premier lancement.
+
+Pour arrêter :
+
+```bash
+docker compose down          # garde les données PostgreSQL (volume db_data)
+docker compose down -v       # supprime aussi les données PostgreSQL
+```
+
+Pour reconstruire les images après une modification du code :
+
+```bash
+docker compose up --build
+```
+
+## Option B — Lancer en local (sans Docker)
+
+### 1. Backend
+
+```bash
+cd Backend
+cp .env.example .env
+# éditer .env : DATABASE_URL, PORT, CORS_ORIGIN
+npm install
+npm run db:push      # crée les tables dans PostgreSQL à partir du schéma Drizzle
+npm run dev           # démarre l'API sur http://localhost:4000
+```
+
+Endpoints disponibles (tous préfixés par `/api`) :
+`/health`, `/families`, `/members`, `/appointments`, `/treatments`, `/vaccinations`, `/documents`, `/dashboard`.
+
+### 2. Frontend
+
+```bash
+cd Frontend
+npm install
+npm run dev            # démarre sur http://localhost:5173
+```
+
+En développement, Vite redirige automatiquement les appels `/api/*` vers le backend
+(`http://localhost:4000`) via `vite.config.js`.
+
+### 3. Build de production (hors Docker)
+
+```bash
+cd Frontend
+npm run build           # génère Frontend/dist
+```
+
+Pour servir le frontend construit sans passer par Docker, déployez `Frontend/dist`
+sur un hébergeur statique (Vercel, Netlify, Nginx...) et pointez-le vers l'URL
+publique du backend Express. La méthode recommandée reste toutefois l'option
+Docker ci-dessus, qui gère déjà ce proxy via Nginx (`Frontend/nginx.conf`).
+
+## Structure du projet Docker
+
+```
+.
+├── docker-compose.yml       # orchestre db + backend + frontend
+├── .env.example             # variables PostgreSQL / CORS pour Docker
+├── Backend/
+│   ├── Dockerfile
+│   ├── docker-entrypoint.sh # applique le schéma PostgreSQL puis lance le serveur
+│   └── .dockerignore
+└── Frontend/
+    ├── Dockerfile            # build Vite multi-stage → Nginx
+    ├── nginx.conf            # sert le SPA + proxy /api vers le backend
+    └── .dockerignore
+```
+
+## Structure des données (PostgreSQL)
+
+Tables : `families`, `members`, `appointments`, `treatments`, `vaccinations`, `documents`
+(voir `Backend/src/db/schema.js`), identiques au schéma d'origine.
+
+## Fonctionnalités
+
+- Gestion multi-familles avec sélection de la famille active
+- Membres (fiche médicale : groupe sanguin, allergies, notes)
+- Rendez-vous médicaux (statuts : à venir / terminé / annulé)
+- Traitements / médicaments (actifs ou terminés)
+- Carnet de vaccinations (avec rappels à venir)
+- Documents médicaux (ordonnances, résultats, radios, comptes-rendus)

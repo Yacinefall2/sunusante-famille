@@ -1,0 +1,5 @@
+# Fins de ligne LF partout (indispensable pour les scripts shell exécutés dans Docker)
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.pdf binary

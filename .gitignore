@@ -1,0 +1,17 @@
+# Secrets — ne jamais versionner (seuls les .env.example le sont)
+.env
+.env.*
+!.env.example
+
+# Dépendances et builds
+node_modules/
+dist/
+
+# Fichiers téléversés par les utilisateurs (données médicales)
+uploads/
+
+# Divers
+*.log
+.DS_Store
+Thumbs.db
+coverage/

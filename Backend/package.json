@@ -1,0 +1,28 @@
+{
+  "name": "santefamille-backend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "nodemon server.js",
+    "start": "node server.js",
+    "db:generate": "drizzle-kit generate",
+    "db:push": "drizzle-kit push"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "dotenv": "^17.3.1",
+    "drizzle-orm": "^0.45.2",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^2.0.2",
+    "nodemailer": "^6.9.16",
+    "pg": "^8.20.0"
+  },
+  "devDependencies": {
+    "drizzle-kit": "^0.31.10",
+    "nodemon": "^3.1.7"
+  }
+}
