@@ -17,6 +17,21 @@ services:
       timeout: 5s
       retries: 10
 
+  # Base jetable pour les tests automatisés du backend (npm test). Ne démarre
+  # qu'avec le profil "test" : docker compose --profile test up -d db-test
+  # Port 55432 pour ne jamais entrer en conflit avec un PostgreSQL local.
+  db-test:
+    image: postgres:16-alpine
+    container_name: santefamille-db-test
+    profiles: ["test"]
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    tmpfs:
+      - /var/lib/postgresql/data
+    ports:
+      - "55432:5432"
+
   pgadmin:
     image: dpage/pgadmin4
     container_name: santefamille-pgadmin

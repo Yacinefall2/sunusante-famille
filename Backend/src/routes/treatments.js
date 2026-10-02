@@ -3,16 +3,10 @@ import { eq, inArray } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { treatments, treatmentMedications, members } from "../db/schema.js";
 import { requireFamilyMembership } from "../middleware/auth.js";
-import { familyIdFromMemberId, familyIdFromResource } from "../lib/familyResolvers.js";
+import { familyIdForListQuery, familyIdFromMemberId, familyIdFromResource } from "../lib/familyResolvers.js";
 import { canWriteDocument } from "../lib/documentAccess.js";
 
 const router = Router();
-
-async function resolveForGet(req) {
-  if (req.query.familyId) return parseInt(req.query.familyId) || null;
-  if (req.query.memberId) return familyIdFromMemberId(req.query.memberId);
-  return null;
-}
 
 // Attache à chaque traitement la liste de ses médicaments (nom, posologie,
 // fréquence, durée) — un traitement (une maladie) peut en regrouper plusieurs.
@@ -45,7 +39,7 @@ function sanitizeMedications(medications) {
     }));
 }
 
-router.get("/", requireFamilyMembership(resolveForGet), async (req, res) => {
+router.get("/", requireFamilyMembership(familyIdForListQuery), async (req, res) => {
   try {
     // Un Dépendant ne voit que les traitements de sa propre fiche liée.
     if (req.membership.role === "dependent") {
@@ -58,14 +52,14 @@ router.get("/", requireFamilyMembership(resolveForGet), async (req, res) => {
       return res.json(await attachMedications(own));
     }
 
-    const { memberId, familyId } = req.query;
+    const { memberId } = req.query;
 
     if (memberId) {
       const all = await db.select().from(treatments).where(eq(treatments.memberId, parseInt(memberId))).orderBy(treatments.createdAt);
       return res.json(await attachMedications(all));
     }
 
-    const familyMembers = await db.select({ id: members.id }).from(members).where(eq(members.familyId, parseInt(familyId)));
+    const familyMembers = await db.select({ id: members.id }).from(members).where(eq(members.familyId, req.familyId));
     if (familyMembers.length === 0) return res.json([]);
     const memberIds = familyMembers.map((m) => m.id);
     const all = await db.select().from(treatments).where(inArray(treatments.memberId, memberIds)).orderBy(treatments.createdAt);

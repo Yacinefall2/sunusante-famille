@@ -1,8 +1,10 @@
 #!/bin/sh
 set -e
 
-echo "⏳ Application du schéma PostgreSQL (drizzle-kit push)..."
-npx drizzle-kit push --force || echo "⚠️  drizzle-kit push a échoué ou n'était pas nécessaire, on continue."
+# Migrations versionnées (dossier drizzle/). En cas d'échec, le conteneur
+# s'arrête : mieux vaut ne pas démarrer que tourner sur un schéma incohérent.
+echo "⏳ Application des migrations PostgreSQL..."
+node src/db/migrate.js
 
 echo "🚀 Démarrage du serveur Express..."
 exec node server.js

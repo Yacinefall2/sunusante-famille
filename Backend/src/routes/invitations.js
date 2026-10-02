@@ -40,6 +40,13 @@ router.post(
       if (!family) return res.status(404).json({ error: "Famille introuvable" });
 
       if (role === "parent") {
+        // Inviter un co-administrateur revient à le promouvoir : exclusif
+        // à l'Administrateur familial A1 (UC-05, section 9.2).
+        if (!req.membership.isPrimaryAdmin) {
+          return res.status(403).json({
+            error: "Seul l'administrateur qui a créé l'espace familial peut inviter un co-administrateur",
+          });
+        }
         const parents = await db
           .select()
           .from(familyMemberships)
@@ -216,6 +223,16 @@ router.post("/:token/accept", requireAuth, async (req, res) => {
     if (invitation.expiresAt < new Date()) return res.status(410).json({ error: "Invitation expirée" });
     if (invitation.email !== req.user.email.toLowerCase()) {
       return res.status(403).json({ error: "Cette invitation ne correspond pas à votre compte connecté" });
+    }
+
+    // Un compte n'appartient qu'à un seul espace familial à la fois — même
+    // règle qu'à la création d'un espace (routes/families.js).
+    const [existingMembership] = await db
+      .select({ id: familyMemberships.id })
+      .from(familyMemberships)
+      .where(eq(familyMemberships.userId, req.user.id));
+    if (existingMembership) {
+      return res.status(409).json({ error: "Vous êtes déjà membre d'un espace familial" });
     }
 
     await db.insert(familyMemberships).values({

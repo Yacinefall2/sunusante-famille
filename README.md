@@ -24,9 +24,27 @@ docker compose up --build
 - Backend (API Express) : http://localhost:4000/api/health
 - PostgreSQL : exposé sur le port 5432 de la machine hôte
 
-Au démarrage, le conteneur backend applique automatiquement le schéma
-PostgreSQL (`drizzle-kit push`) avant de lancer le serveur — aucune commande
-manuelle de migration n'est nécessaire au premier lancement.
+Au démarrage, le conteneur backend applique automatiquement les migrations
+versionnées du dossier `Backend/drizzle/` avant de lancer le serveur — aucune
+commande manuelle n'est nécessaire. Une base créée par l'ancien
+`drizzle-kit push` est reprise automatiquement au premier démarrage.
+
+### Modifier le schéma de la base
+
+1. Modifier `Backend/src/db/schema.js`
+2. `cd Backend && npm run db:generate -- --name <description>` : crée un
+   fichier SQL dans `Backend/drizzle/` (à relire, puis à versionner avec git)
+3. Redémarrer le backend (ou `npm run db:migrate` hors Docker)
+
+### Tests automatisés (backend)
+
+Les tests vérifient notamment l'étanchéité entre familles et les droits
+d'administration de l'espace. Ils tournent sur une base jetable dédiée :
+
+```bash
+docker compose --profile test up -d db-test   # base de test, port 55432
+cd Backend && npm test
+```
 
 Pour arrêter :
 
@@ -50,7 +68,7 @@ cd Backend
 cp .env.example .env
 # éditer .env : DATABASE_URL, PORT, CORS_ORIGIN
 npm install
-npm run db:push      # crée les tables dans PostgreSQL à partir du schéma Drizzle
+npm run db:migrate   # crée/met à jour les tables à partir des migrations de Backend/drizzle/
 npm run dev           # démarre l'API sur http://localhost:4000
 ```
 

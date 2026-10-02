@@ -1,7 +1,7 @@
 import { Router } from "express";
-import { eq, and, sql } from "drizzle-orm";
+import { eq, and, sql, inArray } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { familyMemberships, users, members } from "../db/schema.js";
+import { familyMemberships, users, members, documentRoles } from "../db/schema.js";
 import { requireFamilyMembership } from "../middleware/auth.js";
 
 const router = Router();
@@ -20,6 +20,7 @@ router.get(
         .select({
           id: familyMemberships.id,
           role: familyMemberships.role,
+          isPrimaryAdmin: familyMemberships.isPrimaryAdmin,
           linkedMemberId: familyMemberships.linkedMemberId,
           createdAt: familyMemberships.createdAt,
           userId: users.id,
@@ -70,6 +71,19 @@ router.put("/", requireFamilyMembership(resolveFamilyIdFromMembershipId, { roles
       });
     }
 
+    // L'Administrateur familial (A1) garde son rôle : l'espace ne doit
+    // jamais se retrouver sans A1 (seul habilité à le supprimer, UC-11).
+    if (existing.isPrimaryAdmin && role !== "parent") {
+      return res.status(403).json({ error: "L'administrateur familial ne peut pas quitter son rôle" });
+    }
+
+    // Promouvoir un co-administrateur est exclusif à A1 (UC-05, section 9.2).
+    if (role === "parent" && existing.role !== "parent" && !req.membership.isPrimaryAdmin) {
+      return res.status(403).json({
+        error: "Seul l'administrateur qui a créé l'espace familial peut nommer un co-administrateur",
+      });
+    }
+
     // Limite : maximum 2 parents par famille
     if (role === "parent" && existing.role !== "parent") {
       const [parentCount] = await db
@@ -112,12 +126,32 @@ router.put("/", requireFamilyMembership(resolveFamilyIdFromMembershipId, { roles
   }
 });
 
-// Retirer l'accès d'un membre à la famille — réservé aux Parents
+// Retirer l'accès d'un membre à la famille — réservé aux Parents, jamais
+// applicable à l'Administrateur familial A1 (UC-06, section 9.2).
 router.delete("/", requireFamilyMembership(resolveFamilyIdFromMembershipId, { roles: ["parent"] }), async (req, res) => {
   try {
     const id = parseInt(req.query.id ?? "");
     if (isNaN(id)) return res.status(400).json({ error: "ID invalide" });
+
+    const [existing] = await db.select().from(familyMemberships).where(eq(familyMemberships.id, id));
+    if (!existing) return res.status(404).json({ error: "Introuvable" });
+    if (existing.isPrimaryAdmin) {
+      return res.status(403).json({ error: "L'administrateur familial ne peut pas être retiré de l'espace" });
+    }
+
     await db.delete(familyMemberships).where(eq(familyMemberships.id, id));
+
+    // Ses rôles de dossier (Axe 2) dans cette famille tombent avec lui :
+    // ils ne doivent pas se réactiver s'il était réinvité plus tard.
+    const familyMemberIds = (
+      await db.select({ id: members.id }).from(members).where(eq(members.familyId, req.familyId))
+    ).map((m) => m.id);
+    if (familyMemberIds.length > 0) {
+      await db
+        .delete(documentRoles)
+        .where(and(eq(documentRoles.userId, existing.userId), inArray(documentRoles.memberId, familyMemberIds)));
+    }
+
     res.json({ success: true });
   } catch (error) {
     console.error(error);

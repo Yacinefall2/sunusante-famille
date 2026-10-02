@@ -6,18 +6,12 @@ import { db } from "../db/index.js";
 import { documents, members } from "../db/schema.js";
 import { upload, UPLOAD_DIR_PATH } from "../middleware/upload.js";
 import { requireFamilyMembership } from "../middleware/auth.js";
-import { familyIdFromMemberId, familyIdFromResource } from "../lib/familyResolvers.js";
+import { familyIdForListQuery, familyIdFromMemberId, familyIdFromResource } from "../lib/familyResolvers.js";
 import { canWriteDocument } from "../lib/documentAccess.js";
 
 const router = Router();
 
-async function resolveForGet(req) {
-  if (req.query.familyId) return parseInt(req.query.familyId) || null;
-  if (req.query.memberId) return familyIdFromMemberId(req.query.memberId);
-  return null;
-}
-
-router.get("/", requireFamilyMembership(resolveForGet), async (req, res) => {
+router.get("/", requireFamilyMembership(familyIdForListQuery), async (req, res) => {
   try {
     // Un Dépendant ne voit que les documents de sa propre fiche liée.
     if (req.membership.role === "dependent") {
@@ -30,14 +24,14 @@ router.get("/", requireFamilyMembership(resolveForGet), async (req, res) => {
       return res.json(own);
     }
 
-    const { memberId, familyId } = req.query;
+    const { memberId } = req.query;
 
     if (memberId) {
       const all = await db.select().from(documents).where(eq(documents.memberId, parseInt(memberId))).orderBy(documents.uploadedAt);
       return res.json(all);
     }
 
-    const familyMembers = await db.select({ id: members.id }).from(members).where(eq(members.familyId, parseInt(familyId)));
+    const familyMembers = await db.select({ id: members.id }).from(members).where(eq(members.familyId, req.familyId));
     if (familyMembers.length === 0) return res.json([]);
     const memberIds = familyMembers.map((m) => m.id);
     const all = await db.select().from(documents).where(inArray(documents.memberId, memberIds)).orderBy(documents.uploadedAt);

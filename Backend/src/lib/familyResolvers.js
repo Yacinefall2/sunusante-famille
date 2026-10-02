@@ -25,6 +25,17 @@ export async function familyIdFromResource(table, resourceId) {
   return familyIdFromMemberId(row.memberId);
 }
 
+// Résout la familyId des routes de liste (GET ?familyId=… ou ?memberId=…).
+// Quand un memberId est fourni, c'est TOUJOURS la famille de cette fiche qui
+// est retenue (le familyId éventuel est ignoré) : l'appartenance est donc
+// vérifiée sur la famille de la fiche réellement lue. Sans cette règle, un
+// appel ?familyId=<ma famille>&memberId=<fiche d'une autre famille> passait
+// le contrôle d'appartenance et renvoyait les données de l'autre famille.
+export async function familyIdForListQuery(req) {
+  if (req.query.memberId) return familyIdFromMemberId(req.query.memberId);
+  return familyIdFromQuery(req);
+}
+
 // Résout la familyId directement depuis req.query.familyId
 export function familyIdFromQuery(req) {
   const id = parseInt(req.query.familyId);

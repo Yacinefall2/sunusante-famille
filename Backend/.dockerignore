@@ -6,5 +6,4 @@ npm-debug.log
 .git
 .gitignore
 *.md
-drizzle
 .DS_Store

@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { eq, and } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { documentRoles, members, users } from "../db/schema.js";
+import { documentRoles, familyMemberships, members, users } from "../db/schema.js";
 import { requireFamilyMembership } from "../middleware/auth.js";
 import { DOCUMENT_ROLES, setDocumentRole } from "../lib/documentAccess.js";
 
@@ -71,6 +71,15 @@ router.post(
       const { memberId, userId, role } = req.body;
       if (!memberId || !userId || !DOCUMENT_ROLES.includes(role)) {
         return res.status(400).json({ error: "Données manquantes ou rôle invalide" });
+      }
+      // Un rôle de dossier n'est attribué qu'à un compte de CET espace
+      // familial (le Relais est réservé à un membre de la famille, §11).
+      const [targetMembership] = await db
+        .select({ id: familyMemberships.id })
+        .from(familyMemberships)
+        .where(and(eq(familyMemberships.userId, parseInt(userId)), eq(familyMemberships.familyId, req.familyId)));
+      if (!targetMembership) {
+        return res.status(400).json({ error: "Ce compte n'appartient pas à cet espace familial" });
       }
       const created = await setDocumentRole(parseInt(memberId), parseInt(userId), role);
       res.status(201).json(created);

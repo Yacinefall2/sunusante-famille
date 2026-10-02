@@ -56,6 +56,10 @@ export default function FamilySettingsPage() {
 
   const myMembership = memberships.find((m) => m.userId === user?.id);
   const isParent = myMembership?.role === "parent";
+  // Nommer un co-administrateur (rôle Parent) est réservé à A1 (UC-05).
+  const assignableRoles = myMembership?.isPrimaryAdmin
+    ? ROLE_OPTIONS
+    : ROLE_OPTIONS.filter((r) => r.value !== "parent");
 
   useEffect(() => {
     if (selectedFamily) load();
@@ -262,7 +266,7 @@ export default function FamilySettingsPage() {
                         disabled={updatingId === m.id}
                         className="!py-1.5 !text-sm w-auto"
                       >
-                        {ROLE_OPTIONS.map((r) => (
+                        {(m.role === "parent" ? ROLE_OPTIONS : assignableRoles).map((r) => (
                           <option key={r.value} value={r.value}>
                             {r.label}
                           </option>
@@ -275,8 +279,14 @@ export default function FamilySettingsPage() {
                     {isParent && (
                       <button
                         onClick={() => removeAccess(m.id)}
-                        disabled={removingId === m.id || m.userId === user?.id}
-                        title={m.userId === user?.id ? "Vous ne pouvez pas vous retirer vous-même" : "Retirer l'accès"}
+                        disabled={removingId === m.id || m.userId === user?.id || m.isPrimaryAdmin}
+                        title={
+                          m.userId === user?.id
+                            ? "Vous ne pouvez pas vous retirer vous-même"
+                            : m.isPrimaryAdmin
+                              ? "L'administrateur familial ne peut pas être retiré"
+                              : "Retirer l'accès"
+                        }
                         className="p-2 rounded-xl hover:bg-red-50 text-gray-400 hover:text-red-500 transition-colors disabled:opacity-30 disabled:hover:bg-transparent"
                       >
                         {removingId === m.id ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />}
@@ -349,7 +359,7 @@ export default function FamilySettingsPage() {
               if (e.target.value !== "dependent") setInviteLinkedMemberId("");
             }}
           >
-            {ROLE_OPTIONS.map((r) => (
+            {assignableRoles.map((r) => (
               <option key={r.value} value={r.value}>
                 {r.label}
               </option>
