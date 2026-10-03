@@ -9,6 +9,7 @@ const pageTitles = {
   "/traitements": { title: "Traitements & Médicaments", subtitle: "Historique des traitements en cours" },
   "/vaccinations": { title: "Carnet de vaccinations", subtitle: "Suivi du calendrier vaccinal" },
   "/documents": { title: "Documents médicaux", subtitle: "Ordonnances, résultats et bilans" },
+  "/famille": { title: "Accès & rôles", subtitle: "Comptes, rôles et invitations" },
 };
 
 export function Topbar() {

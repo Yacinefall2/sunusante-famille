@@ -13,13 +13,6 @@ const INVITATION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 jours
 const ALLOWED_ROLES = ["parent", "adult", "dependent"];
 const MAX_PARENTS = 2;
 
-const DOCUMENT_ROLE_LABELS = {
-  titulaire: "Titulaire",
-  gestionnaire: "Gestionnaire",
-  relais: "Relais",
-  lecteur_invite: "Lecteur invité",
-};
-
 // Créer une invitation — réservé aux Parents. Le rôle d'espace ET le rôle de
 // dossier (le cas échéant) sont fixés AVANT l'envoi, jamais après (§6.2/6.3).
 router.post(
@@ -133,8 +126,9 @@ router.post(
         familyName: family.name,
         role,
         token,
+        inviterName: req.user.name,
         documentMemberName,
-        documentRoleLabel: validatedDocumentRole ? DOCUMENT_ROLE_LABELS[validatedDocumentRole] : null,
+        documentRole: validatedDocumentRole,
       });
 
       res.status(201).json(invitation);

@@ -17,7 +17,9 @@ COPY nginx.conf /etc/nginx/conf.d/default.conf
 
 EXPOSE 80
 
+# 127.0.0.1 et non localhost : dans le conteneur, localhost résout vers IPv6
+# (::1) alors que nginx n'écoute qu'en IPv4.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget -qO- http://localhost:80 || exit 1
+  CMD wget -qO- http://127.0.0.1:80 || exit 1
 
 CMD ["nginx", "-g", "daemon off;"]

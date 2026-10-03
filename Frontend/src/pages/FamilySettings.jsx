@@ -333,7 +333,8 @@ export default function FamilySettingsPage() {
                       )}
                     </div>
 
-                    {isParent ? (
+                    {/* Le rôle d'un autre Parent n'est pas modifiable (refusé par le serveur) : simple badge. */}
+                    {isParent && !(m.role === "parent" && m.userId !== user?.id) ? (
                       <Select
                         value={m.role}
                         onChange={(e) => handleRoleSelect(m, e.target.value)}
