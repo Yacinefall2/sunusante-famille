@@ -50,6 +50,7 @@ export default function FichesPage() {
     myMember,
     membersLoading: loading,
     reloadMembers,
+    canWriteMember,
   } = useFamily();
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -101,7 +102,15 @@ export default function FichesPage() {
     const m = members.find((mm) => String(mm.id) === id);
     if (m && canRead(m)) {
       openedFromUrl.current = id;
-      openView(m);
+      // ?modifier=1 (lien « À compléter ») : formulaire de modification directement.
+      if (searchParams.get("modifier") === "1" && canWriteMember(m.id)) {
+        openEdit(m);
+        searchParams.delete("fiche");
+        searchParams.delete("modifier");
+        setSearchParams(searchParams, { replace: true });
+      } else {
+        openView(m);
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams, members, loading]);

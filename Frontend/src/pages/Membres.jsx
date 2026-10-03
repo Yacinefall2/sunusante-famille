@@ -172,22 +172,26 @@ export default function MembresPage() {
                     )}
                   </div>
 
-                  {kinshipIncomplete(m) && (
-                    <p className="flex items-center gap-1.5 text-xs text-amber-700 bg-amber-50 rounded-xl px-3 py-1.5">
-                      <AlertCircle size={13} className="flex-shrink-0" />
-                      <span>
-                        À compléter : lien, âge ou sexe
-                        {canWriteMember(m.id) && (
-                          <>
-                            {" · "}
-                            <Link to={`/fiches?fiche=${m.id}`} className="font-semibold underline hover:text-amber-900">
-                              Compléter
-                            </Link>
-                          </>
-                        )}
-                      </span>
-                    </p>
-                  )}
+                  {kinshipIncomplete(m) &&
+                    (canWriteMember(m.id) ? (
+                      // Tout l'encadré ouvre directement le formulaire de modification.
+                      <Link
+                        to={`/fiches?fiche=${m.id}&modifier=1`}
+                        className="flex items-center gap-1.5 text-xs text-amber-800 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded-xl px-3 py-2 transition-colors"
+                      >
+                        <AlertCircle size={13} className="flex-shrink-0" />
+                        <span className="flex-1">À compléter : lien, âge ou sexe</span>
+                        <span className="font-semibold underline">Compléter</span>
+                      </Link>
+                    ) : (
+                      <p className="flex items-center gap-1.5 text-xs text-amber-700 bg-amber-50 rounded-xl px-3 py-2">
+                        <AlertCircle size={13} className="flex-shrink-0" />
+                        <span>
+                          Fiche à compléter (lien, âge ou sexe) — par{" "}
+                          {m.hasAccount ? "son titulaire ou " : "son gestionnaire ou "}un administrateur.
+                        </span>
+                      </p>
+                    ))}
 
                   <div className="space-y-1 text-xs">
                     <p className="flex items-center gap-1.5 text-gray-600">
