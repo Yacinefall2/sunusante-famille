@@ -5,12 +5,13 @@ import { NotificationBell } from "../notifications/NotificationBell";
 
 const pageTitles = {
   "/dashboard": { title: "Tableau de bord", subtitle: "Vue d'ensemble de la famille" },
-  "/membres": { title: "Membres de la famille", subtitle: "Gérez les profils médicaux" },
+  "/membres": { title: "Membres de la famille", subtitle: "Les personnes du foyer, avec ou sans compte" },
+  "/fiches": { title: "Fiches médicales", subtitle: "Dossiers médicaux des membres" },
   "/rendez-vous": { title: "Rendez-vous médicaux", subtitle: "Planifiez et suivez vos consultations" },
   "/traitements": { title: "Traitements & Médicaments", subtitle: "Historique des traitements en cours" },
   "/vaccinations": { title: "Carnet de vaccinations", subtitle: "Suivi du calendrier vaccinal" },
   "/documents": { title: "Documents médicaux", subtitle: "Ordonnances, résultats et bilans" },
-  "/famille": { title: "Accès & rôles", subtitle: "Comptes, rôles et invitations" },
+  "/famille": { title: "Comptes & invitations", subtitle: "Comptes de la famille, rôles et invitations" },
   "/village": { title: "Village", subtitle: "Proches non connectés et rappels relayés" },
   "/notifications": { title: "Notifications", subtitle: "Rappels et préférences" },
 };

@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { inArray } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { members, appointments, treatments, vaccinations, documents } from "../db/schema.js";
 import { requireFamilyMembership } from "../middleware/auth.js";
@@ -14,6 +14,10 @@ router.get(
     try {
       // Tableau de bord limité aux dossiers lisibles par ce compte (le sien,
       // ceux qu'il gère ou consulte) — jamais ceux auxquels il n'a pas accès.
+      const [{ householdCount }] = await db
+        .select({ householdCount: sql`count(*)::int` })
+        .from(members)
+        .where(eq(members.familyId, req.familyId));
       const readableIds = await readableMemberIds(req);
       const familyMembers =
         readableIds.length > 0
@@ -22,7 +26,8 @@ router.get(
 
       if (familyMembers.length === 0) {
         return res.json({
-          membersCount: 0,
+          membersCount: householdCount,
+          readableCount: 0,
           members: [],
           upcomingAppointments: [],
           activeTreatmentsCount: 0,
@@ -70,7 +75,10 @@ router.get(
       const membersMap = Object.fromEntries(familyMembers.map((m) => [m.id, m]));
 
       res.json({
-        membersCount: familyMembers.length,
+        // Membres du foyer (toutes les fiches) et non seulement ceux dont le
+        // dossier est lisible par ce compte ; les listes restent filtrées.
+        membersCount: householdCount,
+        readableCount: familyMembers.length,
         members: familyMembers,
         upcomingAppointments: upcoming.map((a) => ({
           ...a,

@@ -1,7 +1,7 @@
 import { Router } from "express";
-import { eq, and, gt, isNull } from "drizzle-orm";
+import { eq, and, gt, isNull, sql } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { members, familyMemberships, documentRoles, relayTasks } from "../db/schema.js";
+import { members, familyMemberships, documentRoles, relayTasks, users } from "../db/schema.js";
 import { requireFamilyMembership } from "../middleware/auth.js";
 import { canRead, canWriteMember, getFamilyAccess, setDocumentRole } from "../lib/documentAccess.js";
 
@@ -36,6 +36,50 @@ function memberValues(body) {
   };
 }
 
+// Comptes de la famille, avec leur rôle dans l'espace (Axe 1).
+async function familyAccounts(familyId) {
+  return db
+    .select({
+      userId: users.id,
+      name: users.name,
+      role: familyMemberships.role,
+      isPrimaryAdmin: familyMemberships.isPrimaryAdmin,
+      linkedMemberId: familyMemberships.linkedMemberId,
+    })
+    .from(familyMemberships)
+    .innerJoin(users, eq(users.id, familyMemberships.userId))
+    .where(eq(familyMemberships.familyId, familyId));
+}
+
+const publicAccount = (a) =>
+  a ? { userId: a.userId, name: a.name, role: a.role, isPrimaryAdmin: a.isPrimaryAdmin } : null;
+
+// Le foyer, sans ambiguïté entre membres et comptes : un MEMBRE est une
+// personne de la famille (avec sa fiche) ; un COMPTE est un accès à
+// l'application. Renvoie les comptes pas encore reliés à une fiche (invités
+// qui n'ont pas encore créé « Ma fiche ») et les deux totaux.
+router.get(
+  "/household",
+  requireFamilyMembership((req) => parseInt(req.query.familyId) || null),
+  async (req, res) => {
+    try {
+      const [{ count }] = await db
+        .select({ count: sql`count(*)::int` })
+        .from(members)
+        .where(eq(members.familyId, req.familyId));
+      const accounts = await familyAccounts(req.familyId);
+      res.json({
+        membersCount: count,
+        accountsCount: accounts.length,
+        accountsWithoutFiche: accounts.filter((a) => !a.linkedMemberId).map(publicAccount),
+      });
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: "Erreur serveur" });
+    }
+  }
+);
+
 async function linkedMemberIdsOfFamily(familyId) {
   const rows = await db
     .select({ linkedMemberId: familyMemberships.linkedMemberId })
@@ -49,6 +93,8 @@ async function linkedMemberIdsOfFamily(familyId) {
 //   access     — "full" | "read" | "relay" | null (voir lib/documentAccess.js)
 //   isMine     — fiche reliée au compte connecté (il en est le Titulaire)
 //   hasAccount — fiche déjà reliée à un compte de la famille
+//   account    — ce compte (nom, rôle dans la famille) ou null : un membre
+//                peut ne pas avoir de compte (enfant, proche au village)
 //   myDocumentRole — rôle de dossier explicite du compte connecté sur la fiche
 //                    ("gestionnaire" | "relais" | "lecteur_invite" | null)
 router.get(
@@ -58,7 +104,8 @@ router.get(
     try {
       const all = await db.select().from(members).where(eq(members.familyId, req.familyId)).orderBy(members.id);
       const access = await getFamilyAccess(req);
-      const linked = await linkedMemberIdsOfFamily(req.familyId);
+      const accounts = await familyAccounts(req.familyId);
+      const accountByFiche = new Map(accounts.filter((a) => a.linkedMemberId).map((a) => [a.linkedMemberId, a]));
       // Badge « À relayer » (§4.5) : rendez-vous à venir d'un proche non
       // connecté que personne n'a encore marqué « Prévenu ». Visible du
       // gestionnaire, et du relais une fois le rappel escaladé vers lui.
@@ -84,7 +131,8 @@ router.get(
             ...visible,
             access: level,
             isMine: req.membership.linkedMemberId === m.id,
-            hasAccount: linked.has(m.id),
+            hasAccount: accountByFiche.has(m.id),
+            account: publicAccount(accountByFiche.get(m.id)),
             myDocumentRole: myRoles.get(m.id) ?? null,
             relayPending: relayPending(m.id, level),
           };

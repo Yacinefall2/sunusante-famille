@@ -575,8 +575,8 @@ export default function RendezVousPage() {
 
             {viewing.restricted && (
               <p className="text-sm text-amber-700 bg-amber-50 border border-amber-100 rounded-xl p-3">
-                Vous êtes Relais pour ce dossier : seuls la date, l'heure et le lieu vous sont communiqués, pour que
-                vous puissiez rappeler ce rendez-vous à la personne.
+                Vous êtes relais pour cette personne : seuls la date, l'heure et le lieu vous sont communiqués, pour que
+                vous puissiez la prévenir de ce rendez-vous. Vous n'avez pas accès à son dossier.
               </p>
             )}
 

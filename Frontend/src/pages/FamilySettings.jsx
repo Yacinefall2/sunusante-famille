@@ -8,26 +8,19 @@ import { Badge } from "../components/ui/Badge";
 import { Modal } from "../components/ui/Modal";
 import { UserCog, Mail, Trash2, Loader2, Clock, Shield, Plus, Link2 } from "lucide-react";
 import { formatDateTime } from "../lib/utils";
+import {
+  FAMILY_ROLE_OPTIONS,
+  FICHE_ROLE_OPTIONS,
+  familyRoleLabel,
+  familyRoleBadgeVariant,
+  ficheRoleShortLabel,
+} from "../lib/roles";
 import toast from "react-hot-toast";
 
-const ROLE_OPTIONS = [
-  { value: "parent", label: "Parent" },
-  { value: "adult", label: "Membre adulte" },
-  { value: "dependent", label: "Personne dépendante" },
-];
-
-// Axe 2 du modèle d'acteurs — rôle de dossier optionnel, fixé en même temps
-// que le rôle d'espace, avant l'envoi de l'invitation (§6.2/6.3). Le
-// Titulaire n'en fait pas partie : c'est le compte relié à la fiche.
-const DOCUMENT_ROLE_OPTIONS = [
-  { value: "gestionnaire", label: "Gestionnaire (saisit et administre)" },
-  { value: "relais", label: "Relais (rappel à transmettre uniquement)" },
-  { value: "lecteur_invite", label: "Lecteur invité (consultation seule)" },
-];
-const documentRoleLabel = (role) => DOCUMENT_ROLE_OPTIONS.find((r) => r.value === role)?.label.split(" (")[0] ?? role;
-
-const roleLabel = (role) => ROLE_OPTIONS.find((r) => r.value === role)?.label ?? role;
-const roleBadgeVariant = (role) => (role === "parent" ? "danger" : role === "dependent" ? "warning" : "info");
+// Rôles d'un compte dans la famille, et rôles sur une fiche (optionnels,
+// fixés avant l'envoi de l'invitation) : libellés communs dans lib/roles.js.
+// Le Titulaire n'est pas un rôle attribuable : c'est le compte relié à la fiche.
+const ROLE_OPTIONS = FAMILY_ROLE_OPTIONS;
 
 export default function FamilySettingsPage() {
   // Les fiches de la famille (avec l'accès de l'utilisateur sur chacune)
@@ -107,11 +100,11 @@ export default function FamilySettingsPage() {
       return;
     }
     if (inviteRole === "dependent" && !inviteLinkedMemberId) {
-      toast.error("Choisissez la fiche membre correspondant à cette personne");
+      toast.error("Choisissez la fiche correspondant à cette personne");
       return;
     }
     if ((inviteDocumentMemberId && !inviteDocumentRole) || (!inviteDocumentMemberId && inviteDocumentRole)) {
-      toast.error("Choisissez à la fois un dossier et un rôle de dossier, ou aucun des deux");
+      toast.error("Choisissez à la fois une fiche et un rôle sur cette fiche, ou aucun des deux");
       return;
     }
     setInviting(true);
@@ -182,7 +175,7 @@ export default function FamilySettingsPage() {
 
   const confirmRoleChangeToDependent = async () => {
     if (!roleChangeLinkedMemberId) {
-      toast.error("Choisissez la fiche membre correspondant à cette personne");
+      toast.error("Choisissez la fiche correspondant à cette personne");
       return;
     }
     await applyRoleChange(roleChangeTarget.membershipId, "dependent", roleChangeLinkedMemberId);
@@ -264,10 +257,10 @@ export default function FamilySettingsPage() {
       <div className="space-y-6">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
-            <h2 className="text-xl font-bold text-gray-800">Accès & rôles — {selectedFamily.name}</h2>
+            <h2 className="text-xl font-bold text-gray-800">Comptes & invitations — {selectedFamily.name}</h2>
             <p className="text-sm text-gray-500">
-              {memberships.length} compte{memberships.length > 1 ? "s" : ""} avec accès
-              {!isParent && " · lecture seule (réservé aux Parents pour modifier)"}
+              {memberships.length} compte{memberships.length > 1 ? "s" : ""} dans la famille
+              {!isParent && " · lecture seule (modification réservée aux administrateurs)"}
             </p>
           </div>
           {isParent && (
@@ -288,7 +281,7 @@ export default function FamilySettingsPage() {
             <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
               <div className="px-6 py-4 border-b border-gray-100 flex items-center gap-2">
                 <Shield size={16} className="text-teal-600" />
-                <h3 className="font-bold text-gray-800 text-sm">Comptes ayant accès</h3>
+                <h3 className="font-bold text-gray-800 text-sm">Comptes de la famille</h3>
               </div>
               <div className="divide-y divide-gray-50">
                 {memberships.map((m) => (
@@ -307,7 +300,7 @@ export default function FamilySettingsPage() {
                           Fiche : {memberName(m.linkedMemberId) ?? "fiche non visible"}
                         </p>
                       ) : (
-                        <p className="text-xs text-gray-400 mt-0.5 italic">Pas encore de fiche</p>
+                        <p className="text-xs text-gray-400 mt-0.5 italic">N'a pas encore créé sa fiche</p>
                       )}
                       {/* Un Parent peut relier un autre compte à sa fiche (pas sa
                           propre ligne : chacun désigne sa fiche lui-même) */}
@@ -343,12 +336,12 @@ export default function FamilySettingsPage() {
                       >
                         {(m.role === "parent" ? ROLE_OPTIONS : assignableRoles).map((r) => (
                           <option key={r.value} value={r.value}>
-                            {r.label}
+                            {r.value === "parent" ? familyRoleLabel("parent", m.isPrimaryAdmin) : r.label}
                           </option>
                         ))}
                       </Select>
                     ) : (
-                      <Badge variant={roleBadgeVariant(m.role)}>{roleLabel(m.role)}</Badge>
+                      <Badge variant={familyRoleBadgeVariant(m.role, m.isPrimaryAdmin)}>{familyRoleLabel(m.role, m.isPrimaryAdmin)}</Badge>
                     )}
 
                     {isParent && (
@@ -395,11 +388,11 @@ export default function FamilySettingsPage() {
                         )}
                         {inv.documentMemberId && inv.documentRole && (
                           <p className="text-xs text-teal-600 mt-0.5">
-                            {documentRoleLabel(inv.documentRole)} du dossier de {memberName(inv.documentMemberId)}
+                            {ficheRoleShortLabel(inv.documentRole)} sur la fiche de {memberName(inv.documentMemberId)}
                           </p>
                         )}
                       </div>
-                      <Badge variant={roleBadgeVariant(inv.role)}>{roleLabel(inv.role)}</Badge>
+                      <Badge variant={familyRoleBadgeVariant(inv.role)}>{familyRoleLabel(inv.role)}</Badge>
                       {isParent && (
                         <button
                           onClick={() => cancelInvitation(inv.id)}
@@ -427,11 +420,11 @@ export default function FamilySettingsPage() {
             onChange={(e) => setInviteEmail(e.target.value)}
           />
           <Select
-            label="Rôle *"
+            label="Rôle dans la famille *"
             value={inviteRole}
             onChange={(e) => {
               setInviteRole(e.target.value);
-              // Pas de rôle de dossier proposé pour une personne dépendante
+              // Pas de rôle sur une fiche proposé pour un adolescent
               if (e.target.value === "dependent") {
                 setInviteDocumentMemberId("");
                 setInviteDocumentRole("");
@@ -472,23 +465,23 @@ export default function FamilySettingsPage() {
           </Select>
           {inviteRole === "dependent" && linkableFiches.length === 0 && (
             <p className="text-xs text-amber-600 bg-amber-50 rounded-xl px-3 py-2">
-              ⚠️ Créez d&apos;abord la fiche de cette personne depuis la page Membres.
+              ⚠️ Ajoutez d&apos;abord cette personne (et sa fiche) depuis la page Membres.
             </p>
           )}
 
-          {/* Rôle de dossier (Axe 2) — optionnel, fixé avant l'envoi comme le
-              rôle d'espace (§6.2/6.3), rend l'invitation explicite. */}
+          {/* Rôle sur une fiche — optionnel, fixé avant l'envoi comme le rôle
+              dans la famille, rend l'invitation explicite. */}
           {inviteRole !== "dependent" && (
             <div className="border border-gray-200 rounded-xl p-3 space-y-3">
               <p className="text-xs font-semibold text-gray-600">
-                Rôle sur un dossier précis (optionnel)
+                Rôle sur la fiche d&apos;un membre (optionnel)
               </p>
               <Select
-                label="Dossier concerné"
+                label="Fiche concernée"
                 value={inviteDocumentMemberId}
                 onChange={(e) => setInviteDocumentMemberId(e.target.value)}
               >
-                <option value="">Aucun — rôle d'espace uniquement</option>
+                <option value="">Aucune — rôle dans la famille uniquement</option>
                 {manageableFiches
                   .filter((m) => m.id.toString() !== inviteLinkedMemberId)
                   .map((m) => (
@@ -499,12 +492,12 @@ export default function FamilySettingsPage() {
               </Select>
               {inviteDocumentMemberId && (
                 <Select
-                  label="Rôle sur ce dossier *"
+                  label="Rôle sur cette fiche *"
                   value={inviteDocumentRole}
                   onChange={(e) => setInviteDocumentRole(e.target.value)}
                 >
                   <option value="">Choisir un rôle</option>
-                  {DOCUMENT_ROLE_OPTIONS.map((r) => (
+                  {FICHE_ROLE_OPTIONS.map((r) => (
                     <option key={r.value} value={r.value}>
                       {r.label}
                     </option>
@@ -538,10 +531,10 @@ export default function FamilySettingsPage() {
       >
         <div className="space-y-4">
           <p className="text-sm text-gray-600">
-            Le rôle "Personne dépendante" nécessite de choisir à quelle fiche membre correspond ce compte.
+            Le rôle « Adolescent » nécessite de choisir à quelle fiche correspond ce compte.
           </p>
           <Select
-            label="Fiche membre *"
+            label="Fiche de cette personne *"
             value={roleChangeLinkedMemberId}
             onChange={(e) => setRoleChangeLinkedMemberId(e.target.value)}
           >

@@ -2,6 +2,7 @@ import { Link, useLocation } from "react-router-dom";
 import {
   LayoutDashboard,
   Users,
+  FileHeart,
   Calendar,
   Pill,
   Syringe,
@@ -20,12 +21,13 @@ import { useState } from "react";
 const navItems = [
   { href: "/dashboard", label: "Tableau de bord", icon: LayoutDashboard },
   { href: "/membres", label: "Membres", icon: Users },
+  { href: "/fiches", label: "Fiches médicales", icon: FileHeart },
   { href: "/rendez-vous", label: "Rendez-vous", icon: Calendar },
   { href: "/traitements", label: "Traitements", icon: Pill },
   { href: "/vaccinations", label: "Vaccinations", icon: Syringe },
   { href: "/documents", label: "Documents", icon: FileText },
   { href: "/village", label: "Village", icon: TreePine },
-  { href: "/famille", label: "Accès & rôles", icon: UserCog },
+  { href: "/famille", label: "Comptes & invitations", icon: UserCog },
   { href: "/notifications", label: "Notifications", icon: Bell },
 ];
 

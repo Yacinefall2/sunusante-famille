@@ -22,6 +22,7 @@ import {
   Heart,
 } from "lucide-react";
 import { formatDateTime, formatDate, APPOINTMENT_STATUSES } from "../lib/utils";
+import { accountRoleLabel, familyRoleBadgeVariant, noAccountSubtitle } from "../lib/roles";
 import { IntakeAnswerButtons, NOTIFICATIONS_REFRESH_EVENT } from "../components/notifications/intakes";
 import { format, isToday, parseISO } from "date-fns";
 import toast from "react-hot-toast";
@@ -36,6 +37,8 @@ export default function DashboardPage() {
   const [showNewFamily, setShowNewFamily] = useState(false);
   const [familyName, setFamilyName] = useState("");
   const [creating, setCreating] = useState(false);
+  // Compteurs du foyer (membres, comptes) pour la carte "Membres".
+  const [household, setHousehold] = useState(null);
   // Prises de médicaments récentes (pour la carte "Prises du jour").
   const [intakes, setIntakes] = useState([]);
 
@@ -75,13 +78,21 @@ export default function DashboardPage() {
   const loadDashboard = async (familyId) => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/dashboard?familyId=${familyId}`);
+      const [res, householdRes] = await Promise.all([
+        fetch(`/api/dashboard?familyId=${familyId}`),
+        fetch(`/api/members/household?familyId=${familyId}`).catch(() => null),
+      ]);
       const d = await res.json();
       setData(d);
+      setHousehold(householdRes?.ok ? await householdRes.json() : null);
     } finally {
       setLoading(false);
     }
   };
+
+  // Nombre de membres du foyer (toutes les fiches) et de comptes
+  const membersCount = household?.membersCount ?? data?.membersCount ?? members.length;
+  const accountsCount = household?.accountsCount ?? members.filter((m) => m.account).length;
 
   const createFamily = async () => {
     if (!familyName.trim()) return;
@@ -200,7 +211,7 @@ export default function DashboardPage() {
               {/^\s*famille(\s|$)/i.test(selectedFamily?.name ?? "") ? selectedFamily?.name : `Famille ${selectedFamily?.name ?? ""}`}
             </h2>
             <p className="text-gray-500 text-sm mt-0.5">
-              {data?.membersCount ?? 0} membre{(data?.membersCount ?? 0) > 1 ? "s" : ""}
+              {membersCount} membre{membersCount > 1 ? "s" : ""} · {accountsCount} avec un compte
             </p>
           </div>
           {/* Le bouton "Nouvelle famille" est supprimé : une personne déjà
@@ -212,7 +223,8 @@ export default function DashboardPage() {
           {[
             {
               label: "Membres",
-              value: data?.membersCount ?? 0,
+              sublabel: `${accountsCount} avec un compte`,
+              value: membersCount,
               icon: Users,
               color: "from-teal-500 to-teal-600",
               href: "/membres",
@@ -251,6 +263,7 @@ export default function DashboardPage() {
                   </div>
                   <p className="text-3xl font-bold text-gray-800">{loading ? "—" : stat.value}</p>
                   <p className="text-sm text-gray-500 mt-1">{stat.label}</p>
+                  {stat.sublabel && <p className="text-xs text-gray-400">{stat.sublabel}</p>}
                 </div>
               </Link>
             );
@@ -312,26 +325,39 @@ export default function DashboardPage() {
               <div className="flex justify-center py-8">
                 <Loader2 className="animate-spin text-teal-500" size={24} />
               </div>
-            ) : data?.members && data.members.length > 0 ? (
+            ) : members.length > 0 ? (
               <div className="space-y-3">
-                {data.members.slice(0, 5).map((m) => (
+                {members.slice(0, 6).map((m) => (
                   <div key={m.id} className="flex items-center justify-between gap-3 p-3 rounded-xl hover:bg-gray-50 transition-colors">
-                    <MemberAvatar member={m} size="md" showName showAge />
+                    <div className="min-w-0">
+                      <MemberAvatar member={m} size="md" showName />
+                      <p className="text-xs text-gray-400 mt-0.5 pl-[52px] truncate">
+                        {m.account ? `Compte : ${m.account.name}` : noAccountSubtitle(m.status)}
+                      </p>
+                    </div>
                     <div className="flex items-center gap-1.5 flex-wrap justify-end">
-                      {(m.relayPending || memberById(m.id)?.relayPending) && (
+                      {m.relayPending && (
                         <Badge variant="warning" className="px-2 py-0.5 text-[11px]">
                           À relayer
                         </Badge>
                       )}
-                      {myMember?.id === m.id && <Badge variant="success">Ma fiche</Badge>}
+                      {myMember?.id === m.id && <Badge variant="success">Vous</Badge>}
+                      <Badge variant={familyRoleBadgeVariant(m.account?.role, m.account?.isPrimaryAdmin)}>
+                        {accountRoleLabel(m.account)}
+                      </Badge>
                     </div>
                   </div>
                 ))}
+                {members.length > 6 && (
+                  <Link to="/membres" className="block text-center text-xs text-teal-600 hover:underline font-medium">
+                    + {members.length - 6} autre{members.length - 6 > 1 ? "s" : ""}
+                  </Link>
+                )}
               </div>
             ) : (
               <div className="text-center py-8 text-gray-400">
                 <Users size={32} className="mx-auto mb-2 opacity-30" />
-                <p className="text-sm">Aucun dossier partagé avec vous pour l&apos;instant</p>
+                <p className="text-sm">Aucun membre enregistré pour l&apos;instant</p>
                 {canCreateFiche && (
                   <Link to="/membres">
                     <Button variant="outline" size="sm" className="mt-3">

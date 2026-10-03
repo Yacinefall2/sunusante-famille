@@ -28,6 +28,7 @@ import { Button } from "../components/ui/Button";
 import { notifyNotificationsChanged } from "../components/notifications/intakes";
 import { useFamily } from "../context/FamilyContext";
 import { cn, formatDateTime, getAttendance } from "../lib/utils";
+import { ficheRoleShortLabel } from "../lib/roles";
 
 // Libellés des événements de l'historique des relais.
 const EVENT_LABELS = {
@@ -226,13 +227,14 @@ export default function VillagePage() {
 // ---------------------------------------------------------------------------
 // Éléments communs
 
-function CardHeader({ member, roleLabel, pending }) {
+// `role` : rôle de l'utilisateur sur la fiche du proche ("gestionnaire" | "relais")
+function CardHeader({ member, role, pending }) {
   return (
     <div className="flex items-center justify-between gap-3 flex-wrap">
       <MemberAvatar member={member} size="lg" showName />
       <div className="flex items-center gap-2">
         {pending && <Badge variant="warning">À relayer</Badge>}
-        <Badge variant={roleLabel === "Relais" ? "default" : "info"}>{roleLabel}</Badge>
+        <Badge variant={role === "relais" ? "warning" : "info"}>{ficheRoleShortLabel(role)}</Badge>
       </div>
     </div>
   );
@@ -289,7 +291,7 @@ function ManagerCard({ entry, busy, onNotified, onAttendance }) {
 
   return (
     <section className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 space-y-5">
-      <CardHeader member={member} roleLabel="Gestionnaire" pending={!!next} />
+      <CardHeader member={member} role="gestionnaire" pending={!!next} />
 
       {/* Bouton d'appel : élément le plus visible de la carte */}
       {member.phone ? (
@@ -306,7 +308,7 @@ function ManagerCard({ entry, busy, onNotified, onAttendance }) {
           <PhoneOff size={20} className="text-gray-400 flex-shrink-0" />
           <span>
             Aucun numéro :{" "}
-            <Link to="/membres" className="font-semibold text-teal-600 hover:underline">
+            <Link to={`/fiches?fiche=${member.id}`} className="font-semibold text-teal-600 hover:underline">
               ajoutez-le sur sa fiche
             </Link>
           </span>
@@ -497,7 +499,7 @@ function RelayCard({ entry, busy, onNotified, onUnreachable }) {
 
   return (
     <section className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 space-y-5">
-      <CardHeader member={member} roleLabel="Relais" pending={pending} />
+      <CardHeader member={member} role="relais" pending={pending} />
 
       <p className="text-sm text-gray-600 bg-gray-50 rounded-xl px-4 py-3 flex items-start gap-2">
         <Info size={16} className="text-teal-600 flex-shrink-0 mt-0.5" />

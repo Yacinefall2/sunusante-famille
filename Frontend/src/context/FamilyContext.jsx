@@ -28,6 +28,8 @@ export function FamilyProvider({ children }) {
   // dans la famille actuellement sélectionnée — nécessaire pour savoir quels
   // boutons afficher (modifier, supprimer, ajouter...) selon le rôle.
   const [myLinkedMemberId, setMyLinkedMemberId] = useState(null);
+  // Vrai si l'utilisateur est l'administrateur familial (créateur de la famille)
+  const [isPrimaryAdmin, setIsPrimaryAdmin] = useState(false);
   // Vrai une fois l'appartenance de l'utilisateur à la famille sélectionnée
   // chargée — évite d'afficher l'écran "Ma fiche" pendant le chargement.
   const [membershipLoaded, setMembershipLoaded] = useState(false);
@@ -36,6 +38,7 @@ export function FamilyProvider({ children }) {
     if (!selectedFamily || !user) {
       setMyRole(null);
       setMyLinkedMemberId(null);
+      setIsPrimaryAdmin(false);
       setMembershipLoaded(false);
       return;
     }
@@ -45,10 +48,12 @@ export function FamilyProvider({ children }) {
       const mine = Array.isArray(rows) ? rows.find((r) => r.userId === user.id) : null;
       setMyRole(mine?.role ?? null);
       setMyLinkedMemberId(mine?.linkedMemberId ?? null);
+      setIsPrimaryAdmin(!!mine?.isPrimaryAdmin);
       setMembershipLoaded(!!mine);
     } catch {
       setMyRole(null);
       setMyLinkedMemberId(null);
+      setIsPrimaryAdmin(false);
       setMembershipLoaded(false);
     }
   }, [selectedFamily, user]);
@@ -130,6 +135,7 @@ export function FamilyProvider({ children }) {
         myLinkedMemberId,
         reloadMembership: loadMyRole,
         isParent,
+        isPrimaryAdmin,
         isAdult,
         isDependent,
         canWrite,

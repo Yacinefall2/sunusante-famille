@@ -8,6 +8,7 @@ import VerifyEmailPage from "./pages/VerifyEmail.jsx";
 import AcceptInvitationPage from "./pages/AcceptInvitation.jsx";
 import DashboardPage from "./pages/Dashboard.jsx";
 import MembresPage from "./pages/Membres.jsx";
+import FichesPage from "./pages/Fiches.jsx";
 import RendezVousPage from "./pages/RendezVous.jsx";
 import TraitementsPage from "./pages/Traitements.jsx";
 import VaccinationsPage from "./pages/Vaccinations.jsx";
@@ -45,6 +46,7 @@ export default function App() {
                   <Route path="/" element={<Navigate to="/dashboard" replace />} />
                   <Route path="/dashboard" element={<DashboardPage />} />
                   <Route path="/membres" element={<MembresPage />} />
+                  <Route path="/fiches" element={<FichesPage />} />
                   <Route path="/rendez-vous" element={<RendezVousPage />} />
                   <Route path="/traitements" element={<TraitementsPage />} />
                   <Route path="/vaccinations" element={<VaccinationsPage />} />
