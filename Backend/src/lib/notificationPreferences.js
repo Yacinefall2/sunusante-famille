@@ -9,6 +9,12 @@ export const NOTIFICATION_CATEGORIES = {
   appointment_reminder: { label: "Rappels de rendez-vous (J-3 et J-1)", inApp: true, email: true },
   medication_intake: { label: "Rappels de prise de médicament", inApp: true, email: false },
   vaccine_reminder: { label: "Rappels de vaccin (7 jours avant)", inApp: true, email: true },
+  // Village (§4, §7) — catégories distinctes : couper les rappels de prise ne
+  // coupe jamais les alertes « à relayer » (§7.3).
+  relay_to_relay: { label: "Proches à prévenir (« à relayer », en tant que gestionnaire)", inApp: true, email: true },
+  relay_escalation: { label: "Rappels à relayer (en tant que relais)", inApp: true, email: true },
+  relay_alert: { label: "Alertes du Village (proche injoignable)", inApp: true, email: true },
+  relay_update: { label: "Suivi du Village (relais effectué, présence au rendez-vous)", inApp: true, email: false },
 };
 
 // Échec de remise d'un courriel : jamais silencieux (§7.3), donc toujours

@@ -1,7 +1,8 @@
 import { Router } from "express";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { appointments } from "../db/schema.js";
+import { appointments, relayTasks } from "../db/schema.js";
+import { logRelayEvent } from "../reminders/village.js";
 import { requireFamilyMembership } from "../middleware/auth.js";
 import { familyIdForListQuery, familyIdFromMemberId, familyIdFromResource } from "../lib/familyResolvers.js";
 import { ACCESS, canRead, canWriteMember, getFamilyAccess } from "../lib/documentAccess.js";
@@ -157,6 +158,15 @@ router.put(
         .set({ attendance: attendance.value })
         .where(eq(appointments.id, existing.id))
         .returning();
+      // Village : la présence au rendez-vous d'un proche non connecté entre
+      // dans l'historique des relais (J+1, UC-33).
+      if (attendance.value) {
+        const [task] = await db
+          .select({ id: relayTasks.id })
+          .from(relayTasks)
+          .where(and(eq(relayTasks.appointmentId, existing.id), eq(relayTasks.appointmentDate, existing.appointmentDate)));
+        if (task) await logRelayEvent(task.id, attendance.value, req.user.id);
+      }
       res.json(updated);
     } catch (error) {
       console.error(error);

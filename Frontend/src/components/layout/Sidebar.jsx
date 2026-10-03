@@ -12,6 +12,7 @@ import {
   ChevronRight,
   UserCog,
   Bell,
+  TreePine,
 } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { useState } from "react";
@@ -23,6 +24,7 @@ const navItems = [
   { href: "/traitements", label: "Traitements", icon: Pill },
   { href: "/vaccinations", label: "Vaccinations", icon: Syringe },
   { href: "/documents", label: "Documents", icon: FileText },
+  { href: "/village", label: "Village", icon: TreePine },
   { href: "/famille", label: "Accès & rôles", icon: UserCog },
   { href: "/notifications", label: "Notifications", icon: Bell },
 ];

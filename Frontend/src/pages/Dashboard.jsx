@@ -195,7 +195,10 @@ export default function DashboardPage() {
         {/* Header */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
-            <h2 className="text-2xl font-bold text-gray-800">Famille {selectedFamily?.name}</h2>
+            <h2 className="text-2xl font-bold text-gray-800">
+              {/* Pas de double préfixe si le nom commence déjà par « Famille » */}
+              {/^\s*famille(\s|$)/i.test(selectedFamily?.name ?? "") ? selectedFamily?.name : `Famille ${selectedFamily?.name ?? ""}`}
+            </h2>
             <p className="text-gray-500 text-sm mt-0.5">
               {data?.membersCount ?? 0} membre{(data?.membersCount ?? 0) > 1 ? "s" : ""}
             </p>
@@ -314,7 +317,14 @@ export default function DashboardPage() {
                 {data.members.slice(0, 5).map((m) => (
                   <div key={m.id} className="flex items-center justify-between gap-3 p-3 rounded-xl hover:bg-gray-50 transition-colors">
                     <MemberAvatar member={m} size="md" showName showAge />
-                    {myMember?.id === m.id && <Badge variant="success">Ma fiche</Badge>}
+                    <div className="flex items-center gap-1.5 flex-wrap justify-end">
+                      {(m.relayPending || memberById(m.id)?.relayPending) && (
+                        <Badge variant="warning" className="px-2 py-0.5 text-[11px]">
+                          À relayer
+                        </Badge>
+                      )}
+                      {myMember?.id === m.id && <Badge variant="success">Ma fiche</Badge>}
+                    </div>
                   </div>
                 ))}
               </div>

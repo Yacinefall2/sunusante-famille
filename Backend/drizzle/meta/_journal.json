@@ -29,6 +29,20 @@
       "when": 1791031633860,
       "tag": "0003_rappels_notifications",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1791038975808,
+      "tag": "0004_village",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1791039978940,
+      "tag": "0005_dates_milliseconde",
+      "breakpoints": true
     }
   ]
 }

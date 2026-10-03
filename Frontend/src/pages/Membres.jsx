@@ -357,7 +357,14 @@ export default function MembresPage() {
                   <div className="flex items-start justify-between mb-4">
                     <div className="space-y-2">
                       <MemberAvatar member={m} size="lg" showName showAge />
-                      {accessBadge(m)}
+                      <div className="flex flex-wrap gap-1.5">
+                        {accessBadge(m)}
+                        {m.relayPending && (
+                          <Badge variant="warning" className="px-2 py-0.5 text-[11px]">
+                            À relayer
+                          </Badge>
+                        )}
+                      </div>
                     </div>
                     <div className="flex gap-1" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
                       {canEdit(m) && (

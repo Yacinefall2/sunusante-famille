@@ -15,6 +15,7 @@ import DocumentsPage from "./pages/Documents.jsx";
 import FamilySettingsPage from "./pages/FamilySettings.jsx";
 import MaFichePage from "./pages/MaFiche.jsx";
 import NotificationsPage from "./pages/Notifications.jsx";
+import VillagePage from "./pages/Village.jsx";
 import { useFamily } from "./context/FamilyContext";
 
 // Tant que l'utilisateur n'a pas de fiche à lui dans la famille sélectionnée
@@ -49,6 +50,7 @@ export default function App() {
                   <Route path="/vaccinations" element={<VaccinationsPage />} />
                   <Route path="/documents" element={<DocumentsPage />} />
                   <Route path="/famille" element={<FamilySettingsPage />} />
+                  <Route path="/village" element={<VillagePage />} />
                   <Route path="/notifications" element={<NotificationsPage />} />
                   <Route path="*" element={<Navigate to="/dashboard" replace />} />
                 </Routes>

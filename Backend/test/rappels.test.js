@@ -258,6 +258,10 @@ describe("API des notifications", () => {
       ["appointment_reminder", true, true],
       ["medication_intake", true, false],
       ["vaccine_reminder", true, true],
+      ["relay_to_relay", true, true],
+      ["relay_escalation", true, true],
+      ["relay_alert", true, true],
+      ["relay_update", true, false],
     ]);
     expect((await as(f.fatou).put("/api/notifications/preferences").send({ category: "delivery_failure", inApp: false, email: false })).status).toBe(400);
   });

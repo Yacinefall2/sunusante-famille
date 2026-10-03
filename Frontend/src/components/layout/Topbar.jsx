@@ -11,6 +11,7 @@ const pageTitles = {
   "/vaccinations": { title: "Carnet de vaccinations", subtitle: "Suivi du calendrier vaccinal" },
   "/documents": { title: "Documents médicaux", subtitle: "Ordonnances, résultats et bilans" },
   "/famille": { title: "Accès & rôles", subtitle: "Comptes, rôles et invitations" },
+  "/village": { title: "Village", subtitle: "Proches non connectés et rappels relayés" },
   "/notifications": { title: "Notifications", subtitle: "Rappels et préférences" },
 };
 

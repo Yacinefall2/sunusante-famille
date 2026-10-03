@@ -12,7 +12,9 @@ import {
   users,
   vaccinations,
 } from "../db/schema.js";
-import { DELIVERY_FAILURE, getPreference } from "../lib/notificationPreferences.js";
+import { DELIVERY_FAILURE } from "../lib/notificationPreferences.js";
+import { notify } from "./notify.js";
+import { villageTick } from "./village.js";
 import { sendNotificationEmail } from "../lib/mailer.js";
 import { APP_TIMEZONE, addDays, formatDate, formatDateTime, localDate, zonedTime } from "../lib/time.js";
 
@@ -49,34 +51,6 @@ async function recipientsFor(memberId, { holderFirst = false } = {}) {
   return [...all.values()];
 }
 
-// Crée une notification selon les préférences du destinataire (UC-65).
-// Rien n'est créé si les deux canaux sont coupés ; aucun doublon possible.
-export async function notify({ user, category, dedupeKey, title, body, link, familyId, memberId, intakeId, now }) {
-  const forced = category === DELIVERY_FAILURE;
-  const pref = forced ? { inApp: true, email: false } : await getPreference(user.id, category);
-  if (!pref.inApp && !pref.email) return null;
-  const [row] = await db
-    .insert(notifications)
-    .values({
-      userId: user.id,
-      familyId,
-      memberId,
-      category,
-      dedupeKey,
-      title,
-      body,
-      link,
-      intakeId,
-      inApp: pref.inApp,
-      emailStatus: pref.email && user.emailVerified ? "pending" : "skipped",
-      emailNextAttemptAt: now,
-      createdAt: now,
-    })
-    .onConflictDoNothing({ target: notifications.dedupeKey })
-    .returning();
-  return row ?? null;
-}
-
 // ── Rendez-vous : J-3 puis J-1 (UC-54) ───────────────────────────────────────
 async function appointmentReminders(now) {
   const rows = await db
@@ -86,6 +60,8 @@ async function appointmentReminders(now) {
     .where(
       and(
         ne(appointments.status, "cancelled"),
+        // Proche non connecté : rappels pris en charge par le Village (village.js)
+        ne(members.status, "non_connecte"),
         gt(appointments.appointmentDate, now),
         lte(appointments.appointmentDate, new Date(now.getTime() + 72 * HOUR))
       )
@@ -318,6 +294,7 @@ async function dispatchEmails(now, sendMail) {
 
 export async function runReminderTick({ now = new Date(), sendMail = sendNotificationEmail } = {}) {
   await appointmentReminders(now);
+  await villageTick(now);
   await vaccineReminders(now);
   await medicationReminders(now);
   await dispatchEmails(now, sendMail);
@@ -330,4 +307,5 @@ export async function markIntakeNotificationsRead(intakeId, now = new Date()) {
     .set({ readAt: now })
     .where(and(eq(notifications.intakeId, intakeId), isNull(notifications.readAt)));
 }
+
 

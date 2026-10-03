@@ -1,7 +1,7 @@
 import { Router } from "express";
-import { eq, and } from "drizzle-orm";
+import { eq, and, gt, isNull } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { members, familyMemberships, documentRoles } from "../db/schema.js";
+import { members, familyMemberships, documentRoles, relayTasks } from "../db/schema.js";
 import { requireFamilyMembership } from "../middleware/auth.js";
 import { canRead, canWriteMember, getFamilyAccess, setDocumentRole } from "../lib/documentAccess.js";
 
@@ -59,6 +59,15 @@ router.get(
       const all = await db.select().from(members).where(eq(members.familyId, req.familyId)).orderBy(members.id);
       const access = await getFamilyAccess(req);
       const linked = await linkedMemberIdsOfFamily(req.familyId);
+      // Badge « À relayer » (§4.5) : rendez-vous à venir d'un proche non
+      // connecté que personne n'a encore marqué « Prévenu ». Visible du
+      // gestionnaire, et du relais une fois le rappel escaladé vers lui.
+      const openTasks = await db
+        .select({ memberId: relayTasks.memberId, escalatedAt: relayTasks.escalatedAt })
+        .from(relayTasks)
+        .where(and(eq(relayTasks.familyId, req.familyId), isNull(relayTasks.notifiedAt), gt(relayTasks.appointmentDate, new Date())));
+      const relayPending = (memberId, level) =>
+        openTasks.some((t) => t.memberId === memberId && (level === "full" || (level === "relay" && t.escalatedAt)));
       const myRoles = new Map(
         (
           await db
@@ -77,6 +86,7 @@ router.get(
             isMine: req.membership.linkedMemberId === m.id,
             hasAccount: linked.has(m.id),
             myDocumentRole: myRoles.get(m.id) ?? null,
+            relayPending: relayPending(m.id, level),
           };
         })
       );

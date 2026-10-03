@@ -75,7 +75,9 @@ export const appointments = pgTable("appointments", {
   title: varchar("title", { length: 255 }).notNull(),
   doctorName: varchar("doctor_name", { length: 255 }),
   location: varchar("location", { length: 255 }),
-  appointmentDate: timestamp("appointment_date").notNull(),
+  // Précision à la milliseconde, comme les dates JavaScript : une date
+  // relue doit être strictement égale à celle écrite (tâches du Village).
+  appointmentDate: timestamp("appointment_date", { precision: 3 }).notNull(),
   notes: text("notes"),
   // Statut (M3) : pending (en attente) | confirmed (confirmé) | cancelled (annulé)
   status: varchar("status", { length: 50 }).default("pending").notNull(),
@@ -323,3 +325,47 @@ export const notificationPreferences = pgTable(
   },
   (t) => [uniqueIndex("notification_preferences_user_category_uq").on(t.userId, t.category)]
 );
+
+// ── Village : rappels relayés vers un proche non connecté (§4, UC-28 à 42) ────
+// Une tâche par rendez-vous (et par date) d'une fiche « non connecté ». Le
+// proche ne voit jamais l'application : la tâche pilote une action humaine
+// (l'appel téléphonique) et en garde la trace.
+export const relayTasks = pgTable(
+  "relay_tasks",
+  {
+    id: serial("id").primaryKey(),
+    appointmentId: integer("appointment_id")
+      .references(() => appointments.id, { onDelete: "cascade" })
+      .notNull(),
+    memberId: integer("member_id")
+      .references(() => members.id, { onDelete: "cascade" })
+      .notNull(),
+    familyId: integer("family_id")
+      .references(() => families.id, { onDelete: "cascade" })
+      .notNull(),
+    appointmentDate: timestamp("appointment_date", { precision: 3 }).notNull(),
+    // J-3 : « à relayer » envoyé au(x) gestionnaire(s)
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    // J-1 : relance au(x) gestionnaire(s) ; +3 h : escalade vers les relais
+    followUpAt: timestamp("follow_up_at"),
+    escalatedAt: timestamp("escalated_at"),
+    // « Prévenu » : clôt la tâche pour tout le monde (gestionnaire ou relais)
+    notifiedAt: timestamp("notified_at"),
+    notifiedByUserId: integer("notified_by_user_id").references(() => users.id, { onDelete: "set null" }),
+    // J+1 : demande au gestionnaire si le proche s'est rendu au rendez-vous
+    attendancePromptAt: timestamp("attendance_prompt_at"),
+  },
+  (t) => [uniqueIndex("relay_tasks_appointment_date_uq").on(t.appointmentId, t.appointmentDate)]
+);
+
+// Historique horodaté des relais (UC-36, §10 « Traçabilité »).
+// type : to_relay | follow_up | escalated | notified | unreachable | attended | missed
+export const relayEvents = pgTable("relay_events", {
+  id: serial("id").primaryKey(),
+  taskId: integer("task_id")
+    .references(() => relayTasks.id, { onDelete: "cascade" })
+    .notNull(),
+  type: varchar("type", { length: 30 }).notNull(),
+  userId: integer("user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});

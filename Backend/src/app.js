@@ -16,6 +16,7 @@ import uploadsRouter from "./routes/uploads.js";
 import notificationsRouter from "./routes/notifications.js";
 import intakesRouter from "./routes/intakes.js";
 import mailWebhooksRouter from "./routes/mailWebhooks.js";
+import villageRouter from "./routes/village.js";
 import { requireAuth, requireVerifiedEmail } from "./middleware/auth.js";
 
 const app = express();
@@ -46,6 +47,7 @@ app.use("/api/family-memberships", requireAuth, requireVerifiedEmail, familyMemb
 app.use("/api/document-roles", requireAuth, requireVerifiedEmail, documentRolesRouter);
 app.use("/api/notifications", requireAuth, requireVerifiedEmail, notificationsRouter);
 app.use("/api/intakes", requireAuth, requireVerifiedEmail, intakesRouter);
+app.use("/api/village", requireAuth, requireVerifiedEmail, villageRouter);
 
 app.get("/api/health", (req, res) => res.json({ status: "ok" }));
 
