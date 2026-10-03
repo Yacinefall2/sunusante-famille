@@ -4,13 +4,28 @@ import { db } from "../db/index.js";
 import { members, familyMemberships, documentRoles, relayTasks, users } from "../db/schema.js";
 import { requireFamilyMembership } from "../middleware/auth.js";
 import { canRead, canWriteMember, getFamilyAccess, setDocumentRole } from "../lib/documentAccess.js";
+import { ACCOUNT_MIN_AGE, GENDERS, KINSHIPS, ageOn, effectiveRole } from "../lib/family.js";
 
 // Axe 3 du modèle d'acteurs — statuts valides pour une fiche membre.
 const VALID_STATUSES = ["connecte_autonome", "connecte_assiste", "adolescent", "mineur_gere", "non_connecte"];
 
 // Champs d'identité, visibles de tout le foyer (liste « Membres de la
 // famille », §4.5). Tout le reste de la fiche relève du dossier médical.
-const IDENTITY_FIELDS = ["id", "familyId", "firstName", "lastName", "avatarColor", "status", "createdAt"];
+// Le sexe, la date de naissance et le lien de parenté en font partie : ils
+// servent à afficher à chacun « petit frère, 8 ans », « grand-mère »…
+const IDENTITY_FIELDS = [
+  "id",
+  "familyId",
+  "firstName",
+  "lastName",
+  "avatarColor",
+  "status",
+  "createdAt",
+  "gender",
+  "dateOfBirth",
+  "kinship",
+  "kinshipRelatedMemberId",
+];
 
 const router = Router();
 
@@ -18,6 +33,8 @@ function memberValues(body) {
   const { firstName, lastName, dateOfBirth, gender, bloodType, allergies, notes, avatarColor, status } = body;
   const text = (v) => (typeof v === "string" && v.trim() ? v.trim() : null);
   return {
+    kinship: body.kinship || null,
+    kinshipRelatedMemberId: parseInt(body.kinshipRelatedMemberId) || null,
     firstName: firstName?.trim(),
     lastName: lastName?.trim(),
     dateOfBirth: dateOfBirth || null,
@@ -51,8 +68,8 @@ async function familyAccounts(familyId) {
     .where(eq(familyMemberships.familyId, familyId));
 }
 
-const publicAccount = (a) =>
-  a ? { userId: a.userId, name: a.name, role: a.role, isPrimaryAdmin: a.isPrimaryAdmin } : null;
+const publicAccount = (a, dateOfBirth = null) =>
+  a ? { userId: a.userId, name: a.name, role: effectiveRole(a.role, dateOfBirth), isPrimaryAdmin: a.isPrimaryAdmin } : null;
 
 // Le foyer, sans ambiguïté entre membres et comptes : un MEMBRE est une
 // personne de la famille (avec sa fiche) ; un COMPTE est un accès à
@@ -79,6 +96,41 @@ router.get(
     }
   }
 );
+
+// Contrôle commun à la création et à la modification d'une fiche : identité
+// complète (date de naissance, sexe, lien de parenté), lien « parent »
+// réservé aux administrateurs, règle des 15 ans pour la fiche d'un compte.
+// Complète `values` (lien forcé à « parent » pour un administrateur).
+async function checkFiche(req, values, { ficheId = null, isMine = false } = {}) {
+  if (!values.firstName || !values.lastName) return "Prénom et nom requis";
+  if (!values.dateOfBirth || Number.isNaN(Date.parse(values.dateOfBirth)) || new Date(values.dateOfBirth) > new Date()) {
+    return "Date de naissance requise (elle détermine l'âge et le lien affiché)";
+  }
+  if (!GENDERS.includes(values.gender)) return "Sexe requis";
+
+  let owner = null; // compte relié à cette fiche
+  if (ficheId) {
+    [owner] = await db.select().from(familyMemberships).where(eq(familyMemberships.linkedMemberId, ficheId));
+  }
+  const ownerRole = isMine ? req.membership.storedRole : owner?.role;
+  if (ownerRole === "parent") {
+    values.kinship = "parent";
+    values.kinshipRelatedMemberId = null;
+  } else {
+    if (!KINSHIPS.includes(values.kinship)) return "Lien de parenté requis";
+    if (values.kinship === "parent") return "Le lien « Parent » est réservé aux administrateurs du foyer";
+    if ((isMine || owner) && ageOn(values.dateOfBirth) < ACCOUNT_MIN_AGE) {
+      return `Moins de ${ACCOUNT_MIN_AGE} ans : pas de compte personnel, la fiche est tenue par les parents`;
+    }
+  }
+  if (values.kinshipRelatedMemberId) {
+    const [related] = await db.select({ familyId: members.familyId }).from(members).where(eq(members.id, values.kinshipRelatedMemberId));
+    if (!related || related.familyId !== req.familyId || values.kinshipRelatedMemberId === ficheId) {
+      values.kinshipRelatedMemberId = null;
+    }
+  }
+  return null;
+}
 
 async function linkedMemberIdsOfFamily(familyId) {
   const rows = await db
@@ -132,7 +184,8 @@ router.get(
             access: level,
             isMine: req.membership.linkedMemberId === m.id,
             hasAccount: accountByFiche.has(m.id),
-            account: publicAccount(accountByFiche.get(m.id)),
+            // Rôle effectif : un compte de moins de 18 ans est « dependent ».
+            account: publicAccount(accountByFiche.get(m.id), m.dateOfBirth),
             myDocumentRole: myRoles.get(m.id) ?? null,
             relayPending: relayPending(m.id, level),
           };
@@ -154,13 +207,12 @@ router.post(
   async (req, res) => {
     try {
       const values = memberValues(req.body);
-      if (!values.firstName || !values.lastName) {
-        return res.status(400).json({ error: "Données manquantes" });
-      }
       const isMine = req.body.isMine === true;
       if (isMine && req.membership.linkedMemberId) {
         return res.status(409).json({ error: "Votre fiche existe déjà" });
       }
+      const invalid = await checkFiche(req, values, { isMine });
+      if (invalid) return res.status(400).json({ error: invalid });
 
       const [created] = await db
         .insert(members)
@@ -219,7 +271,14 @@ router.post(
         return res.status(403).json({ error: "Vous ne pouvez désigner comme vôtre qu'une fiche que vous gérez" });
       }
 
+      const [fiche] = await db.select().from(members).where(eq(members.id, memberId));
+      if (req.membership.storedRole !== "parent" && ageOn(fiche.dateOfBirth) !== null && ageOn(fiche.dateOfBirth) < ACCOUNT_MIN_AGE) {
+        return res.status(400).json({ error: `Moins de ${ACCOUNT_MIN_AGE} ans : pas de compte personnel, la fiche est tenue par les parents` });
+      }
       await db.update(familyMemberships).set({ linkedMemberId: memberId }).where(eq(familyMemberships.id, req.membership.id));
+      if (req.membership.storedRole === "parent") {
+        await db.update(members).set({ kinship: "parent", kinshipRelatedMemberId: null }).where(eq(members.id, memberId));
+      }
       // Titulaire désormais : le rôle Gestionnaire sur sa propre fiche est superflu.
       await db.delete(documentRoles).where(eq(documentRoles.id, managed.id));
       res.json({ success: true, linkedMemberId: memberId });
@@ -248,9 +307,8 @@ router.put("/", requireFamilyMembership(resolveFamilyIdFromMemberId), async (req
       return res.status(403).json({ error: "Vous n'avez pas les droits d'écriture sur ce dossier" });
     }
     const values = memberValues(req.body);
-    if (!values.firstName || !values.lastName) {
-      return res.status(400).json({ error: "Données manquantes" });
-    }
+    const invalid = await checkFiche(req, values, { ficheId: memberId });
+    if (invalid) return res.status(400).json({ error: invalid });
     const [updated] = await db.update(members).set(values).where(eq(members.id, memberId)).returning();
     res.json(updated);
   } catch (error) {

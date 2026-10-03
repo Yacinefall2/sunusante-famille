@@ -33,6 +33,7 @@ import {
   myRelationSentence,
   myRelationBadge,
 } from "../lib/roles";
+import { kinshipLabel, memberSubtitle } from "../lib/kinship";
 import toast from "react-hot-toast";
 
 // Page "Fiches médicales" : les dossiers médicaux que l'utilisateur peut
@@ -46,6 +47,7 @@ export default function FichesPage() {
     myRole,
     isDependent,
     members,
+    myMember,
     membersLoading: loading,
     reloadMembers,
   } = useFamily();
@@ -308,8 +310,11 @@ export default function FichesPage() {
                 >
                   <div className="flex items-start justify-between mb-3">
                     <div className="space-y-2">
-                      <MemberAvatar member={m} size="lg" showName showAge />
+                      <MemberAvatar member={m} size="lg" showName />
+                      <p className="text-xs text-gray-500">{memberSubtitle(m)}</p>
                       <div className="flex flex-wrap gap-1.5">
+                        {/* Lien de parenté vu par l'utilisateur courant */}
+                        <Badge variant={m.isMine ? "success" : "default"}>{kinshipLabel(m, myMember, members)}</Badge>
                         <RelationBadge member={m} />
                         {m.relayPending && (
                           <Badge variant="warning" className="px-2 py-0.5 text-[11px]">
@@ -356,7 +361,7 @@ export default function FichesPage() {
                     {m.gender && (
                       <div className="flex items-center gap-2 text-sm text-gray-600">
                         <Heart size={13} className="text-pink-400" />
-                        {m.gender === "M" ? "Homme" : m.gender === "F" ? "Femme" : m.gender}
+                        {m.gender === "M" ? "Homme" : m.gender === "F" ? "Femme" : "Sexe à préciser"}
                       </div>
                     )}
                     {m.bloodType && (
@@ -410,6 +415,9 @@ export default function FichesPage() {
                 </h3>
                 <p className="text-sm text-gray-500">Fiche créée le {formatDate(viewing.createdAt)}</p>
                 <div className="flex items-center gap-2 flex-wrap mt-1">
+                  <Badge variant={viewing.isMine ? "success" : "default"}>
+                    {kinshipLabel(viewing, myMember, members)}
+                  </Badge>
                   <RelationBadge member={viewing} />
                   <span className="text-xs text-gray-500">
                     {viewing.account ? `Titulaire : ${viewing.account.name}` : "Sans compte — aucun compte relié à cette fiche"}
@@ -427,14 +435,14 @@ export default function FichesPage() {
                   <p className="text-xs text-gray-400 font-medium">Date de naissance</p>
                   <p className="text-sm font-semibold text-gray-700">
                     {viewing.dateOfBirth
-                      ? `${formatDate(viewing.dateOfBirth)} (${calculateAge(viewing.dateOfBirth)} ans)`
-                      : "Non renseignée"}
+                      ? `${formatDate(viewing.dateOfBirth)} (${memberSubtitle(viewing)})`
+                      : "À préciser"}
                   </p>
                 </div>
                 <div className="bg-gray-50 rounded-xl p-3">
-                  <p className="text-xs text-gray-400 font-medium">Genre</p>
+                  <p className="text-xs text-gray-400 font-medium">Sexe</p>
                   <p className="text-sm font-semibold text-gray-700">
-                    {viewing.gender === "M" ? "Homme" : viewing.gender === "F" ? "Femme" : viewing.gender || "Non précisé"}
+                    {viewing.gender === "M" ? "Homme" : viewing.gender === "F" ? "Femme" : "À préciser"}
                   </p>
                 </div>
                 <div className="bg-gray-50 rounded-xl p-3">

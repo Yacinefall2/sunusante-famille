@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link } from "react-router-dom";
 import { AppShell } from "../components/layout/AppShell";
 import { useFamily } from "../context/FamilyContext";
 import { Button } from "../components/ui/Button";
 import { Badge } from "../components/ui/Badge";
 import { MemberAvatar } from "../components/members/MemberAvatar";
 import { MemberFormModal } from "../components/members/MemberFormModal";
-import { Plus, Loader2, Users, Info, ChevronDown, FileHeart, UserX, UserCircle } from "lucide-react";
+import { Link } from "react-router-dom";
+import { Plus, Loader2, Users, Info, ChevronDown, UserX, UserCircle, AlertCircle } from "lucide-react";
 import {
   accountRoleLabel,
   familyRoleBadgeVariant,
@@ -14,6 +14,7 @@ import {
   myRelationSentence,
   noAccountSubtitle,
 } from "../lib/roles";
+import { kinshipIncomplete, kinshipLabel, memberSubtitle } from "../lib/kinship";
 
 const plural = (n, word) => `${n} ${word}${n > 1 ? "s" : ""}`;
 
@@ -28,6 +29,8 @@ export default function MembresPage() {
     isPrimaryAdmin,
     myRole,
     members,
+    myMember,
+    canWriteMember,
     membersLoading: loading,
   } = useFamily();
   const [household, setHousehold] = useState(null);
@@ -145,11 +148,13 @@ export default function MembresPage() {
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {members.map((m) => {
-              const canOpen = m.access === "full" || m.access === "read";
               return (
                 <div key={m.id} className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 flex flex-col gap-3">
                   <div className="flex items-start justify-between gap-2">
-                    <MemberAvatar member={m} size="lg" showName />
+                    <div className="min-w-0">
+                      <MemberAvatar member={m} size="lg" showName />
+                      <p className="text-xs text-gray-500 mt-1 pl-[68px]">{memberSubtitle(m)}</p>
+                    </div>
                     {m.relayPending && (
                       <Badge variant="warning" className="px-2 py-0.5 text-[11px] flex-shrink-0">
                         À relayer
@@ -158,19 +163,43 @@ export default function MembresPage() {
                   </div>
 
                   <div className="flex flex-wrap gap-1.5">
-                    <Badge variant={familyRoleBadgeVariant(m.account?.role, m.account?.isPrimaryAdmin)}>
-                      {accountRoleLabel(m.account)}
-                    </Badge>
-                    {m.isMine && <Badge variant="success">Vous</Badge>}
+                    {/* Lien de parenté vu par l'utilisateur courant ("Petit frère", "Grand-mère", "Vous"...) */}
+                    <Badge variant={m.isMine ? "success" : "info"}>{kinshipLabel(m, myMember, members)}</Badge>
+                    {m.account?.role === "parent" && (
+                      <Badge variant={familyRoleBadgeVariant("parent", m.account.isPrimaryAdmin)}>
+                        {m.account.isPrimaryAdmin ? "Administrateur" : "Co-administrateur"}
+                      </Badge>
+                    )}
                   </div>
+
+                  {kinshipIncomplete(m) && (
+                    <p className="flex items-center gap-1.5 text-xs text-amber-700 bg-amber-50 rounded-xl px-3 py-1.5">
+                      <AlertCircle size={13} className="flex-shrink-0" />
+                      <span>
+                        À compléter : lien, âge ou sexe
+                        {canWriteMember(m.id) && (
+                          <>
+                            {" · "}
+                            <Link to={`/fiches?fiche=${m.id}`} className="font-semibold underline hover:text-amber-900">
+                              Compléter
+                            </Link>
+                          </>
+                        )}
+                      </span>
+                    </p>
+                  )}
 
                   <div className="space-y-1 text-xs">
                     <p className="flex items-center gap-1.5 text-gray-600">
                       <UserCircle size={13} className="text-gray-400 flex-shrink-0" />
-                      {m.account ? `Compte : ${m.account.name}` : noAccountSubtitle(m.status)}
+                      {m.account ? `Compte : ${m.account.name}` : noAccountSubtitle(m.status, m.dateOfBirth)}
                     </p>
+                    {/* Niveau d'accès déduit de l'âge par le serveur */}
+                    {m.account?.role === "dependent" && (
+                      <p className="text-gray-500 pl-[19px]">Compte adolescent (lecture seule jusqu&apos;à 18 ans)</p>
+                    )}
                     {/* Sans compte, la ligne du dessus décrit déjà le statut : pas de doublon. */}
-                    {(m.account || memberStatusLabel(m.status) !== noAccountSubtitle(m.status)) && (
+                    {(m.account || memberStatusLabel(m.status) !== noAccountSubtitle(m.status, m.dateOfBirth)) && (
                       <p className="text-gray-400">Statut : {memberStatusLabel(m.status)}</p>
                     )}
                   </div>
@@ -179,14 +208,6 @@ export default function MembresPage() {
                     {myRelationSentence(m, { myRole, isPrimaryAdmin })}
                   </p>
 
-                  {canOpen && (
-                    <Link to={`/fiches?fiche=${m.id}`} className="mt-auto">
-                      <Button variant="outline" size="sm" className="w-full">
-                        <FileHeart size={14} />
-                        Ouvrir la fiche
-                      </Button>
-                    </Link>
-                  )}
                 </div>
               );
             })}

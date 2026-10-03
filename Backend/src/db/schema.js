@@ -45,6 +45,16 @@ export const members = pgTable("members", {
   // de l'Axe 1 family_memberships.role et de l'Axe 2 document_roles).
   // Valeurs : connecte_autonome | connecte_assiste | adolescent | mineur_gere | non_connecte
   status: varchar("status", { length: 30 }).default("connecte_autonome").notNull(),
+  // Lien de parenté avec les parents du foyer (les administrateurs). Le
+  // libellé affiché (« petit frère », « grand-mère », « neveu »…) est calculé
+  // pour chaque personne qui regarde, à partir de ce lien, du sexe et de la
+  // date de naissance (lib/kinship côté interface).
+  // parent | enfant | petit_enfant | grand_parent | oncle_tante | neveu_niece | cousin | autre
+  kinship: varchar("kinship", { length: 30 }),
+  // Membre par qui passe le lien : le parent dont c'est le père ou la mère
+  // (grand_parent), le frère ou la sœur (oncle_tante) ; l'enfant dont c'est
+  // l'enfant (petit_enfant)… Optionnel.
+  kinshipRelatedMemberId: integer("kinship_related_member_id").references(() => members.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

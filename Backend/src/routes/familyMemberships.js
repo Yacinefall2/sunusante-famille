@@ -4,6 +4,7 @@ import { db } from "../db/index.js";
 import { familyMemberships, users, members, documentRoles } from "../db/schema.js";
 import { requireFamilyMembership } from "../middleware/auth.js";
 import { canWriteMember } from "../lib/documentAccess.js";
+import { ageOn, effectiveRole } from "../lib/family.js";
 
 const router = Router();
 
@@ -27,11 +28,14 @@ router.get(
           userId: users.id,
           name: users.name,
           email: users.email,
+          dateOfBirth: members.dateOfBirth,
         })
         .from(familyMemberships)
         .innerJoin(users, eq(familyMemberships.userId, users.id))
+        .leftJoin(members, eq(members.id, familyMemberships.linkedMemberId))
         .where(eq(familyMemberships.familyId, req.familyId));
-      res.json(rows);
+      // Rôle effectif (selon l'âge de la fiche) : c'est lui qui fait foi.
+      res.json(rows.map(({ dateOfBirth, ...r }) => ({ ...r, role: effectiveRole(r.role, dateOfBirth), age: ageOn(dateOfBirth) })));
     } catch (error) {
       console.error(error);
       res.status(500).json({ error: "Erreur serveur" });
@@ -132,6 +136,13 @@ router.put("/", requireFamilyMembership(resolveFamilyIdFromMembershipId, { roles
       .set({ role, linkedMemberId: newLinkedMemberId })
       .where(eq(familyMemberships.id, membershipId))
       .returning();
+    // Le lien « Parent » suit le rôle d'administrateur.
+    if (newLinkedMemberId && (role === "parent") !== (existing.role === "parent")) {
+      await db
+        .update(members)
+        .set(role === "parent" ? { kinship: "parent", kinshipRelatedMemberId: null } : { kinship: null })
+        .where(eq(members.id, newLinkedMemberId));
+    }
     res.json(updated);
   } catch (error) {
     console.error(error);

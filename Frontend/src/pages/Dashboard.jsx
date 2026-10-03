@@ -22,7 +22,8 @@ import {
   Heart,
 } from "lucide-react";
 import { formatDateTime, formatDate, APPOINTMENT_STATUSES } from "../lib/utils";
-import { accountRoleLabel, familyRoleBadgeVariant, noAccountSubtitle } from "../lib/roles";
+import { familyRoleBadgeVariant, noAccountSubtitle } from "../lib/roles";
+import { kinshipLabel, memberSubtitle } from "../lib/kinship";
 import { IntakeAnswerButtons, NOTIFICATIONS_REFRESH_EVENT } from "../components/notifications/intakes";
 import { format, isToday, parseISO } from "date-fns";
 import toast from "react-hot-toast";
@@ -332,7 +333,7 @@ export default function DashboardPage() {
                     <div className="min-w-0">
                       <MemberAvatar member={m} size="md" showName />
                       <p className="text-xs text-gray-400 mt-0.5 pl-[52px] truncate">
-                        {m.account ? `Compte : ${m.account.name}` : noAccountSubtitle(m.status)}
+                        {memberSubtitle(m)} · {m.account ? `Compte : ${m.account.name}` : noAccountSubtitle(m.status, m.dateOfBirth)}
                       </p>
                     </div>
                     <div className="flex items-center gap-1.5 flex-wrap justify-end">
@@ -341,10 +342,15 @@ export default function DashboardPage() {
                           À relayer
                         </Badge>
                       )}
-                      {myMember?.id === m.id && <Badge variant="success">Vous</Badge>}
-                      <Badge variant={familyRoleBadgeVariant(m.account?.role, m.account?.isPrimaryAdmin)}>
-                        {accountRoleLabel(m.account)}
+                      {/* Lien de parenté vu par l'utilisateur ("Vous", "Petit frère"...) */}
+                      <Badge variant={myMember?.id === m.id ? "success" : "info"}>
+                        {kinshipLabel(m, myMember, members)}
                       </Badge>
+                      {m.account?.role === "parent" && (
+                        <Badge variant={familyRoleBadgeVariant("parent", m.account.isPrimaryAdmin)}>
+                          {m.account.isPrimaryAdmin ? "Administrateur" : "Co-administrateur"}
+                        </Badge>
+                      )}
                     </div>
                   </div>
                 ))}

@@ -28,6 +28,7 @@ import { Button } from "../components/ui/Button";
 import { notifyNotificationsChanged } from "../components/notifications/intakes";
 import { useFamily } from "../context/FamilyContext";
 import { cn, formatDateTime, getAttendance } from "../lib/utils";
+import { kinshipLabel, memberSubtitle } from "../lib/kinship";
 import { ficheRoleShortLabel } from "../lib/roles";
 
 // Libellés des événements de l'historique des relais.
@@ -229,9 +230,17 @@ export default function VillagePage() {
 
 // `role` : rôle de l'utilisateur sur la fiche du proche ("gestionnaire" | "relais")
 function CardHeader({ member, role, pending }) {
+  // Fiche complète (lien de parenté, sexe, date de naissance) depuis le contexte
+  const { members, myMember } = useFamily();
+  const full = members.find((m) => m.id === member.id) ?? member;
   return (
     <div className="flex items-center justify-between gap-3 flex-wrap">
-      <MemberAvatar member={member} size="lg" showName />
+      <div className="min-w-0">
+        <MemberAvatar member={member} size="lg" showName />
+        <p className="text-xs text-gray-500 mt-1 pl-[68px]">
+          {kinshipLabel(full, myMember, members)} · {memberSubtitle(full)}
+        </p>
+      </div>
       <div className="flex items-center gap-2">
         {pending && <Badge variant="warning">À relayer</Badge>}
         <Badge variant={role === "relais" ? "warning" : "info"}>{ficheRoleShortLabel(role)}</Badge>

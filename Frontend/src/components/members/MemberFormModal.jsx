@@ -6,13 +6,13 @@ import { CONTACT_FIELDS_DEFAULTS, contactFieldsFromMember, MemberContactFields }
 import { useFamily } from "../../context/FamilyContext";
 import { AVATAR_COLORS, BLOOD_TYPES } from "../../lib/utils";
 import { MEMBER_STATUS_OPTIONS } from "../../lib/roles";
+import { IDENTITY_FIELDS_DEFAULTS, IdentityFields, identityError, identityPayload } from "./IdentityFields";
 import toast from "react-hot-toast";
 
 const defaultForm = {
   firstName: "",
   lastName: "",
-  dateOfBirth: "",
-  gender: "",
+  ...IDENTITY_FIELDS_DEFAULTS,
   bloodType: "",
   allergies: "",
   notes: "",
@@ -37,7 +37,9 @@ export function MemberFormModal({ open, onClose, editing = null, onSaved }) {
         firstName: editing.firstName,
         lastName: editing.lastName,
         dateOfBirth: editing.dateOfBirth ?? "",
-        gender: editing.gender ?? "",
+        gender: editing.gender === "M" || editing.gender === "F" ? editing.gender : "",
+        kinship: editing.kinship ?? "",
+        kinshipRelatedMemberId: editing.kinshipRelatedMemberId ? String(editing.kinshipRelatedMemberId) : "",
         bloodType: editing.bloodType ?? "",
         allergies: editing.allergies ?? "",
         notes: editing.notes ?? "",
@@ -53,17 +55,28 @@ export function MemberFormModal({ open, onClose, editing = null, onSaved }) {
 
   const f = (key) => (e) => setForm((prev) => ({ ...prev, [key]: e.target.value }));
 
+  // Fiche d'un administrateur : le lien "parent" est fixé par le serveur
+  const isAdminFiche = !!editing && (editing.account?.role === "parent" || editing.kinship === "parent");
+
   const save = async () => {
     if (!form.firstName.trim() || !form.lastName.trim()) {
       toast.error("Prénom et nom sont requis");
       return;
     }
+    const identityMsg = identityError(form, { isAdmin: isAdminFiche });
+    if (identityMsg) {
+      toast.error(identityMsg);
+      return;
+    }
+    // Les champs d'identité sont envoyés via identityPayload (lien omis pour un administrateur)
+    const { kinship: _k, kinshipRelatedMemberId: _r, ...rest } = form;
+    const body = { ...rest, ...identityPayload(form, { isAdmin: isAdminFiche }) };
     setSaving(true);
     try {
       const res = await fetch("/api/members", {
         method: editing ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(editing ? { id: editing.id, ...form } : { familyId: selectedFamily.id, ...form }),
+        body: JSON.stringify(editing ? { id: editing.id, ...body } : { familyId: selectedFamily.id, ...body }),
       });
       if (res.ok) {
         toast.success(editing ? "Fiche modifiée !" : "Membre ajouté et fiche créée !");
@@ -118,15 +131,13 @@ export function MemberFormModal({ open, onClose, editing = null, onSaved }) {
           <Input label="Nom *" placeholder="Dupont" value={form.lastName} onChange={f("lastName")} />
         </div>
 
-        <div className="grid grid-cols-2 gap-4">
-          <Input label="Date de naissance" type="date" value={form.dateOfBirth} onChange={f("dateOfBirth")} />
-          <Select label="Genre" value={form.gender} onChange={f("gender")}>
-            <option value="">Non précisé</option>
-            <option value="M">Homme</option>
-            <option value="F">Femme</option>
-            <option value="Autre">Autre</option>
-          </Select>
-        </div>
+        <IdentityFields
+          form={form}
+          onChange={(key, value) => setForm((p) => ({ ...p, [key]: value }))}
+          members={members}
+          excludeId={editing?.id ?? null}
+          isAdmin={isAdminFiche}
+        />
 
         <Select label="Groupe sanguin" value={form.bloodType} onChange={f("bloodType")}>
           <option value="">Non connu</option>

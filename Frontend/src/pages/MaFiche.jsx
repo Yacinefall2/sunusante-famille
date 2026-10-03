@@ -6,15 +6,15 @@ import { Button } from "../components/ui/Button";
 import { Input, Textarea, Select } from "../components/ui/Input";
 import { MemberAvatar } from "../components/members/MemberAvatar";
 import { CONTACT_FIELDS_DEFAULTS, MemberContactFields } from "../components/members/MemberContactFields";
-import { UserCheck, UserPlus, LogOut, ChevronDown } from "lucide-react";
+import { IDENTITY_FIELDS_DEFAULTS, IdentityFields, identityError, identityPayload } from "../components/members/IdentityFields";
+import { UserCheck, UserPlus, LogOut, ChevronDown, AlertTriangle } from "lucide-react";
 import { AVATAR_COLORS, BLOOD_TYPES } from "../lib/utils";
 import toast from "react-hot-toast";
 
 const defaultForm = {
   firstName: "",
   lastName: "",
-  dateOfBirth: "",
-  gender: "",
+  ...IDENTITY_FIELDS_DEFAULTS,
   bloodType: "",
   allergies: "",
   ...CONTACT_FIELDS_DEFAULTS,
@@ -26,12 +26,15 @@ const defaultForm = {
 // par soi avant d'avoir un compte, par exemple) ou on la crée.
 export default function MaFichePage() {
   const { user, logout } = useAuth();
-  const { selectedFamily, members, reloadMembers, reloadMembership } = useFamily();
+  const { selectedFamily, members, reloadMembers, reloadMembership, isParent } = useFamily();
   const [form, setForm] = useState(defaultForm);
   const [saving, setSaving] = useState(false);
   const [claimingId, setClaimingId] = useState(null);
   // Section repliable "Informations complémentaires" (contacts, médecin...).
   const [showMore, setShowMore] = useState(false);
+  // Message d'erreur du serveur affiché en clair (ex. moins de 15 ans :
+  // pas de compte personnel, la fiche est tenue par les parents).
+  const [serverError, setServerError] = useState("");
   const navigate = useNavigate();
 
   const handleLogout = async () => {
@@ -54,6 +57,7 @@ export default function MaFichePage() {
 
   const claim = async (id) => {
     setClaimingId(id);
+    setServerError("");
     try {
       const res = await fetch("/api/members/claim", {
         method: "POST",
@@ -65,6 +69,7 @@ export default function MaFichePage() {
         await done();
       } else {
         const err = await res.json().catch(() => ({}));
+        setServerError(err.error || "");
         toast.error(err.error || "Impossible de désigner cette fiche");
       }
     } finally {
@@ -77,6 +82,14 @@ export default function MaFichePage() {
       toast.error("Prénom et nom sont requis");
       return;
     }
+    // Un administrateur (parent) n'indique pas de lien : le serveur fixe "parent"
+    const identityMsg = identityError(form, { isAdmin: isParent });
+    if (identityMsg) {
+      toast.error(identityMsg);
+      return;
+    }
+    const { kinship: _k, kinshipRelatedMemberId: _r, ...rest } = form;
+    setServerError("");
     setSaving(true);
     try {
       const res = await fetch("/api/members", {
@@ -84,7 +97,8 @@ export default function MaFichePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           familyId: selectedFamily.id,
-          ...form,
+          ...rest,
+          ...identityPayload(form, { isAdmin: isParent }),
           notes: "",
           avatarColor: AVATAR_COLORS[members.length % AVATAR_COLORS.length],
           status: "connecte_autonome",
@@ -96,6 +110,7 @@ export default function MaFichePage() {
         await done();
       } else {
         const err = await res.json().catch(() => ({}));
+        setServerError(err.error || "");
         toast.error(err.error || "Erreur lors de la création de votre fiche");
       }
     } finally {
@@ -117,6 +132,13 @@ export default function MaFichePage() {
             titulaire : c'est vous qui décidez avec qui la partager. Avant de continuer, indiquez quelle est la vôtre.
           </p>
         </div>
+
+        {serverError && (
+          <div className="mb-6 flex items-start gap-2 text-sm text-red-700 bg-red-50 border border-red-100 rounded-xl px-4 py-3">
+            <AlertTriangle size={18} className="flex-shrink-0 mt-0.5" />
+            <p>{serverError}</p>
+          </div>
+        )}
 
         {/* Option 1 — désigner une fiche existante que l'on gère déjà */}
         {claimable.length > 0 && (
@@ -147,15 +169,12 @@ export default function MaFichePage() {
             <Input label="Prénom *" placeholder="Marie" value={form.firstName} onChange={f("firstName")} />
             <Input label="Nom *" placeholder="Dupont" value={form.lastName} onChange={f("lastName")} />
           </div>
-          <div className="grid grid-cols-2 gap-4">
-            <Input label="Date de naissance" type="date" value={form.dateOfBirth} onChange={f("dateOfBirth")} />
-            <Select label="Genre" value={form.gender} onChange={f("gender")}>
-              <option value="">Non précisé</option>
-              <option value="M">Homme</option>
-              <option value="F">Femme</option>
-              <option value="Autre">Autre</option>
-            </Select>
-          </div>
+          <IdentityFields
+            form={form}
+            onChange={(key, value) => setForm((p) => ({ ...p, [key]: value }))}
+            members={members}
+            isAdmin={isParent}
+          />
           <Select label="Groupe sanguin" value={form.bloodType} onChange={f("bloodType")}>
             <option value="">Non connu</option>
             {BLOOD_TYPES.map((bt) => (

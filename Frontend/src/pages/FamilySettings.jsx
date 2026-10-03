@@ -9,8 +9,10 @@ import { Modal } from "../components/ui/Modal";
 import { UserCog, Mail, Trash2, Loader2, Clock, Shield, Plus, Link2 } from "lucide-react";
 import { formatDateTime } from "../lib/utils";
 import {
+  AGE_ACCESS_HELP,
   FAMILY_ROLE_OPTIONS,
   FICHE_ROLE_OPTIONS,
+  accountLevelLabel,
   familyRoleLabel,
   familyRoleBadgeVariant,
   ficheRoleShortLabel,
@@ -20,7 +22,16 @@ import toast from "react-hot-toast";
 // Rôles d'un compte dans la famille, et rôles sur une fiche (optionnels,
 // fixés avant l'envoi de l'invitation) : libellés communs dans lib/roles.js.
 // Le Titulaire n'est pas un rôle attribuable : c'est le compte relié à la fiche.
+// Seuls deux choix : "Membre de la famille" (niveau d'accès déduit de l'âge
+// par le serveur) ou "Parent — co-administrateur" (réservé à A1).
 const ROLE_OPTIONS = FAMILY_ROLE_OPTIONS;
+
+// Valeur du sélecteur de rôle d'un compte existant : "parent" ou "member"
+// (un membre adolescent ou majeur est un simple "Membre").
+const roleSelectValue = (role) => (role === "parent" ? "parent" : "member");
+// Rôle envoyé au serveur : "Membre" correspond au rôle "adult" ; le serveur
+// ramène en lecture seule un compte de moins de 18 ans.
+const roleForServer = (value) => (value === "parent" ? "parent" : "adult");
 
 export default function FamilySettingsPage() {
   // Les fiches de la famille (avec l'accès de l'utilisateur sur chacune)
@@ -35,7 +46,7 @@ export default function FamilySettingsPage() {
 
   const [showInvite, setShowInvite] = useState(false);
   const [inviteEmail, setInviteEmail] = useState("");
-  const [inviteRole, setInviteRole] = useState("adult");
+  const [inviteRole, setInviteRole] = useState("member");
   const [inviteLinkedMemberId, setInviteLinkedMemberId] = useState("");
   const [inviteDocumentMemberId, setInviteDocumentMemberId] = useState("");
   const [inviteDocumentRole, setInviteDocumentRole] = useState("");
@@ -43,11 +54,6 @@ export default function FamilySettingsPage() {
 
   const [updatingId, setUpdatingId] = useState(null);
   const [removingId, setRemovingId] = useState(null);
-
-  // Changement de rôle vers "Dépendant" depuis la liste des comptes — demande
-  // la fiche liée dans une petite modale dédiée avant de valider.
-  const [roleChangeTarget, setRoleChangeTarget] = useState(null); // { membershipId }
-  const [roleChangeLinkedMemberId, setRoleChangeLinkedMemberId] = useState("");
 
   // Fiche choisie, par compte, pour relier un compte sans fiche à sa fiche
   const [linkSelection, setLinkSelection] = useState({}); // { [membershipId]: memberId }
@@ -99,10 +105,6 @@ export default function FamilySettingsPage() {
       toast.error("Email requis");
       return;
     }
-    if (inviteRole === "dependent" && !inviteLinkedMemberId) {
-      toast.error("Choisissez la fiche correspondant à cette personne");
-      return;
-    }
     if ((inviteDocumentMemberId && !inviteDocumentRole) || (!inviteDocumentMemberId && inviteDocumentRole)) {
       toast.error("Choisissez à la fois une fiche et un rôle sur cette fiche, ou aucun des deux");
       return;
@@ -129,7 +131,7 @@ export default function FamilySettingsPage() {
       toast.success("Invitation envoyée par email !");
       setShowInvite(false);
       setInviteEmail("");
-      setInviteRole("adult");
+      setInviteRole("member");
       setInviteLinkedMemberId("");
       setInviteDocumentMemberId("");
       setInviteDocumentRole("");
@@ -163,23 +165,9 @@ export default function FamilySettingsPage() {
   };
 
   // Appelé quand l'Admin change le rôle depuis le menu déroulant de la liste
-  const handleRoleSelect = (membership, newRole) => {
-    if (newRole === "dependent" && !membership.linkedMemberId) {
-      // Il faut choisir la fiche liée avant de valider — ouvre la mini-modale
-      setRoleChangeTarget({ membershipId: membership.id });
-      setRoleChangeLinkedMemberId("");
-      return;
-    }
-    applyRoleChange(membership.id, newRole, membership.linkedMemberId);
-  };
-
-  const confirmRoleChangeToDependent = async () => {
-    if (!roleChangeLinkedMemberId) {
-      toast.error("Choisissez la fiche correspondant à cette personne");
-      return;
-    }
-    await applyRoleChange(roleChangeTarget.membershipId, "dependent", roleChangeLinkedMemberId);
-    setRoleChangeTarget(null);
+  // ("member" → rôle "adult" côté serveur, qui déduit le niveau de l'âge).
+  const handleRoleSelect = (membership, value) => {
+    applyRoleChange(membership.id, roleForServer(value), membership.linkedMemberId);
   };
 
   // Relie un compte (sans fiche) à une fiche existante — même appel que le
@@ -195,7 +183,7 @@ export default function FamilySettingsPage() {
       const res = await fetch("/api/family-memberships", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: membership.id, role: membership.role, linkedMemberId }),
+        body: JSON.stringify({ id: membership.id, role: roleForServer(membership.role), linkedMemberId }),
       });
       if (res.ok) {
         toast.success("Fiche reliée à ce compte");
@@ -294,6 +282,8 @@ export default function FamilySettingsPage() {
                         {m.name} {m.userId === user?.id && <span className="text-gray-400 font-normal">(vous)</span>}
                       </p>
                       <p className="text-xs text-gray-500">{m.email}</p>
+                      {/* Niveau d'accès effectif (déduit de l'âge par le serveur) */}
+                      <p className="text-xs text-gray-600 mt-0.5">{accountLevelLabel(m.role, m.isPrimaryAdmin, m.age)}</p>
                       {/* Fiche de ce compte (dont il est titulaire), quel que soit son rôle */}
                       {m.linkedMemberId ? (
                         <p className="text-xs text-teal-600 mt-0.5">
@@ -329,14 +319,14 @@ export default function FamilySettingsPage() {
                     {/* Le rôle d'un autre Parent n'est pas modifiable (refusé par le serveur) : simple badge. */}
                     {isParent && !(m.role === "parent" && m.userId !== user?.id) ? (
                       <Select
-                        value={m.role}
+                        value={roleSelectValue(m.role)}
                         onChange={(e) => handleRoleSelect(m, e.target.value)}
                         disabled={updatingId === m.id}
                         className="!py-1.5 !text-sm w-auto"
                       >
                         {(m.role === "parent" ? ROLE_OPTIONS : assignableRoles).map((r) => (
                           <option key={r.value} value={r.value}>
-                            {r.value === "parent" ? familyRoleLabel("parent", m.isPrimaryAdmin) : r.label}
+                            {r.value === "parent" && m.role === "parent" ? familyRoleLabel("parent", m.isPrimaryAdmin) : r.label}
                           </option>
                         ))}
                       </Select>
@@ -422,14 +412,7 @@ export default function FamilySettingsPage() {
           <Select
             label="Rôle dans la famille *"
             value={inviteRole}
-            onChange={(e) => {
-              setInviteRole(e.target.value);
-              // Pas de rôle sur une fiche proposé pour un adolescent
-              if (e.target.value === "dependent") {
-                setInviteDocumentMemberId("");
-                setInviteDocumentRole("");
-              }
-            }}
+            onChange={(e) => setInviteRole(e.target.value)}
           >
             {assignableRoles.map((r) => (
               <option key={r.value} value={r.value}>
@@ -437,12 +420,13 @@ export default function FamilySettingsPage() {
               </option>
             ))}
           </Select>
+          <p className="text-xs text-gray-500 -mt-2">{AGE_ACCESS_HELP}</p>
 
           {/* Fiche de la personne invitée : optionnelle (elle pourra créer la
-              sienne à son arrivée), obligatoire pour une personne dépendante.
-              Seules les fiches non reliées à un compte et en accès complet. */}
+              sienne à son arrivée). Seules les fiches non reliées à un compte
+              et en accès complet. */}
           <Select
-            label={inviteRole === "dependent" ? "Fiche de cette personne *" : "Fiche de cette personne"}
+            label="Fiche de cette personne"
             value={inviteLinkedMemberId}
             onChange={(e) => {
               setInviteLinkedMemberId(e.target.value);
@@ -452,60 +436,49 @@ export default function FamilySettingsPage() {
               }
             }}
           >
-            <option value="">
-              {inviteRole === "dependent"
-                ? "Sélectionnez une fiche existante"
-                : "Aucune — elle créera sa fiche à son arrivée"}
-            </option>
+            <option value="">Aucune — elle créera sa fiche à son arrivée</option>
             {linkableFiches.map((m) => (
               <option key={m.id} value={m.id}>
                 {m.firstName} {m.lastName}
               </option>
             ))}
           </Select>
-          {inviteRole === "dependent" && linkableFiches.length === 0 && (
-            <p className="text-xs text-amber-600 bg-amber-50 rounded-xl px-3 py-2">
-              ⚠️ Ajoutez d&apos;abord cette personne (et sa fiche) depuis la page Membres.
-            </p>
-          )}
 
           {/* Rôle sur une fiche — optionnel, fixé avant l'envoi comme le rôle
               dans la famille, rend l'invitation explicite. */}
-          {inviteRole !== "dependent" && (
-            <div className="border border-gray-200 rounded-xl p-3 space-y-3">
-              <p className="text-xs font-semibold text-gray-600">
-                Rôle sur la fiche d&apos;un membre (optionnel)
-              </p>
+          <div className="border border-gray-200 rounded-xl p-3 space-y-3">
+            <p className="text-xs font-semibold text-gray-600">
+              Rôle sur la fiche d&apos;un membre (optionnel)
+            </p>
+            <Select
+              label="Fiche concernée"
+              value={inviteDocumentMemberId}
+              onChange={(e) => setInviteDocumentMemberId(e.target.value)}
+            >
+              <option value="">Aucune — rôle dans la famille uniquement</option>
+              {manageableFiches
+                .filter((m) => m.id.toString() !== inviteLinkedMemberId)
+                .map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.firstName} {m.lastName}
+                  </option>
+                ))}
+            </Select>
+            {inviteDocumentMemberId && (
               <Select
-                label="Fiche concernée"
-                value={inviteDocumentMemberId}
-                onChange={(e) => setInviteDocumentMemberId(e.target.value)}
+                label="Rôle sur cette fiche *"
+                value={inviteDocumentRole}
+                onChange={(e) => setInviteDocumentRole(e.target.value)}
               >
-                <option value="">Aucune — rôle dans la famille uniquement</option>
-                {manageableFiches
-                  .filter((m) => m.id.toString() !== inviteLinkedMemberId)
-                  .map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.firstName} {m.lastName}
-                    </option>
-                  ))}
+                <option value="">Choisir un rôle</option>
+                {FICHE_ROLE_OPTIONS.map((r) => (
+                  <option key={r.value} value={r.value}>
+                    {r.label}
+                  </option>
+                ))}
               </Select>
-              {inviteDocumentMemberId && (
-                <Select
-                  label="Rôle sur cette fiche *"
-                  value={inviteDocumentRole}
-                  onChange={(e) => setInviteDocumentRole(e.target.value)}
-                >
-                  <option value="">Choisir un rôle</option>
-                  {FICHE_ROLE_OPTIONS.map((r) => (
-                    <option key={r.value} value={r.value}>
-                      {r.label}
-                    </option>
-                  ))}
-                </Select>
-              )}
-            </div>
-          )}
+            )}
+          </div>
 
           <p className="text-xs text-gray-400 bg-gray-50 rounded-xl px-3 py-2">
             💡 Un email d&apos;invitation est toujours envoyé, avec un lien sécurisé valide 30 jours — même si
@@ -522,39 +495,6 @@ export default function FamilySettingsPage() {
         </div>
       </Modal>
 
-      {/* Mini-modale : choix obligatoire de la fiche liée quand on passe
-          quelqu'un au rôle "Dépendant" depuis la liste des comptes */}
-      <Modal
-        open={!!roleChangeTarget}
-        onClose={() => setRoleChangeTarget(null)}
-        title="Fiche correspondante"
-      >
-        <div className="space-y-4">
-          <p className="text-sm text-gray-600">
-            Le rôle « Adolescent » nécessite de choisir à quelle fiche correspond ce compte.
-          </p>
-          <Select
-            label="Fiche de cette personne *"
-            value={roleChangeLinkedMemberId}
-            onChange={(e) => setRoleChangeLinkedMemberId(e.target.value)}
-          >
-            <option value="">Sélectionnez une fiche existante</option>
-            {linkableFiches.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.firstName} {m.lastName}
-              </option>
-            ))}
-          </Select>
-          <div className="flex gap-3 pt-2">
-            <Button variant="ghost" onClick={() => setRoleChangeTarget(null)} className="flex-1">
-              Annuler
-            </Button>
-            <Button onClick={confirmRoleChangeToDependent} loading={updatingId === roleChangeTarget?.membershipId} className="flex-1">
-              Valider
-            </Button>
-          </div>
-        </div>
-      </Modal>
     </AppShell>
   );
 }

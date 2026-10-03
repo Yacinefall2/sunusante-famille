@@ -1,7 +1,8 @@
 import { eq, and } from "drizzle-orm";
 import { verifyAccessToken } from "../lib/jwt.js";
 import { db } from "../db/index.js";
-import { familyMemberships, users } from "../db/schema.js";
+import { familyMemberships, members, users } from "../db/schema.js";
+import { effectiveRole } from "../lib/family.js";
 
 // Vérifie qu'une session valide (access token) est présente. Va chercher
 // l'utilisateur en base à chaque requête (plutôt que de faire confiance aux
@@ -57,6 +58,18 @@ export function requireFamilyMembership(resolveFamilyId, options = {}) {
         .where(and(eq(familyMemberships.userId, req.user.id), eq(familyMemberships.familyId, familyId)));
 
       if (!membership) return res.status(403).json({ error: "Accès refusé à cette famille" });
+
+      // Rôle effectif selon l'âge de la fiche du compte (lib/family.js) :
+      // toutes les règles d'accès travaillent sur ce rôle, jamais sur le
+      // rôle enregistré seul.
+      membership.storedRole = membership.role;
+      if (membership.role !== "parent" && membership.linkedMemberId) {
+        const [fiche] = await db
+          .select({ dateOfBirth: members.dateOfBirth })
+          .from(members)
+          .where(eq(members.id, membership.linkedMemberId));
+        membership.role = effectiveRole(membership.role, fiche?.dateOfBirth);
+      }
 
       if (options.roles && !options.roles.includes(membership.role)) {
         return res.status(403).json({ error: "Rôle insuffisant pour cette action" });

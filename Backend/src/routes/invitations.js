@@ -6,6 +6,7 @@ import { requireAuth, requireFamilyMembership, requireVerifiedEmail } from "../m
 import { generateToken } from "../lib/token.js";
 import { sendInvitationEmail } from "../lib/mailer.js";
 import { DOCUMENT_ROLES, canManageRoles, canWriteMember, setDocumentRole } from "../lib/documentAccess.js";
+import { ACCOUNT_MIN_AGE, ageOn } from "../lib/family.js";
 
 const router = Router();
 
@@ -22,7 +23,9 @@ router.post(
   requireFamilyMembership((req) => parseInt(req.body.familyId) || null, { roles: ["parent"] }),
   async (req, res) => {
     try {
-      const { email, role, linkedMemberId, documentMemberId, documentRole } = req.body;
+      const { email, linkedMemberId, documentMemberId, documentRole } = req.body;
+      // « Membre » : son niveau (adolescent ou adulte) se déduit de l'âge de sa fiche.
+      const role = req.body.role === "member" ? "adult" : req.body.role;
       if (!email?.trim() || !ALLOWED_ROLES.includes(role)) {
         return res.status(400).json({ error: "Email et rôle valides requis" });
       }
@@ -71,6 +74,9 @@ router.post(
         }
         if (!(await canWriteMember(req, parsedId))) {
           return res.status(403).json({ error: "Vous n'avez pas les droits sur cette fiche" });
+        }
+        if (role !== "parent" && ageOn(member.dateOfBirth) !== null && ageOn(member.dateOfBirth) < ACCOUNT_MIN_AGE) {
+          return res.status(400).json({ error: `Moins de ${ACCOUNT_MIN_AGE} ans : pas de compte personnel, la fiche est tenue par les parents` });
         }
         validatedLinkedMemberId = parsedId;
       }
@@ -271,6 +277,9 @@ router.post("/:token/accept", requireAuth, async (req, res) => {
       role: invitation.role,
       linkedMemberId,
     });
+    if (linkedMemberId && invitation.role === "parent") {
+      await db.update(members).set({ kinship: "parent", kinshipRelatedMemberId: null }).where(eq(members.id, linkedMemberId));
+    }
     await db.update(pendingInvitations).set({ acceptedAt: new Date() }).where(eq(pendingInvitations.id, invitation.id));
 
     // Le rôle de dossier (Axe 2) fixé avant l'envoi est appliqué maintenant

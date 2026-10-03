@@ -1,28 +1,49 @@
+import { ageOf } from "./kinship.js";
 // Vocabulaire commun de l'application — trois notions bien distinctes :
-// - Compte : un identifiant de connexion (email + mot de passe), avec un rôle
-//   dans la famille (administrateur, co-administrateur, adulte, adolescent) ;
-// - Membre : une personne du foyer, avec ou sans compte ;
+// - Compte : un identifiant de connexion (email + mot de passe). Les parents
+//   du foyer sont les administrateurs (administrateur familial et
+//   co-administrateur) ; le niveau d'accès des autres comptes est déduit de
+//   l'âge par le serveur (lecture seule avant 18 ans, complet ensuite, pas de
+//   compte avant 15 ans) ;
+// - Membre : une personne du foyer, avec ou sans compte, désignée par son
+//   lien de parenté (voir lib/kinship.js) ;
 // - Fiche (fiche médicale) : le dossier médical d'un membre. Les rôles
 //   Gestionnaire / Relais / Lecteur invité sont des rôles SUR UNE FICHE.
 
 // ---------------------------------------------------------------------------
 // Rôle d'un compte dans la famille
 
-// Options des sélecteurs (attribution / invitation). "parent" désigne un
-// co-administrateur : l'administrateur familial est le créateur de la famille.
+// Options des sélecteurs (invitation, changement de rôle). "member" laisse le
+// serveur déduire le niveau d'accès de l'âge ; "parent" désigne un
+// co-administrateur (réservé à l'administrateur familial).
 export const FAMILY_ROLE_OPTIONS = [
-  { value: "parent", label: "Co-administrateur" },
-  { value: "adult", label: "Adulte" },
-  { value: "dependent", label: "Adolescent" },
+  { value: "member", label: "Membre de la famille" },
+  { value: "parent", label: "Parent — co-administrateur" },
 ];
 
-// Libellé du rôle familial d'un compte ; null → membre sans compte.
+// Explication commune du niveau d'accès selon l'âge
+export const AGE_ACCESS_HELP =
+  "Le niveau d'accès d'un membre dépend de son âge : lecture seule avant 18 ans, complet ensuite. Pas de compte avant 15 ans.";
+
+// Libellé court du rôle familial d'un compte ; null → membre sans compte.
+// ("adult" / "dependent" sont les niveaux effectifs renvoyés par le serveur.)
 export function familyRoleLabel(role, isPrimaryAdmin = false) {
   if (!role) return "Sans compte";
   if (role === "parent") return isPrimaryAdmin ? "Administrateur familial" : "Co-administrateur";
-  if (role === "adult") return "Adulte";
-  if (role === "dependent") return "Adolescent";
+  if (role === "dependent") return "Membre adolescent";
+  if (role === "adult" || role === "member") return "Membre de la famille";
   return role;
+}
+
+// Libellé détaillé du niveau d'accès effectif d'un compte, en clair.
+// Ex. "Membre — adolescent, lecture seule (16 ans)".
+export function accountLevelLabel(role, isPrimaryAdmin = false, age = null) {
+  if (role === "parent") return isPrimaryAdmin ? "Administrateur familial" : "Co-administrateur";
+  if (role === "dependent") {
+    return `Membre — adolescent, lecture seule${age !== null && age !== undefined ? ` (${age} ans)` : ""}`;
+  }
+  if (role === "adult" || role === "member") return "Membre — accès complet";
+  return familyRoleLabel(role, isPrimaryAdmin);
 }
 
 // Libellé à partir de l'objet `account` d'un membre (ou d'une ligne de compte)
@@ -54,9 +75,12 @@ export function memberStatusLabel(status) {
 }
 
 // Sous-titre d'un membre sans compte, selon son statut
-export function noAccountSubtitle(status) {
-  if (status === "mineur_gere") return "Enfant — dossier tenu par un parent";
+// Ligne « compte » d'un membre sans compte. Avec la date de naissance, un
+// enfant de moins de 15 ans est dit « trop jeune » (pas de compte possible).
+export function noAccountSubtitle(status, dateOfBirth = null) {
   if (status === "non_connecte") return "Proche non connecté (village)";
+  const age = dateOfBirth ? ageOf(dateOfBirth) : null;
+  if (status === "mineur_gere" || (age !== null && age < 15)) return "Trop jeune pour un compte : fiche tenue par les parents";
   return "Pas encore de compte";
 }
 

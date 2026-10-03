@@ -56,6 +56,8 @@ beforeEach(async () => {
   f = { family, awa, moussa, fatou, khady, fiches };
 });
 
+// Identité complète exigée pour toute fiche (date de naissance, sexe, lien).
+const IDENTITE = { dateOfBirth: "1990-05-01", gender: "M", kinship: "cousin" };
 const memberIdsOf = (res) => [...new Set(res.body.map((r) => r.memberId))].sort((a, b) => a - b);
 const ids = (...members) => members.map((m) => m.id).sort((a, b) => a - b);
 const newAppointment = (member) => ({ memberId: member.id, title: "Contrôle", appointmentDate: "2030-01-01T10:00:00Z" });
@@ -162,7 +164,7 @@ describe("Liste des membres — identité pour tous, dossier médical selon les 
     expect(byId[f.fiches.grandPere.id]).toMatchObject({ access: "relay" });
     expect(byId[f.fiches.awa.id]).toMatchObject({ access: null, firstName: "Awa" });
     for (const hidden of [byId[f.fiches.awa.id], byId[f.fiches.grandPere.id]]) {
-      for (const field of ["allergies", "bloodType", "notes", "dateOfBirth"]) expect(hidden).not.toHaveProperty(field);
+      for (const field of ["allergies", "bloodType", "notes", "phone"]) expect(hidden).not.toHaveProperty(field);
     }
   });
 });
@@ -191,7 +193,7 @@ describe("Ma fiche (Titulaire)", () => {
   it("un compte sans fiche crée la sienne", async () => {
     const omar = await createUser("Omar");
     await addMembership(omar, f.family, "adult");
-    const res = await as(omar).post("/api/members").send({ familyId: f.family.id, firstName: "Omar", lastName: "Ndiaye", isMine: true });
+    const res = await as(omar).post("/api/members").send({ familyId: f.family.id, firstName: "Omar", lastName: "Ndiaye", isMine: true, ...IDENTITE });
     expect(res.status).toBe(201);
     const list = await as(omar).get(`/api/members?familyId=${f.family.id}`);
     expect(list.body.find((m) => m.id === res.body.id)).toMatchObject({ isMine: true, access: "full" });
@@ -200,7 +202,7 @@ describe("Ma fiche (Titulaire)", () => {
   it("peut désigner comme sienne une fiche qu'il gère, pas une autre", async () => {
     const omar = await createUser("Omar");
     await addMembership(omar, f.family, "adult");
-    const created = await as(omar).post("/api/members").send({ familyId: f.family.id, firstName: "Omar", lastName: "N" });
+    const created = await as(omar).post("/api/members").send({ familyId: f.family.id, firstName: "Omar", lastName: "N", ...IDENTITE });
     expect((await as(omar).post("/api/members/claim").send({ id: f.fiches.ibou.id })).status).toBe(403);
     expect((await as(omar).post("/api/members/claim").send({ id: created.body.id })).status).toBe(200);
     expect((await as(omar).post("/api/members/claim").send({ id: created.body.id })).status).toBe(409);
