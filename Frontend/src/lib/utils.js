@@ -62,8 +62,28 @@ export const DOCUMENT_TYPES = [
   { value: "autre", label: "Autre" },
 ];
 
+// Statut de la prise de rendez-vous. La présence effective au rendez-vous
+// est suivie séparément (champ "attendance").
 export const APPOINTMENT_STATUSES = [
-  { value: "upcoming", label: "À venir", color: "bg-blue-100 text-blue-700" },
-  { value: "completed", label: "Terminé", color: "bg-green-100 text-green-700" },
-  { value: "cancelled", label: "Annulé", color: "bg-red-100 text-red-700" },
+  { value: "pending", label: "En attente", color: "bg-amber-100 text-amber-700", variant: "warning" },
+  { value: "confirmed", label: "Confirmé", color: "bg-blue-100 text-blue-700", variant: "info" },
+  { value: "cancelled", label: "Annulé", color: "bg-red-100 text-red-700", variant: "danger" },
 ];
+
+export function getAppointmentStatus(status) {
+  return APPOINTMENT_STATUSES.find((s) => s.value === status) ?? null;
+}
+
+// Présence au rendez-vous (renseignable une fois la date passée).
+export const APPOINTMENT_ATTENDANCES = [
+  { value: "attended", label: "S'y est rendu", color: "bg-emerald-100 text-emerald-700", variant: "success" },
+  { value: "missed", label: "N'y est pas allé", color: "bg-gray-200 text-gray-700", variant: "default" },
+];
+
+export function getAttendance(attendance) {
+  return APPOINTMENT_ATTENDANCES.find((a) => a.value === attendance) ?? null;
+}
+
+export function attendanceLabel(attendance) {
+  return getAttendance(attendance)?.label ?? "";
+}

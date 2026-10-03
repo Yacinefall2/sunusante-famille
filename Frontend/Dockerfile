@@ -1,4 +1,4 @@
-# ── Frontend SantéFamille — build React/Vite ─────────────────────────────────
+# ── Frontend SunuSanté Famille — build React/Vite ─────────────────────────────────
 FROM node:20-alpine AS build
 
 WORKDIR /app

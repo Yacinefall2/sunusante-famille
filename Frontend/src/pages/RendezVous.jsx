@@ -6,9 +6,44 @@ import { Button } from "../components/ui/Button";
 import { Input, Textarea, Select } from "../components/ui/Input";
 import { Badge } from "../components/ui/Badge";
 import { MemberAvatar } from "../components/members/MemberAvatar";
-import { Plus, Pencil, Trash2, Loader2, Calendar, Clock, MapPin, Stethoscope, User, BellRing } from "lucide-react";
-import { formatDateTime, APPOINTMENT_STATUSES } from "../lib/utils";
+import {
+  Plus,
+  Pencil,
+  Trash2,
+  Loader2,
+  Calendar,
+  Clock,
+  MapPin,
+  Stethoscope,
+  User,
+  BellRing,
+  CheckCircle2,
+  XCircle,
+} from "lucide-react";
+import {
+  formatDateTime,
+  isFuture,
+  APPOINTMENT_STATUSES,
+  APPOINTMENT_ATTENDANCES,
+  getAppointmentStatus,
+  getAttendance,
+  attendanceLabel,
+} from "../lib/utils";
 import toast from "react-hot-toast";
+
+// La présence ne peut être renseignée que pour un rendez-vous dont la date
+// est passée (ou maintenant) et qui n'est pas annulé — même règle que le serveur.
+function attendanceAllowed(date, status) {
+  if (!date || status === "cancelled") return false;
+  const d = new Date(date);
+  return !Number.isNaN(d.getTime()) && d.getTime() <= Date.now();
+}
+
+const PERIOD_FILTERS = [
+  { value: "all", label: "Tous" },
+  { value: "future", label: "À venir" },
+  { value: "past", label: "Passés" },
+];
 
 const defaultForm = {
   memberId: "",
@@ -17,7 +52,8 @@ const defaultForm = {
   location: "",
   appointmentDate: "",
   notes: "",
-  status: "upcoming",
+  status: "pending",
+  attendance: "",
 };
 
 export default function RendezVousPage() {
@@ -32,7 +68,10 @@ export default function RendezVousPage() {
   const [form, setForm] = useState(defaultForm);
   const [saving, setSaving] = useState(false);
   const [filterStatus, setFilterStatus] = useState("all");
+  const [filterPeriod, setFilterPeriod] = useState("all");
   const [viewing, setViewing] = useState(null);
+  // Id du rendez-vous dont la présence est en cours d'enregistrement.
+  const [attendanceSaving, setAttendanceSaving] = useState(null);
 
   useEffect(() => {
     if (selectedFamily) {
@@ -69,6 +108,7 @@ export default function RendezVousPage() {
       appointmentDate: local,
       notes: a.notes ?? "",
       status: a.status,
+      attendance: a.attendance ?? "",
     });
     setViewing(null);
     setShowForm(true);
@@ -79,13 +119,19 @@ export default function RendezVousPage() {
       toast.error("Champs requis manquants");
       return;
     }
+    // La présence n'est acceptée par le serveur que pour un rendez-vous passé
+    // et non annulé : sinon on l'efface.
+    const payload = {
+      ...form,
+      attendance: attendanceAllowed(form.appointmentDate, form.status) ? form.attendance || null : null,
+    };
     setSaving(true);
     try {
       if (editing) {
         const res = await fetch("/api/appointments", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ id: editing.id, ...form }),
+          body: JSON.stringify({ id: editing.id, ...payload }),
         });
         if (res.ok) {
           toast.success("Rendez-vous modifié !");
@@ -99,7 +145,7 @@ export default function RendezVousPage() {
         const res = await fetch("/api/appointments", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(form),
+          body: JSON.stringify(payload),
         });
         if (res.ok) {
           toast.success("Rendez-vous ajouté !");
@@ -144,13 +190,111 @@ export default function RendezVousPage() {
 
   const getMember = (id) => members.find((m) => m.id === id);
 
-  const filtered = filterStatus === "all" ? appointments : appointments.filter((a) => a.status === filterStatus);
+  // Filtres : période (basée sur la date, pas sur le statut) et statut.
+  const filtered = appointments.filter((a) => {
+    if (filterPeriod === "future" && !isFuture(a.appointmentDate)) return false;
+    if (filterPeriod === "past" && isFuture(a.appointmentDate)) return false;
+    if (filterStatus !== "all" && a.status !== filterStatus) return false;
+    return true;
+  });
 
   const getStatusBadge = (status) => {
-    const s = APPOINTMENT_STATUSES.find((a) => a.value === status);
+    const s = getAppointmentStatus(status);
     if (!s) return null;
-    const variant = status === "upcoming" ? "info" : status === "completed" ? "success" : "danger";
-    return <Badge variant={variant}>{s.label}</Badge>;
+    return <Badge variant={s.variant}>{s.label}</Badge>;
+  };
+
+  const getAttendanceBadge = (attendance) => {
+    const a = getAttendance(attendance);
+    if (!a) return null;
+    return (
+      <Badge variant={a.variant}>
+        {a.value === "attended" ? <CheckCircle2 size={12} /> : <XCircle size={12} />}
+        {a.label}
+      </Badge>
+    );
+  };
+
+  // Présence renseignable : rendez-vous passé, non annulé, non restreint, et
+  // accès complet à la fiche.
+  const canSetAttendance = (appt) =>
+    canManage(appt) && attendanceAllowed(appt.appointmentDate, appt.status);
+
+  // Boutons rapides "S'y est rendu" / "N'y est pas allé" (endpoint dédié).
+  const updateAttendance = async (appt, attendance) => {
+    setAttendanceSaving(appt.id);
+    try {
+      const res = await fetch("/api/appointments/attendance", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: appt.id, attendance }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        toast.error(err.error || "Erreur lors de la mise à jour de la présence");
+        return;
+      }
+      const updated = await res.json().catch(() => null);
+      const next = updated && updated.id ? updated : { ...appt, attendance };
+      setAppointments((list) => list.map((a) => (a.id === appt.id ? { ...a, ...next } : a)));
+      setViewing((v) => (v && v.id === appt.id ? { ...v, ...next } : v));
+      toast.success(attendance ? "Présence enregistrée" : "Présence effacée");
+    } finally {
+      setAttendanceSaving(null);
+    }
+  };
+
+  // Bloc présence : badge + changer/effacer si renseignée, sinon deux boutons.
+  const renderAttendance = (appt) => {
+    if (!canSetAttendance(appt)) {
+      return appt.attendance ? getAttendanceBadge(appt.attendance) : null;
+    }
+    const busy = attendanceSaving === appt.id;
+    if (appt.attendance) {
+      const other = appt.attendance === "attended" ? "missed" : "attended";
+      return (
+        <div className="flex items-center gap-2 flex-wrap" onClick={(e) => e.stopPropagation()}>
+          {getAttendanceBadge(appt.attendance)}
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => updateAttendance(appt, other)}
+            className="text-xs text-teal-600 hover:underline font-medium disabled:opacity-50"
+          >
+            Changer en « {attendanceLabel(other)} »
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => updateAttendance(appt, null)}
+            className="text-xs text-gray-400 hover:text-red-500 hover:underline font-medium disabled:opacity-50"
+          >
+            Effacer
+          </button>
+        </div>
+      );
+    }
+    return (
+      <div className="flex items-center gap-2 flex-wrap" onClick={(e) => e.stopPropagation()}>
+        <span className="text-xs text-gray-500">Présence :</span>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => updateAttendance(appt, "attended")}
+          className="inline-flex items-center gap-1 text-xs font-semibold px-3 py-1 rounded-full border border-emerald-200 text-emerald-700 bg-emerald-50 hover:bg-emerald-100 transition-colors disabled:opacity-50"
+        >
+          <CheckCircle2 size={13} /> S'y est rendu
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => updateAttendance(appt, "missed")}
+          className="inline-flex items-center gap-1 text-xs font-semibold px-3 py-1 rounded-full border border-gray-200 text-gray-600 bg-gray-50 hover:bg-gray-100 transition-colors disabled:opacity-50"
+        >
+          <XCircle size={13} /> N'y est pas allé
+        </button>
+      </div>
+    );
   };
 
   if (!selectedFamily) {
@@ -182,19 +326,35 @@ export default function RendezVousPage() {
           )}
         </div>
 
-        {/* Filter */}
-        <div className="flex gap-2 flex-wrap">
-          {[{ value: "all", label: "Tous" }, ...APPOINTMENT_STATUSES].map((s) => (
-            <button
-              key={s.value}
-              onClick={() => setFilterStatus(s.value)}
-              className={`px-4 py-1.5 rounded-full text-sm font-medium transition-all ${
-                filterStatus === s.value ? "bg-teal-600 text-white shadow-sm" : "bg-white text-gray-600 border border-gray-200 hover:border-teal-300"
-              }`}
-            >
-              {s.label}
-            </button>
-          ))}
+        {/* Filtres : période (selon la date) puis statut */}
+        <div className="space-y-2">
+          <div className="flex gap-2 flex-wrap">
+            {PERIOD_FILTERS.map((p) => (
+              <button
+                key={p.value}
+                onClick={() => setFilterPeriod(p.value)}
+                className={`px-4 py-1.5 rounded-full text-sm font-medium transition-all ${
+                  filterPeriod === p.value ? "bg-teal-600 text-white shadow-sm" : "bg-white text-gray-600 border border-gray-200 hover:border-teal-300"
+                }`}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+          <div className="flex gap-2 flex-wrap items-center">
+            <span className="text-xs text-gray-400 font-medium">Statut :</span>
+            {[{ value: "all", label: "Tous les statuts" }, ...APPOINTMENT_STATUSES].map((s) => (
+              <button
+                key={s.value}
+                onClick={() => setFilterStatus(s.value)}
+                className={`px-3 py-1 rounded-full text-xs font-medium transition-all ${
+                  filterStatus === s.value ? "bg-teal-100 text-teal-700 border border-teal-300" : "bg-white text-gray-500 border border-gray-200 hover:border-teal-300"
+                }`}
+              >
+                {s.label}
+              </button>
+            ))}
+          </div>
         </div>
 
         {loading ? (
@@ -315,6 +475,7 @@ export default function RendezVousPage() {
                         {member && <MemberAvatar member={member} size="sm" showName />}
                       </div>
                       {appt.notes && <p className="text-sm text-gray-400 mt-2 bg-gray-50 rounded-lg px-3 py-2 italic">{appt.notes}</p>}
+                      {(appt.attendance || canSetAttendance(appt)) && <div className="mt-3">{renderAttendance(appt)}</div>}
                     </div>
                   </div>
                 </div>
@@ -394,6 +555,14 @@ export default function RendezVousPage() {
               </div>
             </div>
 
+            {/* Présence (rendez-vous passé, non annulé) */}
+            {!viewing.restricted && (viewing.attendance || canSetAttendance(viewing)) && (
+              <div>
+                <h4 className="text-sm font-bold text-gray-700 uppercase tracking-wide mb-2">Présence</h4>
+                <div className="bg-gray-50 rounded-xl p-3">{renderAttendance(viewing)}</div>
+              </div>
+            )}
+
             {/* Notes */}
             {viewing.notes && (
               <div>
@@ -465,6 +634,16 @@ export default function RendezVousPage() {
               </option>
             ))}
           </Select>
+          {attendanceAllowed(form.appointmentDate, form.status) && (
+            <Select label="Présence" value={form.attendance} onChange={f("attendance")}>
+              <option value="">Non renseignée</option>
+              {APPOINTMENT_ATTENDANCES.map((a) => (
+                <option key={a.value} value={a.value}>
+                  {a.label}
+                </option>
+              ))}
+            </Select>
+          )}
           <Textarea label="Notes" placeholder="Informations complémentaires..." value={form.notes} onChange={f("notes")} />
           <div className="flex gap-3 pt-2">
             <Button variant="ghost" onClick={() => setShowForm(false)} className="flex-1">

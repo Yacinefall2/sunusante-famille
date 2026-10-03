@@ -49,6 +49,11 @@ beforeAll(async () => {
   await q(`insert into document_roles (member_id, user_id, role) values
     (5, 1, 'gestionnaire'), (4, 1, 'titulaire'), (6, 2, 'titulaire')`);
 
+  await q(`insert into appointments (member_id, title, appointment_date, status) values
+    (4, 'à venir', now() + interval '3 days', 'upcoming'),
+    (4, 'terminé', now() - interval '3 days', 'completed'),
+    (4, 'annulé', now() - interval '3 days', 'cancelled')`);
+
   await runMigrations(legacyUrl.toString());
 });
 
@@ -58,6 +63,17 @@ afterAll(async () => {
   await admin.connect();
   await admin.query(`drop database if exists "${dbName}" with (force)`);
   await admin.end();
+});
+
+describe("Migration 0002 : statuts des rendez-vous", () => {
+  it("à venir → confirmé, terminé → confirmé + honoré, annulé inchangé", async () => {
+    const rows = await q(`select title, status, attendance from appointments order by id`);
+    expect(rows).toEqual([
+      { title: "à venir", status: "confirmed", attendance: null },
+      { title: "terminé", status: "confirmed", attendance: "attended" },
+      { title: "annulé", status: "cancelled", attendance: null },
+    ]);
+  });
 });
 
 describe("Migration 0001 sur une base existante", () => {

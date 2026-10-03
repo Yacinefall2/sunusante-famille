@@ -6,11 +6,112 @@ import { Button } from "../components/ui/Button";
 import { Input, Textarea, Select } from "../components/ui/Input";
 import { Badge } from "../components/ui/Badge";
 import { MemberAvatar } from "../components/members/MemberAvatar";
-import { Plus, Pencil, Trash2, Loader2, Pill, User, Calendar, Stethoscope, X } from "lucide-react";
+import { Plus, Pencil, Trash2, Loader2, Pill, User, Calendar, Stethoscope, X, Clock } from "lucide-react";
 import { formatDate } from "../lib/utils";
 import toast from "react-hot-toast";
 
-const emptyMedication = { name: "", dosage: "", frequency: "", duration: "" };
+const emptyMedication = { name: "", dosage: "", frequency: "", duration: "", intakeTimes: [] };
+
+// Raccourcis d'heures de prise les plus courants.
+const INTAKE_PRESETS = [
+  { label: "Matin", time: "08:00" },
+  { label: "Midi", time: "13:00" },
+  { label: "Soir", time: "20:00" },
+  { label: "Coucher", time: "22:00" },
+];
+
+const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+// Normalise une liste d'heures "HH:MM" : valides, sans doublon, triées.
+function normalizeTimes(times) {
+  return [...new Set((times ?? []).filter((t) => TIME_RE.test(t)))].sort();
+}
+
+function formatIntakeTimes(times) {
+  return normalizeTimes(times).join(" · ");
+}
+
+// Éditeur des heures de prise d'un médicament : raccourcis à basculer,
+// heure personnalisée, et puces supprimables.
+function IntakeTimesEditor({ value, onChange }) {
+  const [custom, setCustom] = useState("");
+  const times = normalizeTimes(value);
+
+  const toggle = (time) => {
+    onChange(times.includes(time) ? times.filter((t) => t !== time) : normalizeTimes([...times, time]));
+  };
+
+  const addCustom = () => {
+    if (!TIME_RE.test(custom)) {
+      toast.error("Heure invalide");
+      return;
+    }
+    onChange(normalizeTimes([...times, custom]));
+    setCustom("");
+  };
+
+  return (
+    <div className="mt-3">
+      <label className="text-sm font-semibold text-gray-700 flex items-center gap-1.5">
+        <Clock size={13} className="text-violet-500" /> Heures de prise
+      </label>
+      <div className="flex flex-wrap gap-1.5 mt-2">
+        {INTAKE_PRESETS.map((p) => {
+          const on = times.includes(p.time);
+          return (
+            <button
+              key={p.time}
+              type="button"
+              onClick={() => toggle(p.time)}
+              className={`text-xs font-medium px-3 py-1 rounded-full border transition-colors ${
+                on ? "bg-violet-600 text-white border-violet-600" : "bg-white text-gray-600 border-gray-200 hover:border-violet-300"
+              }`}
+            >
+              {p.label} {p.time}
+            </button>
+          );
+        })}
+      </div>
+      <div className="flex items-center gap-2 mt-2">
+        <input
+          type="time"
+          value={custom}
+          onChange={(e) => setCustom(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              addCustom();
+            }
+          }}
+          className="px-3 py-1.5 rounded-xl border border-gray-200 bg-white text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-teal-500"
+        />
+        <Button type="button" variant="ghost" size="sm" onClick={addCustom} disabled={!custom}>
+          <Plus size={14} />
+          Ajouter
+        </Button>
+      </div>
+      {times.length > 0 ? (
+        <div className="flex flex-wrap gap-1.5 mt-2">
+          {times.map((t) => (
+            <span key={t} className="inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-full bg-violet-50 text-violet-700 font-semibold">
+              {t}
+              <button
+                type="button"
+                onClick={() => onChange(times.filter((x) => x !== t))}
+                className="hover:text-red-500"
+                title="Retirer cette heure"
+              >
+                <X size={12} />
+              </button>
+            </span>
+          ))}
+        </div>
+      ) : (
+        <p className="text-xs text-gray-400 mt-2">Aucune heure de prise définie.</p>
+      )}
+    </div>
+  );
+}
 
 const defaultForm = {
   memberId: "",
@@ -77,6 +178,7 @@ export default function TraitementsPage() {
               dosage: m.dosage ?? "",
               frequency: m.frequency ?? "",
               duration: m.duration ?? "",
+              intakeTimes: normalizeTimes(m.intakeTimes),
             }))
           : [{ ...emptyMedication }],
     });
@@ -111,7 +213,10 @@ export default function TraitementsPage() {
     }
     setSaving(true);
     try {
-      const payload = { ...form, medications: validMedications };
+      const payload = {
+        ...form,
+        medications: validMedications.map((m) => ({ ...m, intakeTimes: normalizeTimes(m.intakeTimes) })),
+      };
       if (editing) {
         const res = await fetch("/api/treatments", {
           method: "PUT",
@@ -297,6 +402,9 @@ export default function TraitementsPage() {
                         <span key={i} className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-violet-50 text-violet-700 font-medium">
                           <Pill size={10} />
                           {m.name}
+                          {normalizeTimes(m.intakeTimes).length > 0 && (
+                            <span className="text-violet-500 font-normal">({formatIntakeTimes(m.intakeTimes)})</span>
+                          )}
                         </span>
                       ))}
                       {meds.length > 3 && (
@@ -372,19 +480,21 @@ export default function TraitementsPage() {
                 <p className="text-sm text-gray-400 italic">Aucun médicament renseigné.</p>
               ) : (
                 <div className="border border-gray-200 rounded-xl overflow-hidden">
-                  <div className="grid grid-cols-4 gap-2 bg-gray-50 px-3 py-2 text-xs font-bold text-gray-500 uppercase tracking-wide">
+                  <div className="grid grid-cols-5 gap-2 bg-gray-50 px-3 py-2 text-xs font-bold text-gray-500 uppercase tracking-wide">
                     <span>Médicament</span>
                     <span>Posologie</span>
+                    <span>Heures de prise</span>
                     <span>Fréquence</span>
                     <span>Durée</span>
                   </div>
                   {viewing.medications.map((m, i) => (
-                    <div key={m.id ?? i} className={`grid grid-cols-4 gap-2 px-3 py-2.5 text-sm ${i % 2 === 1 ? "bg-gray-50/60" : "bg-white"}`}>
+                    <div key={m.id ?? i} className={`grid grid-cols-5 gap-2 px-3 py-2.5 text-sm ${i % 2 === 1 ? "bg-gray-50/60" : "bg-white"}`}>
                       <span className="font-semibold text-gray-800 flex items-center gap-1.5">
                         <Pill size={12} className="text-violet-500 flex-shrink-0" />
                         {m.name}
                       </span>
                       <span className="text-gray-600">{m.dosage || "—"}</span>
+                      <span className="text-gray-600">{formatIntakeTimes(m.intakeTimes) || "—"}</span>
                       <span className="text-gray-600">{m.frequency || "—"}</span>
                       <span className="text-gray-600">{m.duration || "—"}</span>
                     </div>
@@ -510,6 +620,7 @@ export default function TraitementsPage() {
                     <Input label="Fréquence" placeholder="2x/jour" value={m.frequency} onChange={(e) => updateMedication(i, "frequency", e.target.value)} />
                     <Input label="Durée" placeholder="7 jours" value={m.duration} onChange={(e) => updateMedication(i, "duration", e.target.value)} />
                   </div>
+                  <IntakeTimesEditor value={m.intakeTimes} onChange={(times) => updateMedication(i, "intakeTimes", times)} />
                 </div>
               ))}
             </div>

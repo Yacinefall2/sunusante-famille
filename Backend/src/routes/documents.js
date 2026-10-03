@@ -7,7 +7,14 @@ import { documents } from "../db/schema.js";
 import { upload, UPLOAD_DIR_PATH } from "../middleware/upload.js";
 import { requireFamilyMembership } from "../middleware/auth.js";
 import { familyIdForListQuery, familyIdFromMemberId, familyIdFromResource } from "../lib/familyResolvers.js";
-import { canWriteMember, readableScope } from "../lib/documentAccess.js";
+import {
+  canDeleteDocumentFor,
+  canSeeDocument,
+  canSetConfidential,
+  canWriteMember,
+  presentDocuments,
+  readableScope,
+} from "../lib/documentAccess.js";
 
 const router = Router();
 
@@ -19,7 +26,8 @@ router.get("/", requireFamilyMembership(familyIdForListQuery), async (req, res) 
     if (!memberIds) return res.status(403).json({ error: "Accès refusé à ce dossier" });
     if (memberIds.length === 0) return res.json([]);
     const all = await db.select().from(documents).where(inArray(documents.memberId, memberIds)).orderBy(documents.uploadedAt);
-    res.json(all);
+    // Documents confidentiels retirés pour qui ne doit pas les voir (§10).
+    res.json(await presentDocuments(req, all));
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Erreur serveur" });
@@ -32,16 +40,20 @@ router.put(
   requireFamilyMembership((req) => familyIdFromResource(documents, req.body.id)),
   async (req, res) => {
     try {
-      const { id, title, documentType, description } = req.body;
+      const { id, title, documentType, description, isConfidential } = req.body;
       if (!id) return res.status(400).json({ error: "ID manquant" });
       if (!title?.trim() || !documentType) {
         return res.status(400).json({ error: "Données manquantes" });
       }
 
-      const [existing] = await db.select({ memberId: documents.memberId }).from(documents).where(eq(documents.id, parseInt(id)));
-      if (!existing) return res.status(404).json({ error: "Document introuvable" });
+      const [existing] = await db.select().from(documents).where(eq(documents.id, parseInt(id)));
+      if (!existing || !canSeeDocument(req, existing)) return res.status(404).json({ error: "Document introuvable" });
       if (!(await canWriteMember(req, existing.memberId))) {
         return res.status(403).json({ error: "Vous n'avez pas les droits d'écriture sur ce dossier" });
+      }
+      const confidentialChange = typeof isConfidential === "boolean" && isConfidential !== existing.isConfidential;
+      if (confidentialChange && !canSetConfidential(req, existing.memberId)) {
+        return res.status(403).json({ error: "Seul le titulaire du dossier peut marquer un document confidentiel" });
       }
 
       const [updatedDoc] = await db
@@ -50,10 +62,11 @@ router.put(
           title: title.trim(),
           documentType,
           description: description || null,
+          ...(confidentialChange ? { isConfidential } : {}),
         })
         .where(eq(documents.id, parseInt(id)))
         .returning();
-      res.json(updatedDoc);
+      res.json((await presentDocuments(req, [updatedDoc]))[0] ?? updatedDoc);
     } catch (error) {
       console.error(error);
       res.status(500).json({ error: "Erreur serveur" });
@@ -71,6 +84,8 @@ router.post(
   async (req, res) => {
     try {
       const { memberId, title, documentType, description } = req.body;
+      // Champ multipart : "true" / "false" en texte.
+      const isConfidential = req.body.isConfidential === "true" || req.body.isConfidential === true;
 
       if (!memberId || !title?.trim() || !documentType) {
         // Si un fichier a été uploadé mais que la validation échoue, on le supprime
@@ -81,6 +96,10 @@ router.post(
       if (!(await canWriteMember(req, parseInt(memberId)))) {
         if (req.file) fs.unlink(req.file.path, () => {});
         return res.status(403).json({ error: "Vous n'avez pas les droits d'écriture sur ce dossier" });
+      }
+      if (isConfidential && !canSetConfidential(req, memberId)) {
+        if (req.file) fs.unlink(req.file.path, () => {});
+        return res.status(403).json({ error: "Seul le titulaire du dossier peut marquer un document confidentiel" });
       }
 
       const fileUrl = req.file ? `/uploads/${req.file.filename}` : null;
@@ -95,9 +114,11 @@ router.post(
           description: description || null,
           fileUrl,
           originalName,
+          uploadedByUserId: req.user.id,
+          isConfidential,
         })
         .returning();
-      res.status(201).json(created);
+      res.status(201).json((await presentDocuments(req, [created]))[0]);
     } catch (error) {
       console.error(error);
       if (req.file) fs.unlink(req.file.path, () => {});
@@ -109,7 +130,8 @@ router.post(
   }
 );
 
-// Suppression — Titulaire, Gestionnaire de ce dossier, ou Parent (Admin).
+// Suppression — l'auteur du document ou le titulaire du dossier (UC-15),
+// voir canDeleteDocumentFor dans lib/documentAccess.js.
 router.delete(
   "/",
   requireFamilyMembership((req) => familyIdFromResource(documents, req.query.id)),
@@ -119,9 +141,11 @@ router.delete(
       if (isNaN(id)) return res.status(400).json({ error: "ID invalide" });
 
       const [doc] = await db.select().from(documents).where(eq(documents.id, id));
-      if (!doc) return res.status(404).json({ error: "Document introuvable" });
-      if (!(await canWriteMember(req, doc.memberId))) {
-        return res.status(403).json({ error: "Vous n'avez pas les droits d'écriture sur ce dossier" });
+      if (!doc || !canSeeDocument(req, doc)) return res.status(404).json({ error: "Document introuvable" });
+      if (!(await canDeleteDocumentFor(req, doc))) {
+        return res.status(403).json({
+          error: "Seul l'auteur du document ou le titulaire du dossier peut le supprimer",
+        });
       }
 
       await db.delete(documents).where(eq(documents.id, id));

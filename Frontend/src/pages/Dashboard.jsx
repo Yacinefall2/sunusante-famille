@@ -77,8 +77,7 @@ export default function DashboardPage() {
   const getStatusBadge = (status) => {
     const s = APPOINTMENT_STATUSES.find((a) => a.value === status);
     if (!s) return null;
-    const variant = status === "upcoming" ? "info" : status === "completed" ? "success" : "danger";
-    return <Badge variant={variant}>{s.label}</Badge>;
+    return <Badge variant={s.variant}>{s.label}</Badge>;
   };
 
   if (familyLoading) {
@@ -104,7 +103,7 @@ export default function DashboardPage() {
                 <div className="w-16 h-16 bg-white/20 rounded-2xl flex items-center justify-center mb-3 backdrop-blur-sm">
                   <Heart size={32} className="text-white" />
                 </div>
-                <h2 className="text-3xl font-bold">Bienvenue sur SantéFamille</h2>
+                <h2 className="text-3xl font-bold">Bienvenue sur SunuSanté Famille</h2>
                 <p className="text-teal-100 mt-1">Votre santé, notre priorité</p>
               </div>
             </div>

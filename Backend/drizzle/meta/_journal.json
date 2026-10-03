@@ -15,6 +15,13 @@
       "when": 1790974762429,
       "tag": "0001_acces_par_dossier",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1791025201221,
+      "tag": "0002_fiches_documents_rdv",
+      "breakpoints": true
     }
   ]
 }

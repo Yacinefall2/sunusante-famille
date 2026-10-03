@@ -16,7 +16,7 @@ export function Topbar() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const pageKey = Object.keys(pageTitles).find((k) => pathname.startsWith(k)) ?? "/dashboard";
-  const page = pageTitles[pageKey] ?? { title: "SantéFamille", subtitle: "" };
+  const page = pageTitles[pageKey] ?? { title: "SunuSanté Famille", subtitle: "" };
 
   const initials = user?.name
     ? user.name

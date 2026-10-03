@@ -43,15 +43,34 @@ router.get("/", requireFamilyMembership(familyIdForListQuery), async (req, res) 
   }
 });
 
+// Statut (M3) et présence une fois la date passée (UC-18, UC-33).
+const STATUSES = ["pending", "confirmed", "cancelled"];
+const ATTENDANCES = ["attended", "missed"];
+
+// Valide la présence demandée pour un rendez-vous à la date `date` et au
+// statut `status`. Renvoie { value } ou { error }. La présence ne se renseigne
+// que pour un rendez-vous passé (ou en cours) et non annulé.
+function resolveAttendance(attendance, date, status) {
+  if (attendance === undefined || attendance === null || attendance === "") return { value: null };
+  if (!ATTENDANCES.includes(attendance)) return { error: "Présence invalide" };
+  if (status === "cancelled") return { error: "Un rendez-vous annulé n'a pas de présence à renseigner" };
+  if (new Date(date) > new Date()) return { error: "La présence se renseigne une fois le rendez-vous passé" };
+  return { value: attendance };
+}
+
 router.post(
   "/",
   requireFamilyMembership((req) => familyIdFromMemberId(req.body.memberId)),
   async (req, res) => {
     try {
-      const { memberId, title, doctorName, location, appointmentDate, notes, status } = req.body;
+      const { memberId, title, doctorName, location, appointmentDate, notes } = req.body;
       if (!memberId || !title?.trim() || !appointmentDate) {
         return res.status(400).json({ error: "Données manquantes" });
       }
+      const status = req.body.status ?? "pending";
+      if (!STATUSES.includes(status)) return res.status(400).json({ error: "Statut invalide" });
+      const attendance = resolveAttendance(req.body.attendance, appointmentDate, status);
+      if (attendance.error) return res.status(400).json({ error: attendance.error });
       if (!(await canWriteMember(req, parseInt(memberId)))) {
         return res.status(403).json({ error: "Vous n'avez pas les droits d'écriture sur ce dossier" });
       }
@@ -64,7 +83,8 @@ router.post(
           location: location || null,
           appointmentDate: new Date(appointmentDate),
           notes: notes || null,
-          status: status || "upcoming",
+          status,
+          attendance: attendance.value,
         })
         .returning();
       res.status(201).json(created);
@@ -80,13 +100,21 @@ router.put(
   requireFamilyMembership((req) => familyIdFromResource(appointments, req.body.id)),
   async (req, res) => {
     try {
-      const { id, title, doctorName, location, appointmentDate, notes, status } = req.body;
+      const { id, title, doctorName, location, appointmentDate, notes } = req.body;
 
-      const [existing] = await db.select({ memberId: appointments.memberId }).from(appointments).where(eq(appointments.id, parseInt(id)));
+      const [existing] = await db.select().from(appointments).where(eq(appointments.id, parseInt(id)));
       if (!existing) return res.status(404).json({ error: "Rendez-vous introuvable" });
       if (!(await canWriteMember(req, existing.memberId))) {
         return res.status(403).json({ error: "Vous n'avez pas les droits d'écriture sur ce dossier" });
       }
+      const status = req.body.status ?? existing.status;
+      if (!STATUSES.includes(status)) return res.status(400).json({ error: "Statut invalide" });
+      const date = appointmentDate ?? existing.appointmentDate;
+      // Présence absente de la requête : on garde l'existante si elle reste
+      // valable (rendez-vous toujours passé et non annulé), sinon on l'efface.
+      const requested = "attendance" in req.body ? req.body.attendance : existing.attendance;
+      const attendance = resolveAttendance(requested, date, status);
+      if (attendance.error && "attendance" in req.body) return res.status(400).json({ error: attendance.error });
 
       const [updated] = await db
         .update(appointments)
@@ -96,9 +124,38 @@ router.put(
           location: location || null,
           appointmentDate: appointmentDate ? new Date(appointmentDate) : undefined,
           notes: notes || null,
-          status: status || "upcoming",
+          status,
+          attendance: attendance.error ? null : attendance.value,
         })
         .where(eq(appointments.id, parseInt(id)))
+        .returning();
+      res.json(updated);
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: "Erreur serveur" });
+    }
+  }
+);
+
+// Renseigner la présence seule (« s'y est rendu » / « n'y est pas allé » ou
+// null pour effacer) — boutons rapides de la liste, sans renvoyer tout le
+// rendez-vous.
+router.put(
+  "/attendance",
+  requireFamilyMembership((req) => familyIdFromResource(appointments, req.body.id)),
+  async (req, res) => {
+    try {
+      const [existing] = await db.select().from(appointments).where(eq(appointments.id, parseInt(req.body.id)));
+      if (!existing) return res.status(404).json({ error: "Rendez-vous introuvable" });
+      if (!(await canWriteMember(req, existing.memberId))) {
+        return res.status(403).json({ error: "Vous n'avez pas les droits d'écriture sur ce dossier" });
+      }
+      const attendance = resolveAttendance(req.body.attendance, existing.appointmentDate, existing.status);
+      if (attendance.error) return res.status(400).json({ error: attendance.error });
+      const [updated] = await db
+        .update(appointments)
+        .set({ attendance: attendance.value })
+        .where(eq(appointments.id, existing.id))
         .returning();
       res.json(updated);
     } catch (error) {

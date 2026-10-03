@@ -1,12 +1,26 @@
 import { cn } from "../../lib/utils";
-import { forwardRef } from "react";
+import { forwardRef, useId } from "react";
 
-export const Input = forwardRef(({ className, label, error, ...props }, ref) => {
+// Identifiant du champ : celui fourni par l'appelant, sinon un identifiant
+// généré, pour relier le <label> à son champ (lecteurs d'écran, clic sur le
+// libellé qui place le curseur dans le champ).
+function useFieldId(id) {
+  const generated = useId();
+  return id ?? generated;
+}
+
+export const Input = forwardRef(({ className, label, error, id, ...props }, ref) => {
+  const fieldId = useFieldId(id);
   return (
     <div className="flex flex-col gap-1.5">
-      {label && <label className="text-sm font-semibold text-gray-700">{label}</label>}
+      {label && (
+        <label htmlFor={fieldId} className="text-sm font-semibold text-gray-700">
+          {label}
+        </label>
+      )}
       <input
         ref={ref}
+        id={fieldId}
         className={cn(
           "w-full px-4 py-2.5 rounded-xl border border-gray-200 bg-gray-50",
           "text-gray-800 placeholder-gray-400",
@@ -23,12 +37,18 @@ export const Input = forwardRef(({ className, label, error, ...props }, ref) => 
 });
 Input.displayName = "Input";
 
-export const Textarea = forwardRef(({ className, label, error, ...props }, ref) => {
+export const Textarea = forwardRef(({ className, label, error, id, ...props }, ref) => {
+  const fieldId = useFieldId(id);
   return (
     <div className="flex flex-col gap-1.5">
-      {label && <label className="text-sm font-semibold text-gray-700">{label}</label>}
+      {label && (
+        <label htmlFor={fieldId} className="text-sm font-semibold text-gray-700">
+          {label}
+        </label>
+      )}
       <textarea
         ref={ref}
+        id={fieldId}
         className={cn(
           "w-full px-4 py-2.5 rounded-xl border border-gray-200 bg-gray-50",
           "text-gray-800 placeholder-gray-400 resize-none",
@@ -46,12 +66,18 @@ export const Textarea = forwardRef(({ className, label, error, ...props }, ref) 
 });
 Textarea.displayName = "Textarea";
 
-export const Select = forwardRef(({ className, label, error, children, ...props }, ref) => {
+export const Select = forwardRef(({ className, label, error, id, children, ...props }, ref) => {
+  const fieldId = useFieldId(id);
   return (
     <div className="flex flex-col gap-1.5">
-      {label && <label className="text-sm font-semibold text-gray-700">{label}</label>}
+      {label && (
+        <label htmlFor={fieldId} className="text-sm font-semibold text-gray-700">
+          {label}
+        </label>
+      )}
       <select
         ref={ref}
+        id={fieldId}
         className={cn(
           "w-full px-4 py-2.5 rounded-xl border border-gray-200 bg-gray-50",
           "text-gray-800",

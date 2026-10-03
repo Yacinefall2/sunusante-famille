@@ -81,7 +81,7 @@ export function Sidebar() {
               <Heart size={18} className="text-white" />
             </div>
             <div>
-              <span className="text-lg font-bold text-gray-800">Santé</span>
+              <span className="text-lg font-bold text-gray-800">SunuSanté</span>{" "}
               <span className="text-lg font-bold text-teal-600">Famille</span>
             </div>
           </Link>
@@ -100,7 +100,7 @@ export function Sidebar() {
         {/* Footer */}
         <div className="px-6 py-4 border-t border-gray-100">
           <p className="text-xs text-gray-400 text-center">
-            © 2025 SantéFamille
+            © {new Date().getFullYear()} SunuSanté Famille
             <br />
             Votre santé, notre priorité
           </p>

@@ -1,4 +1,4 @@
-# Documentation technique — SantéFamille
+# Documentation technique — SunuSanté Famille
 
 Guide complet pour comprendre, faire évoluer et dépanner le projet.
 

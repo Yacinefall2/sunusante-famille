@@ -3,7 +3,7 @@ import { inArray } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { members, appointments, treatments, vaccinations, documents } from "../db/schema.js";
 import { requireFamilyMembership } from "../middleware/auth.js";
-import { readableMemberIds } from "../lib/documentAccess.js";
+import { canSeeDocument, readableMemberIds } from "../lib/documentAccess.js";
 
 const router = Router();
 
@@ -41,7 +41,7 @@ router.get(
         .orderBy(appointments.appointmentDate);
 
       const upcoming = upcomingAppointments
-        .filter((a) => new Date(a.appointmentDate) >= now && a.status === "upcoming")
+        .filter((a) => new Date(a.appointmentDate) >= now && a.status !== "cancelled")
         .slice(0, 5);
 
       const activeTreatments = await db
@@ -65,7 +65,7 @@ router.get(
         .where(inArray(documents.memberId, memberIds))
         .orderBy(documents.uploadedAt);
 
-      const recentDocuments = allDocuments.slice(-5).reverse();
+      const recentDocuments = allDocuments.filter((d) => canSeeDocument(req, d)).slice(-5).reverse();
 
       const membersMap = Object.fromEntries(familyMembers.map((m) => [m.id, m]));
 

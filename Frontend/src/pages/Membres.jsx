@@ -6,6 +6,12 @@ import { Button } from "../components/ui/Button";
 import { Input, Textarea, Select } from "../components/ui/Input";
 import { Badge } from "../components/ui/Badge";
 import { MemberAvatar } from "../components/members/MemberAvatar";
+import {
+  CONTACT_FIELDS_DEFAULTS,
+  contactFieldsFromMember,
+  MemberContactFields,
+  MemberContactDetails,
+} from "../components/members/MemberContactFields";
 import { Plus, Pencil, Trash2, Loader2, Users, Heart, Droplets, AlertTriangle, Calendar, FileText, Pill, Syringe, Lock } from "lucide-react";
 import { calculateAge, AVATAR_COLORS, BLOOD_TYPES, formatDate } from "../lib/utils";
 import toast from "react-hot-toast";
@@ -20,6 +26,7 @@ const defaultForm = {
   notes: "",
   avatarColor: AVATAR_COLORS[0],
   status: "connecte_autonome",
+  ...CONTACT_FIELDS_DEFAULTS,
 };
 
 // Axe 3 du modèle d'acteurs — statut de la personne. Change l'affichage et
@@ -199,6 +206,7 @@ export default function MembresPage() {
       notes: m.notes ?? "",
       avatarColor: m.avatarColor ?? AVATAR_COLORS[0],
       status: m.status ?? "connecte_autonome",
+      ...contactFieldsFromMember(m),
     });
     setShowForm(true);
   };
@@ -490,6 +498,9 @@ export default function MembresPage() {
             </div>
             )}
 
+            {/* Coordonnées, médecin traitant, contact d'urgence */}
+            {canRead(viewing) && <MemberContactDetails member={viewing} />}
+
             {/* Allergies */}
             {viewing.allergies && (
               <div>
@@ -696,6 +707,10 @@ export default function MembresPage() {
 
           <Textarea label="Allergies connues" placeholder="Pénicilline, arachides..." value={form.allergies} onChange={f("allergies")} />
           <Textarea label="Notes médicales" placeholder="Antécédents, conditions chroniques..." value={form.notes} onChange={f("notes")} />
+
+          <div className="pt-2 border-t border-gray-100">
+            <MemberContactFields form={form} onChange={(key, value) => setForm((p) => ({ ...p, [key]: value }))} />
+          </div>
 
           <div className="flex gap-3 pt-2">
             <Button variant="ghost" onClick={() => setShowForm(false)} className="flex-1">

@@ -27,6 +27,13 @@ async function attachMedications(rows) {
 
 // Normalise et valide la liste de médicaments envoyée par le formulaire —
 // un traitement doit obligatoirement concerner au moins un médicament.
+// Heures de prise valides (HH:MM, 00:00 à 23:59), sans doublon, triées.
+const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
+function sanitizeIntakeTimes(times) {
+  if (!Array.isArray(times)) return [];
+  return [...new Set(times.filter((t) => typeof t === "string" && TIME_PATTERN.test(t.trim())).map((t) => t.trim()))].sort();
+}
+
 function sanitizeMedications(medications) {
   if (!Array.isArray(medications)) return [];
   return medications
@@ -36,6 +43,7 @@ function sanitizeMedications(medications) {
       dosage: m.dosage?.trim() || null,
       frequency: m.frequency?.trim() || null,
       duration: m.duration?.trim() || null,
+      intakeTimes: sanitizeIntakeTimes(m.intakeTimes),
     }));
 }
 

@@ -18,6 +18,9 @@ import {
   Pencil,
   Eye,
   EyeOff,
+  Lock,
+  Camera,
+  UserRound,
 } from "lucide-react";
 import { formatDateTime, DOCUMENT_TYPES } from "../lib/utils";
 import toast from "react-hot-toast";
@@ -27,6 +30,7 @@ const defaultForm = {
   title: "",
   documentType: "ordonnance",
   description: "",
+  isConfidential: false,
 };
 
 const docTypeIcons = {
@@ -56,7 +60,8 @@ export default function DocumentsPage() {
   // Fiches de la famille issues du contexte, avec le niveau d'accès de
   // l'utilisateur : on ne consulte que les dossiers lisibles, et on n'ajoute /
   // modifie / supprime que sur ceux en accès complet.
-  const { selectedFamily, members: allMembers, writableMembers, canWriteMember, canReadMember } = useFamily();
+  const { selectedFamily, members: allMembers, writableMembers, canWriteMember, canReadMember, isDependent } =
+    useFamily();
   const members = allMembers.filter((m) => canReadMember(m.id));
   const [docs, setDocs] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -69,6 +74,9 @@ export default function DocumentsPage() {
   const [showPreview, setShowPreview] = useState(true);
   const [previewLoading, setPreviewLoading] = useState(false);
   const fileInputRef = useRef(null);
+  // Champ caché ouvrant directement l'appareil photo (photo d'ordonnance).
+  const cameraInputRef = useRef(null);
+  const [togglingConfidential, setTogglingConfidential] = useState(false);
 
   const [stepMember, setStepMember] = useState(null);
   const [stepType, setStepType] = useState(null);
@@ -145,6 +153,7 @@ export default function DocumentsPage() {
       title: doc.title,
       documentType: doc.documentType,
       description: doc.description ?? "",
+      isConfidential: !!doc.isConfidential,
     });
 
     setFile(null);
@@ -172,6 +181,44 @@ export default function DocumentsPage() {
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
+    if (cameraInputRef.current) {
+      cameraInputRef.current.value = "";
+    }
+  };
+
+  // Le caractère confidentiel ne peut être choisi à l'ajout que sur sa propre
+  // fiche, et jamais par un Dépendant (règle appliquée aussi par le serveur).
+  const formMember = allMembers.find((m) => m.id.toString() === form.memberId);
+  const canMarkConfidentialOnAdd = !isDependent && !!formMember?.isMine;
+
+  // Bascule rapide "Confidentiel" depuis le détail (titulaire de la fiche).
+  const toggleConfidential = async (doc) => {
+    setTogglingConfidential(true);
+    try {
+      const res = await fetch("/api/documents", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: doc.id,
+          title: doc.title,
+          documentType: doc.documentType,
+          description: doc.description || "",
+          isConfidential: !doc.isConfidential,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        toast.error(err.error || "Erreur lors de la modification du document");
+        return;
+      }
+      const updated = await res.json().catch(() => null);
+      const next = updated && updated.id ? updated : { ...doc, isConfidential: !doc.isConfidential };
+      setDocs((list) => list.map((d) => (d.id === doc.id ? { ...d, ...next } : d)));
+      setViewing((v) => (v && v.id === doc.id ? { ...v, ...next } : v));
+      toast.success(next.isConfidential ? "Document marqué confidentiel" : "Le document n'est plus confidentiel");
+    } finally {
+      setTogglingConfidential(false);
+    }
   };
 
   const save = async () => {
@@ -194,6 +241,8 @@ export default function DocumentsPage() {
             title: form.title.trim(),
             documentType: form.documentType,
             description: form.description || "",
+            // N'envoyé que si l'utilisateur peut le modifier (sinon 403).
+            ...(editing.canSetConfidential ? { isConfidential: !!form.isConfidential } : {}),
           }),
         });
 
@@ -217,6 +266,10 @@ export default function DocumentsPage() {
         body.append("title", form.title.trim());
         body.append("documentType", form.documentType);
         body.append("description", form.description || "");
+        // Envoyé uniquement quand l'option est proposée (sa propre fiche).
+        if (canMarkConfidentialOnAdd) {
+          body.append("isConfidential", form.isConfidential ? "true" : "false");
+        }
 
         if (file) {
           body.append("file", file);
@@ -576,11 +629,12 @@ export default function DocumentsPage() {
                             </a>
                           )}
 
-                          {canWriteMember(doc.memberId) && (
+                          {doc.canDelete && (
                             <button
                               onClick={() =>
                                 deleteDocFromCard(doc.id)
                               }
+                              title="Supprimer"
                               className="p-1.5 rounded-lg hover:bg-red-50 text-gray-400 hover:text-red-500 transition-colors"
                             >
                               <Trash2 size={14} />
@@ -602,6 +656,13 @@ export default function DocumentsPage() {
                             doc.documentType
                           )}
                         </span>
+
+                        {doc.isConfidential && (
+                          <span className="text-xs px-2 py-0.5 rounded-full font-medium flex items-center gap-1 bg-amber-50 text-amber-700">
+                            <Lock size={10} />
+                            Confidentiel
+                          </span>
+                        )}
                       </div>
 
                       {doc.description && (
@@ -614,6 +675,13 @@ export default function DocumentsPage() {
                         <p className="text-xs text-gray-400 mb-3 truncate flex items-center gap-1">
                           <FileText size={11} />{" "}
                           {doc.originalName}
+                        </p>
+                      )}
+
+                      {doc.uploadedByName && (
+                        <p className="text-xs text-gray-400 mb-3 truncate flex items-center gap-1">
+                          <UserRound size={11} /> Ajouté par{" "}
+                          {doc.uploadedByName}
                         </p>
                       )}
 
@@ -683,6 +751,13 @@ export default function DocumentsPage() {
                         viewing.documentType
                       )}
                     </span>
+
+                    {viewing.isConfidential && (
+                      <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full font-medium mt-1 ml-1.5 bg-amber-50 text-amber-700">
+                        <Lock size={10} />
+                        Confidentiel
+                      </span>
+                    )}
                   </div>
                 </div>
 
@@ -747,8 +822,52 @@ export default function DocumentsPage() {
                     </p>
                   </div>
                 )}
+
+                {viewing.uploadedByName && (
+                  <div className="bg-gray-50 rounded-xl p-3">
+                    <p className="text-xs text-gray-400 font-medium flex items-center gap-1">
+                      <UserRound size={11} /> Ajouté par
+                    </p>
+
+                    <p className="text-sm font-semibold text-gray-700">
+                      {viewing.uploadedByName}
+                    </p>
+                  </div>
+                )}
               </div>
             </div>
+
+            {/* Confidentialité : modifiable par le titulaire de la fiche */}
+            {viewing.canSetConfidential && (
+              <div className="flex items-center justify-between gap-3 bg-amber-50/60 border border-amber-100 rounded-xl p-3">
+                <div className="flex items-start gap-2">
+                  <Lock size={16} className="text-amber-600 mt-0.5 flex-shrink-0" />
+                  <div>
+                    <p className="text-sm font-semibold text-gray-700">Document confidentiel</p>
+                    <p className="text-xs text-gray-500">
+                      Visible seulement par vous et l'administrateur familial.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={!!viewing.isConfidential}
+                  disabled={togglingConfidential}
+                  onClick={() => toggleConfidential(viewing)}
+                  className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${
+                    viewing.isConfidential ? "bg-amber-500" : "bg-gray-300"
+                  }`}
+                  title={viewing.isConfidential ? "Retirer le caractère confidentiel" : "Marquer comme confidentiel"}
+                >
+                  <span
+                    className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
+                      viewing.isConfidential ? "translate-x-5" : "translate-x-0.5"
+                    }`}
+                  />
+                </button>
+              </div>
+            )}
 
             {viewing.description && (
               <div>
@@ -863,7 +982,7 @@ export default function DocumentsPage() {
             )}
 
             <div className="flex gap-3 pt-2 border-t border-gray-100">
-              {canWriteMember(viewing.memberId) && (
+              {viewing.canDelete && (
                 <Button
                   variant="ghost"
                   onClick={() =>
@@ -960,6 +1079,27 @@ export default function DocumentsPage() {
             onChange={f("description")}
           />
 
+          {/* Confidentialité : à l'ajout sur sa propre fiche (hors Dépendant),
+              ou en modification si le serveur l'autorise (titulaire). */}
+          {(editing ? editing.canSetConfidential : canMarkConfidentialOnAdd) && (
+            <label className="flex items-start gap-3 bg-amber-50/60 border border-amber-100 rounded-xl p-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={!!form.isConfidential}
+                onChange={(e) =>
+                  setForm((p) => ({ ...p, isConfidential: e.target.checked }))
+                }
+                className="w-4 h-4 mt-0.5 rounded text-teal-600"
+              />
+              <span className="text-sm text-gray-700">
+                <span className="font-semibold inline-flex items-center gap-1">
+                  <Lock size={13} className="text-amber-600" /> Document confidentiel
+                </span>{" "}
+                (visible seulement par vous et l'administrateur familial)
+              </span>
+            </label>
+          )}
+
           <div>
             <label className="text-sm font-semibold text-gray-700 block mb-1.5">
               Fichier
@@ -988,7 +1128,34 @@ export default function DocumentsPage() {
                   className="hidden"
                 />
               </label>
-            ) : (
+            ) : null}
+
+            {/* Photo d'ordonnance : ouvre directement l'appareil photo sur
+                mobile ; alimente le même fichier sélectionné. */}
+            {!file && (
+              <div className="mt-2 flex justify-center">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => cameraInputRef.current?.click()}
+                >
+                  <Camera size={15} />
+                  Prendre une photo
+                </Button>
+              </div>
+            )}
+
+            <input
+              ref={cameraInputRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              onChange={handleFileChange}
+              className="hidden"
+            />
+
+            {file ? (
               <div className="flex items-center justify-between gap-3 border border-gray-200 rounded-xl px-4 py-3 bg-gray-50">
                 <div className="flex items-center gap-2 min-w-0">
                   <FileText
@@ -1013,7 +1180,7 @@ export default function DocumentsPage() {
                   <X size={16} />
                 </button>
               </div>
-            )}
+            ) : null}
 
             <p className="text-xs text-gray-400 mt-1.5">
               Le fichier est optionnel : vous pouvez aussi créer une fiche

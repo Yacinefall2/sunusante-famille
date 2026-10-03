@@ -515,7 +515,7 @@ export default function FamilySettingsPage() {
 
           <p className="text-xs text-gray-400 bg-gray-50 rounded-xl px-3 py-2">
             💡 Un email d&apos;invitation est toujours envoyé, avec un lien sécurisé valide 30 jours — même si
-            cette personne a déjà un compte SantéFamille.
+            cette personne a déjà un compte SunuSanté Famille.
           </p>
           <div className="flex gap-3 pt-2">
             <Button variant="ghost" onClick={() => setShowInvite(false)} className="flex-1">

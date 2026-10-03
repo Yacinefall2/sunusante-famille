@@ -33,7 +33,7 @@ export default function LoginPage() {
           <div className="w-12 h-12 bg-gradient-to-br from-teal-500 to-blue-600 rounded-xl flex items-center justify-center shadow-md mb-3">
             <Heart size={22} className="text-white" />
           </div>
-          <h1 className="text-xl font-bold text-gray-800">Connexion à SantéFamille</h1>
+          <h1 className="text-xl font-bold text-gray-800">Connexion à SunuSanté Famille</h1>
         </div>
         <form onSubmit={submit} className="space-y-4">
           <Input

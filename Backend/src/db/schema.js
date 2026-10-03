@@ -31,6 +31,14 @@ export const members = pgTable("members", {
   bloodType: varchar("blood_type", { length: 10 }),
   allergies: text("allergies"),
   notes: text("notes"),
+  // Coordonnées (M2, UC-13) et contact d'urgence (fiche d'urgence, §5).
+  // Données du dossier : visibles seulement des comptes qui le lisent.
+  phone: varchar("phone", { length: 30 }),
+  doctorName: varchar("doctor_name", { length: 150 }),
+  doctorPhone: varchar("doctor_phone", { length: 30 }),
+  emergencyContactName: varchar("emergency_contact_name", { length: 150 }),
+  emergencyContactRelation: varchar("emergency_contact_relation", { length: 60 }),
+  emergencyContactPhone: varchar("emergency_contact_phone", { length: 30 }),
   avatarColor: varchar("avatar_color", { length: 20 }).default("#3B82F6"),
   // Axe 3 du modèle d'acteurs — statut de la personne. Détermine l'affichage
   // et le canal de notification, JAMAIS les droits d'accès (ceux-ci relèvent
@@ -69,7 +77,11 @@ export const appointments = pgTable("appointments", {
   location: varchar("location", { length: 255 }),
   appointmentDate: timestamp("appointment_date").notNull(),
   notes: text("notes"),
-  status: varchar("status", { length: 50 }).default("upcoming").notNull(), // upcoming | completed | cancelled
+  // Statut (M3) : pending (en attente) | confirmed (confirmé) | cancelled (annulé)
+  status: varchar("status", { length: 50 }).default("pending").notNull(),
+  // Présence, renseignée une fois la date passée (UC-18, UC-33) :
+  // attended (s'y est rendu) | missed (n'y est pas allé) | null (non renseignée)
+  attendance: varchar("attendance", { length: 20 }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -101,6 +113,9 @@ export const treatmentMedications = pgTable("treatment_medications", {
   dosage: varchar("dosage", { length: 100 }),
   frequency: varchar("frequency", { length: 100 }),
   duration: varchar("duration", { length: 100 }),
+  // Heures de prise au format HH:MM (ex. {"08:00","20:00"}) — base des
+  // rappels de prise (UC-56). La fréquence texte reste un complément libre.
+  intakeTimes: text("intake_times").array().default(sql`'{}'::text[]`).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -130,6 +145,12 @@ export const documents = pgTable("documents", {
   description: text("description"),
   fileUrl: text("file_url"),
   originalName: varchar("original_name", { length: 255 }),
+  // Auteur du document (UC-15 : suppression par l'auteur ou le titulaire).
+  // NULL pour les documents ajoutés avant l'enregistrement de l'auteur.
+  uploadedByUserId: integer("uploaded_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  // Document confidentiel (UC-16) : visible seulement du titulaire du
+  // dossier et de l'Administrateur familial A1 (§10).
+  isConfidential: boolean("is_confidential").default(false).notNull(),
   uploadedAt: timestamp("uploaded_at").defaultNow().notNull(),
 });
 

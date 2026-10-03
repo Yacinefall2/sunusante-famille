@@ -69,7 +69,7 @@ services:
       SMTP_SECURE: ${SMTP_SECURE:-false}
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASS: ${SMTP_PASS:-}
-      SMTP_FROM: ${SMTP_FROM:-SantéFamille <no-reply@santefamille.local>}
+      SMTP_FROM: ${SMTP_FROM:-SunuSanté Famille <no-reply@santefamille.local>}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:8080}
     depends_on:
       db:

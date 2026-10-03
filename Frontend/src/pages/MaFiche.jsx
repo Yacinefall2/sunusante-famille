@@ -5,7 +5,8 @@ import { useFamily } from "../context/FamilyContext";
 import { Button } from "../components/ui/Button";
 import { Input, Textarea, Select } from "../components/ui/Input";
 import { MemberAvatar } from "../components/members/MemberAvatar";
-import { UserCheck, UserPlus, LogOut } from "lucide-react";
+import { CONTACT_FIELDS_DEFAULTS, MemberContactFields } from "../components/members/MemberContactFields";
+import { UserCheck, UserPlus, LogOut, ChevronDown } from "lucide-react";
 import { AVATAR_COLORS, BLOOD_TYPES } from "../lib/utils";
 import toast from "react-hot-toast";
 
@@ -16,6 +17,7 @@ const defaultForm = {
   gender: "",
   bloodType: "",
   allergies: "",
+  ...CONTACT_FIELDS_DEFAULTS,
 };
 
 // Écran "Ma fiche" — bloquant tant que le compte n'est relié à aucune fiche
@@ -28,6 +30,8 @@ export default function MaFichePage() {
   const [form, setForm] = useState(defaultForm);
   const [saving, setSaving] = useState(false);
   const [claimingId, setClaimingId] = useState(null);
+  // Section repliable "Informations complémentaires" (contacts, médecin...).
+  const [showMore, setShowMore] = useState(false);
   const navigate = useNavigate();
 
   const handleLogout = async () => {
@@ -161,6 +165,24 @@ export default function MaFichePage() {
             ))}
           </Select>
           <Textarea label="Allergies connues" placeholder="Pénicilline, arachides..." value={form.allergies} onChange={f("allergies")} />
+          <div className="border border-gray-200 rounded-xl">
+            <button
+              type="button"
+              onClick={() => setShowMore((v) => !v)}
+              className="w-full flex items-center justify-between px-4 py-3 text-sm font-semibold text-gray-700 hover:bg-gray-50 rounded-xl"
+              aria-expanded={showMore}
+            >
+              <span>
+                Informations complémentaires <span className="font-normal text-gray-400">(facultatif)</span>
+              </span>
+              <ChevronDown size={16} className={`text-gray-400 transition-transform ${showMore ? "rotate-180" : ""}`} />
+            </button>
+            {showMore && (
+              <div className="px-4 pb-4 pt-1">
+                <MemberContactFields form={form} onChange={(key, value) => setForm((p) => ({ ...p, [key]: value }))} />
+              </div>
+            )}
+          </div>
           <Button onClick={create} loading={saving} className="w-full">
             <UserPlus size={16} />
             Créer ma fiche

@@ -1,4 +1,4 @@
-# SantéFamille — Node.js/Express + React + PostgreSQL
+# SunuSanté Famille — Node.js/Express + React + PostgreSQL
 
 Réécriture du projet (initialement en Next.js) en architecture séparée :
 

@@ -6,7 +6,7 @@ import { documents } from "../db/schema.js";
 import { UPLOAD_DIR_PATH } from "../middleware/upload.js";
 import { requireFamilyMembership } from "../middleware/auth.js";
 import { familyIdFromMemberId } from "../lib/familyResolvers.js";
-import { canReadMember } from "../lib/documentAccess.js";
+import { canReadMember, canSeeDocument } from "../lib/documentAccess.js";
 
 // Fichiers téléversés (ordonnances, résultats, imagerie). Servis uniquement à
 // un compte qui peut lire le dossier auquel le document appartient — même
@@ -34,7 +34,7 @@ router.get(
   requireFamilyMembership((req) => familyIdFromMemberId(req.document.memberId)),
   async (req, res) => {
     try {
-      if (!(await canReadMember(req, req.document.memberId))) {
+      if (!(await canReadMember(req, req.document.memberId)) || !canSeeDocument(req, req.document)) {
         return res.status(403).json({ error: "Accès refusé à ce dossier" });
       }
       const filePath = path.join(UPLOAD_DIR_PATH, path.basename(req.document.fileUrl));

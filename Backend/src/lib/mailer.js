@@ -9,7 +9,7 @@ const transporter = nodemailer.createTransport({
     : undefined,
 });
 
-const FROM = process.env.SMTP_FROM || "SantéFamille <no-reply@santefamille.local>";
+const FROM = process.env.SMTP_FROM || "SunuSanté Famille <no-reply@santefamille.local>";
 const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:5173";
 
 const ROLE_LABELS = {

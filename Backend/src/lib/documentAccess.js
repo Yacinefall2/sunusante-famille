@@ -1,6 +1,6 @@
 import { eq, and, ne, inArray, isNotNull } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { documentRoles, familyMemberships, members } from "../db/schema.js";
+import { documentRoles, familyMemberships, members, users } from "../db/schema.js";
 
 // ── Contrôle d'accès dossier par dossier ─────────────────────────────────────
 // Point unique de décision : chaque route qui lit ou écrit des données
@@ -135,6 +135,67 @@ export async function canManageRoles(req, memberId) {
   if (req.membership.role === "dependent") return false;
   if (req.membership.linkedMemberId === parseInt(memberId)) return true;
   return req.membership.role === "parent" && (await canWriteMember(req, memberId));
+}
+
+// ── Documents : confidentialité (UC-16, §10) et suppression (UC-15) ─────────
+
+// Titulaire de la fiche = compte qui y est relié.
+export function isHolder(req, memberId) {
+  return req.membership.linkedMemberId === parseInt(memberId);
+}
+
+// Un document confidentiel n'est visible que du titulaire du dossier et de
+// l'Administrateur familial A1 (qui doit par ailleurs pouvoir lire le dossier).
+export function canSeeDocument(req, doc) {
+  return !doc.isConfidential || isHolder(req, doc.memberId) || req.membership.isPrimaryAdmin;
+}
+
+// Seul le titulaire marque un document confidentiel — jamais un adolescent (§9.6).
+export function canSetConfidential(req, memberId) {
+  return isHolder(req, memberId) && req.membership.role !== "dependent";
+}
+
+// Suppression : accès complet au dossier ET (auteur du document OU titulaire
+// du dossier). Documents antérieurs sans auteur connu : le titulaire, ou un
+// Administrateur si la fiche n'est reliée à aucun compte.
+async function canDeleteDocument(req, doc, accountFiches) {
+  if (!(await canWriteMember(req, doc.memberId))) return false;
+  if (doc.uploadedByUserId === req.user.id || isHolder(req, doc.memberId)) return true;
+  return doc.uploadedByUserId === null && req.membership.role === "parent" && !accountFiches.has(doc.memberId);
+}
+
+async function accountFichesOf(familyId) {
+  const rows = await db
+    .select({ linkedMemberId: familyMemberships.linkedMemberId })
+    .from(familyMemberships)
+    .where(and(eq(familyMemberships.familyId, familyId), isNotNull(familyMemberships.linkedMemberId)));
+  return new Set(rows.map((r) => r.linkedMemberId));
+}
+
+export async function canDeleteDocumentFor(req, doc) {
+  return canSeeDocument(req, doc) && canDeleteDocument(req, doc, await accountFichesOf(req.familyId));
+}
+
+// Filtre les documents visibles et ajoute pour l'interface : canDelete,
+// canSetConfidential et uploadedByName.
+export async function presentDocuments(req, docs) {
+  const visible = docs.filter((d) => canSeeDocument(req, d));
+  if (visible.length === 0) return [];
+  const accountFiches = await accountFichesOf(req.familyId);
+  const authorIds = [...new Set(visible.map((d) => d.uploadedByUserId).filter(Boolean))];
+  const authors = new Map(
+    authorIds.length > 0
+      ? (await db.select({ id: users.id, name: users.name }).from(users).where(inArray(users.id, authorIds))).map((u) => [u.id, u.name])
+      : []
+  );
+  return Promise.all(
+    visible.map(async (d) => ({
+      ...d,
+      uploadedByName: authors.get(d.uploadedByUserId) ?? null,
+      canDelete: await canDeleteDocument(req, d, accountFiches),
+      canSetConfidential: canSetConfidential(req, d.memberId),
+    }))
+  );
 }
 
 // Enregistre un rôle Axe 2 pour un utilisateur sur une fiche — remplace

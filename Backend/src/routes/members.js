@@ -16,6 +16,7 @@ const router = Router();
 
 function memberValues(body) {
   const { firstName, lastName, dateOfBirth, gender, bloodType, allergies, notes, avatarColor, status } = body;
+  const text = (v) => (typeof v === "string" && v.trim() ? v.trim() : null);
   return {
     firstName: firstName?.trim(),
     lastName: lastName?.trim(),
@@ -24,6 +25,12 @@ function memberValues(body) {
     bloodType: bloodType || null,
     allergies: allergies || null,
     notes: notes || null,
+    phone: text(body.phone),
+    doctorName: text(body.doctorName),
+    doctorPhone: text(body.doctorPhone),
+    emergencyContactName: text(body.emergencyContactName),
+    emergencyContactRelation: text(body.emergencyContactRelation),
+    emergencyContactPhone: text(body.emergencyContactPhone),
     avatarColor: avatarColor || "#3B82F6",
     ...(VALID_STATUSES.includes(status) ? { status } : {}),
   };
