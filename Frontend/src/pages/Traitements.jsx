@@ -53,6 +53,16 @@ function IntakeTimesEditor({ value, onChange }) {
     setCustom("");
   };
 
+  // Une heure saisie est ajoutée dès qu'on quitte le champ (y compris en
+  // cliquant directement sur « Enregistrer ») : sinon elle serait perdue en
+  // silence et aucun rappel ne partirait.
+  const commitTyped = () => {
+    if (TIME_RE.test(custom)) {
+      onChange(normalizeTimes([...times, custom]));
+      setCustom("");
+    }
+  };
+
   return (
     <div className="mt-3">
       <label className="text-sm font-semibold text-gray-700 flex items-center gap-1.5">
@@ -80,6 +90,7 @@ function IntakeTimesEditor({ value, onChange }) {
           type="time"
           value={custom}
           onChange={(e) => setCustom(e.target.value)}
+          onBlur={commitTyped}
           onKeyDown={(e) => {
             if (e.key === "Enter") {
               e.preventDefault();
@@ -110,7 +121,9 @@ function IntakeTimesEditor({ value, onChange }) {
           ))}
         </div>
       ) : (
-        <p className="text-xs text-gray-400 mt-2">Aucune heure de prise définie.</p>
+        <p className="text-xs text-amber-600 mt-2">
+          Aucune heure de prise : aucun rappel ne sera envoyé pour ce médicament.
+        </p>
       )}
     </div>
   );
@@ -521,8 +534,10 @@ export default function TraitementsPage() {
                         <span key={i} className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-violet-50 text-violet-700 font-medium">
                           <Pill size={10} />
                           {m.name}
-                          {normalizeTimes(m.intakeTimes).length > 0 && (
+                          {normalizeTimes(m.intakeTimes).length > 0 ? (
                             <span className="text-violet-500 font-normal">({formatIntakeTimes(m.intakeTimes)})</span>
+                          ) : (
+                            t.isActive && <span className="text-amber-600 font-normal">(aucun rappel)</span>
                           )}
                         </span>
                       ))}
