@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppShell } from "../components/layout/AppShell";
 import { useFamily } from "../context/FamilyContext";
 import { Modal } from "../components/ui/Modal";
@@ -6,8 +6,11 @@ import { Button } from "../components/ui/Button";
 import { Input, Textarea, Select } from "../components/ui/Input";
 import { Badge } from "../components/ui/Badge";
 import { MemberAvatar } from "../components/members/MemberAvatar";
-import { Plus, Pencil, Trash2, Loader2, Pill, User, Calendar, Stethoscope, X, Clock } from "lucide-react";
+import { Plus, Pencil, Trash2, Loader2, Pill, User, Calendar, Stethoscope, X, Clock, History } from "lucide-react";
 import { formatDate } from "../lib/utils";
+import { IntakeAnswerButtons, IntakeStatusBadge, NOTIFICATIONS_REFRESH_EVENT } from "../components/notifications/intakes";
+import { format, isToday, parseISO } from "date-fns";
+import { fr } from "date-fns/locale";
 import toast from "react-hot-toast";
 
 const emptyMedication = { name: "", dosage: "", frequency: "", duration: "", intakeTimes: [] };
@@ -113,6 +116,89 @@ function IntakeTimesEditor({ value, onChange }) {
   );
 }
 
+// Affichage court du statut d'une prise sur la carte d'un traitement.
+const INTAKE_CHIPS = {
+  taken: { text: "✓", className: "bg-emerald-50 text-emerald-700", title: "Pris" },
+  not_taken: { text: "✗", className: "bg-red-50 text-red-700", title: "Pas pris" },
+  missed: { text: "sans réponse", className: "bg-gray-100 text-gray-500", title: "Sans réponse" },
+  pending: { text: "en attente", className: "bg-amber-50 text-amber-700", title: "En attente" },
+};
+
+const intakeTime = (intake) => format(parseISO(intake.scheduledAt), "HH:mm");
+
+// Prises du jour d'un traitement, classées par heure croissante.
+function TodayIntakes({ intakes, canAnswer }) {
+  if (intakes.length === 0) return null;
+  return (
+    <div className="mb-3 bg-gray-50 rounded-xl px-3 py-2 space-y-1.5" onClick={(e) => e.stopPropagation()}>
+      <p className="text-xs font-semibold text-gray-500 flex items-center gap-1">
+        <Clock size={11} className="text-violet-500" /> Prises du jour
+      </p>
+      {intakes.map((it) => {
+        const chip = INTAKE_CHIPS[it.status] ?? INTAKE_CHIPS.pending;
+        const answerable = it.status === "pending" && canAnswer(it.memberId);
+        return (
+          <div key={it.id} className="flex items-center justify-between gap-2 flex-wrap">
+            <span className="text-xs text-gray-700 min-w-0 truncate">
+              {it.medicationName}
+              {it.dosage && <span className="text-gray-400"> ({it.dosage})</span>}
+            </span>
+            <div className="flex items-center gap-1.5">
+              <span title={chip.title} className={`text-xs font-semibold px-2 py-0.5 rounded-full ${chip.className}`}>
+                {intakeTime(it)} {chip.text}
+              </span>
+              {answerable && <IntakeAnswerButtons intakeId={it.id} />}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// Historique des prises d'un traitement, regroupé par jour puis par heure.
+function IntakeHistory({ intakes, canAnswer }) {
+  const byDay = useMemo(() => {
+    const groups = new Map();
+    for (const it of intakes) {
+      const key = format(parseISO(it.scheduledAt), "yyyy-MM-dd");
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(it);
+    }
+    return [...groups.entries()]
+      .sort(([a], [b]) => (a < b ? 1 : -1))
+      .map(([day, list]) => [day, list.sort((a, b) => (a.scheduledAt < b.scheduledAt ? -1 : 1))]);
+  }, [intakes]);
+
+  if (byDay.length === 0) {
+    return <p className="text-sm text-gray-400 italic">Aucune prise enregistrée sur cette période.</p>;
+  }
+
+  return (
+    <div className="space-y-3">
+      {byDay.map(([day, list]) => (
+        <div key={day} className="border border-gray-200 rounded-xl overflow-hidden">
+          <div className="bg-gray-50 px-3 py-1.5 text-xs font-bold text-gray-600 capitalize">
+            {format(parseISO(day), "EEEE d MMMM yyyy", { locale: fr })}
+          </div>
+          {list.map((it, i) => (
+            <div key={it.id} className={`flex items-center justify-between gap-2 flex-wrap px-3 py-2 text-sm ${i > 0 ? "border-t border-gray-100" : ""}`}>
+              <span className="text-gray-700 min-w-0">
+                <span className="font-semibold">{intakeTime(it)}</span> · {it.medicationName}
+                {it.dosage && <span className="text-gray-400"> ({it.dosage})</span>}
+              </span>
+              <div className="flex items-center gap-2">
+                <IntakeStatusBadge status={it.status} />
+                {it.status === "pending" && canAnswer(it.memberId) && <IntakeAnswerButtons intakeId={it.id} />}
+              </div>
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 const defaultForm = {
   memberId: "",
   disease: "",
@@ -137,12 +223,43 @@ export default function TraitementsPage() {
   const [saving, setSaving] = useState(false);
   const [filterActive, setFilterActive] = useState("all");
   const [viewing, setViewing] = useState(null);
+  // Prises de médicaments des 14 derniers jours (fiches lisibles).
+  const [intakes, setIntakes] = useState([]);
+
+  const loadIntakes = useCallback(async () => {
+    if (!selectedFamily) return;
+    try {
+      const res = await fetch(`/api/intakes?familyId=${selectedFamily.id}&days=14`);
+      const data = res.ok ? await res.json() : [];
+      setIntakes(Array.isArray(data) ? data : []);
+    } catch {
+      setIntakes([]);
+    }
+  }, [selectedFamily]);
 
   useEffect(() => {
     if (selectedFamily) {
       load();
+      loadIntakes();
     }
-  }, [selectedFamily]);
+  }, [selectedFamily, loadIntakes]);
+
+  // Rechargement des prises après une réponse (ici, sur le tableau de bord
+  // ou depuis la cloche) : `respondIntake` émet cet événement global.
+  useEffect(() => {
+    window.addEventListener(NOTIFICATIONS_REFRESH_EVENT, loadIntakes);
+    return () => window.removeEventListener(NOTIFICATIONS_REFRESH_EVENT, loadIntakes);
+  }, [loadIntakes]);
+
+  // Peut répondre à une prise : titulaire de la fiche (adolescent, dépendant
+  // inclus) ou personne ayant l'accès complet à la fiche.
+  const canAnswer = (memberId) => !!members.find((m) => m.id === memberId)?.isMine || canWriteMember(memberId);
+
+  const intakesOf = (treatmentId) => intakes.filter((it) => it.treatmentId === treatmentId);
+  const todayIntakesOf = (treatmentId) =>
+    intakesOf(treatmentId)
+      .filter((it) => isToday(parseISO(it.scheduledAt)))
+      .sort((a, b) => (a.scheduledAt < b.scheduledAt ? -1 : 1));
 
   const load = async () => {
     if (!selectedFamily) return;
@@ -396,6 +513,8 @@ export default function TraitementsPage() {
                     </div>
                   </div>
 
+                  <TodayIntakes intakes={todayIntakesOf(t.id)} canAnswer={canAnswer} />
+
                   {meds.length > 0 && (
                     <div className="flex flex-wrap gap-1.5 mb-2">
                       {meds.slice(0, 3).map((m, i) => (
@@ -533,6 +652,14 @@ export default function TraitementsPage() {
                   </div>
                 )}
               </div>
+            </div>
+
+            {/* Historique des prises */}
+            <div>
+              <h4 className="text-sm font-bold text-gray-700 uppercase tracking-wide mb-3 flex items-center gap-1.5">
+                <History size={14} className="text-violet-500" /> Historique des prises (14 derniers jours)
+              </h4>
+              <IntakeHistory intakes={intakesOf(viewing.id)} canAnswer={canAnswer} />
             </div>
 
             {/* Notes */}

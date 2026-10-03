@@ -1,6 +1,7 @@
-import { Bell, LogOut } from "lucide-react";
+import { LogOut } from "lucide-react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
+import { NotificationBell } from "../notifications/NotificationBell";
 
 const pageTitles = {
   "/dashboard": { title: "Tableau de bord", subtitle: "Vue d'ensemble de la famille" },
@@ -10,6 +11,7 @@ const pageTitles = {
   "/vaccinations": { title: "Carnet de vaccinations", subtitle: "Suivi du calendrier vaccinal" },
   "/documents": { title: "Documents médicaux", subtitle: "Ordonnances, résultats et bilans" },
   "/famille": { title: "Accès & rôles", subtitle: "Comptes, rôles et invitations" },
+  "/notifications": { title: "Notifications", subtitle: "Rappels et préférences" },
 };
 
 export function Topbar() {
@@ -40,10 +42,7 @@ export function Topbar() {
         <p className="text-xs text-gray-500 hidden sm:block">{page.subtitle}</p>
       </div>
       <div className="flex items-center gap-3">
-        <button className="relative p-2 rounded-xl hover:bg-gray-50 text-gray-500 transition-colors">
-          <Bell size={20} />
-          <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-teal-500 rounded-full" />
-        </button>
+        <NotificationBell />
         <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl">
           <div className="w-8 h-8 bg-gradient-to-br from-teal-400 to-blue-500 rounded-full flex items-center justify-center text-white text-sm font-bold">
             {initials}

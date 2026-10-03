@@ -246,3 +246,80 @@ export const pendingInvitations = pgTable("pending_invitations", {
   acceptedAt: timestamp("accepted_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
+// ── Prises de médicament (UC-20, UC-44, UC-56) ────────────────────────────────
+// Une ligne par prise prévue (médicament × jour × heure), créée par le moteur
+// de rappels à l'heure dite. La réponse « pris » / « pas pris » est gardée :
+// c'est l'historique de prise du traitement.
+export const medicationIntakes = pgTable(
+  "medication_intakes",
+  {
+    id: serial("id").primaryKey(),
+    medicationId: integer("medication_id")
+      .references(() => treatmentMedications.id, { onDelete: "cascade" })
+      .notNull(),
+    memberId: integer("member_id")
+      .references(() => members.id, { onDelete: "cascade" })
+      .notNull(),
+    scheduledAt: timestamp("scheduled_at").notNull(),
+    // pending (en attente de réponse) | taken (pris) | not_taken (pas pris) | missed (sans réponse)
+    status: varchar("status", { length: 20 }).default("pending").notNull(),
+    respondedByUserId: integer("responded_by_user_id").references(() => users.id, { onDelete: "set null" }),
+    respondedAt: timestamp("responded_at"),
+    remindedAt: timestamp("reminded_at"),
+    followUpAt: timestamp("follow_up_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [uniqueIndex("medication_intakes_medication_time_uq").on(t.medicationId, t.scheduledAt)]
+);
+
+// ── Notifications (M7 — dans l'application et par courriel, §7) ──────────────
+// Une ligne par notification et par destinataire. dedupeKey garantit qu'un
+// même rappel n'est jamais créé deux fois, même si le moteur repasse.
+export const notifications = pgTable(
+  "notifications",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id")
+      .references(() => users.id, { onDelete: "cascade" })
+      .notNull(),
+    familyId: integer("family_id").references(() => families.id, { onDelete: "cascade" }),
+    memberId: integer("member_id").references(() => members.id, { onDelete: "cascade" }),
+    // appointment_reminder | medication_intake | vaccine_reminder | delivery_failure
+    category: varchar("category", { length: 40 }).notNull(),
+    dedupeKey: varchar("dedupe_key", { length: 200 }).notNull(),
+    title: varchar("title", { length: 255 }).notNull(),
+    body: text("body"),
+    // Chemin de l'application à ouvrir depuis la notification (ex. /rendez-vous)
+    link: varchar("link", { length: 255 }),
+    intakeId: integer("intake_id").references(() => medicationIntakes.id, { onDelete: "cascade" }),
+    // Visible dans la cloche (préférence « application » de la catégorie)
+    inApp: boolean("in_app").default(true).notNull(),
+    readAt: timestamp("read_at"),
+    // Courriel : skipped (non demandé) | pending | sent | failed
+    emailStatus: varchar("email_status", { length: 20 }).default("skipped").notNull(),
+    emailAttempts: integer("email_attempts").default(0).notNull(),
+    emailNextAttemptAt: timestamp("email_next_attempt_at"),
+    emailLastError: text("email_last_error"),
+    emailMessageId: varchar("email_message_id", { length: 255 }),
+    emailSentAt: timestamp("email_sent_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [uniqueIndex("notifications_dedupe_uq").on(t.dedupeKey)]
+);
+
+// ── Préférences de notification (UC-65) ──────────────────────────────────────
+// Une ligne par compte et par catégorie — jamais d'interrupteur global (§7.3).
+// Sans ligne, les valeurs par défaut de lib/notificationPreferences.js s'appliquent.
+export const notificationPreferences = pgTable(
+  "notification_preferences",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id")
+      .references(() => users.id, { onDelete: "cascade" })
+      .notNull(),
+    category: varchar("category", { length: 40 }).notNull(),
+    inApp: boolean("in_app").notNull(),
+    email: boolean("email").notNull(),
+  },
+  (t) => [uniqueIndex("notification_preferences_user_category_uq").on(t.userId, t.category)]
+);

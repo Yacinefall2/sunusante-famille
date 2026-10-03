@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { AppShell } from "../components/layout/AppShell";
 import { useFamily } from "../context/FamilyContext";
@@ -22,10 +22,13 @@ import {
   Heart,
 } from "lucide-react";
 import { formatDateTime, formatDate, APPOINTMENT_STATUSES } from "../lib/utils";
+import { IntakeAnswerButtons, NOTIFICATIONS_REFRESH_EVENT } from "../components/notifications/intakes";
+import { format, isToday, parseISO } from "date-fns";
 import toast from "react-hot-toast";
 
 export default function DashboardPage() {
-  const { selectedFamily, families, loadFamilies, loading: familyLoading, isParent, isAdult, myMember } = useFamily();
+  const { selectedFamily, families, loadFamilies, loading: familyLoading, isParent, isAdult, myMember, members, canWriteMember } =
+    useFamily();
   // Seuls les Parents et Adultes peuvent créer une fiche (pas les Dépendants)
   const canCreateFiche = isParent || isAdult;
   const [data, setData] = useState(null);
@@ -33,6 +36,35 @@ export default function DashboardPage() {
   const [showNewFamily, setShowNewFamily] = useState(false);
   const [familyName, setFamilyName] = useState("");
   const [creating, setCreating] = useState(false);
+  // Prises de médicaments récentes (pour la carte "Prises du jour").
+  const [intakes, setIntakes] = useState([]);
+
+  const loadIntakes = useCallback(async () => {
+    if (!selectedFamily) return;
+    try {
+      const res = await fetch(`/api/intakes?familyId=${selectedFamily.id}&days=2`);
+      const d = res.ok ? await res.json() : [];
+      setIntakes(Array.isArray(d) ? d : []);
+    } catch {
+      setIntakes([]);
+    }
+  }, [selectedFamily]);
+
+  // Chargement initial, puis rechargement après chaque réponse à une prise
+  // (événement global émis par `respondIntake`).
+  useEffect(() => {
+    loadIntakes();
+    window.addEventListener(NOTIFICATIONS_REFRESH_EVENT, loadIntakes);
+    return () => window.removeEventListener(NOTIFICATIONS_REFRESH_EVENT, loadIntakes);
+  }, [loadIntakes]);
+
+  // Prises du jour encore en attente auxquelles l'utilisateur peut répondre :
+  // titulaire de la fiche ou accès complet à la fiche.
+  const memberById = (id) => members.find((m) => m.id === id);
+  const pendingToday = intakes
+    .filter((it) => it.status === "pending" && isToday(parseISO(it.scheduledAt)))
+    .filter((it) => !!memberById(it.memberId)?.isMine || canWriteMember(it.memberId))
+    .sort((a, b) => (a.scheduledAt < b.scheduledAt ? -1 : 1));
 
   useEffect(() => {
     if (selectedFamily) {
@@ -221,6 +253,46 @@ export default function DashboardPage() {
             );
           })}
         </div>
+
+        {/* Prises du jour en attente de réponse (masquée s'il n'y en a aucune) */}
+        {pendingToday.length > 0 && (
+          <div className="bg-white rounded-2xl shadow-sm border border-violet-100 p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-bold text-gray-800 flex items-center gap-2">
+                <Pill size={18} className="text-violet-600" /> Prises du jour
+              </h3>
+              <Link to="/traitements" className="text-xs text-teal-600 hover:underline font-medium">
+                Voir les traitements
+              </Link>
+            </div>
+            <div className="space-y-2">
+              {pendingToday.map((it) => {
+                const member = memberById(it.memberId);
+                return (
+                  <div key={it.id} className="flex items-center justify-between gap-3 flex-wrap p-3 rounded-xl border border-gray-50 hover:bg-gray-50 transition-colors">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-10 h-10 rounded-xl bg-violet-50 flex items-center justify-center flex-shrink-0">
+                        <Clock size={18} className="text-violet-600" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="font-semibold text-gray-800 text-sm truncate">
+                          {format(parseISO(it.scheduledAt), "HH:mm")} · {it.medicationName}
+                          {it.dosage && <span className="font-normal text-gray-400"> ({it.dosage})</span>}
+                        </p>
+                        {member && (
+                          <p className="text-xs text-gray-500 truncate">
+                            {member.firstName} {member.lastName}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                    <IntakeAnswerButtons intakeId={it.id} />
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Members */}

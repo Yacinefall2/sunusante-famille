@@ -11,6 +11,7 @@ import {
   X,
   ChevronRight,
   UserCog,
+  Bell,
 } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { useState } from "react";
@@ -23,6 +24,7 @@ const navItems = [
   { href: "/vaccinations", label: "Vaccinations", icon: Syringe },
   { href: "/documents", label: "Documents", icon: FileText },
   { href: "/famille", label: "Accès & rôles", icon: UserCog },
+  { href: "/notifications", label: "Notifications", icon: Bell },
 ];
 
 export function Sidebar() {

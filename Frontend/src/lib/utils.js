@@ -87,3 +87,21 @@ export function getAttendance(attendance) {
 export function attendanceLabel(attendance) {
   return getAttendance(attendance)?.label ?? "";
 }
+
+// Temps écoulé, formulation courte en français : "à l'instant",
+// "il y a 5 min", "il y a 3 h", "hier", "il y a 4 jours", puis la date.
+export function formatTimeAgo(date) {
+  if (!date) return "";
+  const d = typeof date === "string" ? parseISO(date) : date;
+  const now = new Date();
+  const diffMin = Math.floor((now.getTime() - d.getTime()) / 60000);
+  if (diffMin < 1) return "à l'instant";
+  if (diffMin < 60) return `il y a ${diffMin} min`;
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startOfDay = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const days = Math.round((startOfToday - startOfDay) / 86400000);
+  if (days <= 0) return `il y a ${Math.floor(diffMin / 60)} h`;
+  if (days === 1) return "hier";
+  if (days < 7) return `il y a ${days} jours`;
+  return formatDate(d);
+}

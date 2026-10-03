@@ -1,5 +1,9 @@
 import nodemailer from "nodemailer";
 
+// Transport SMTP : Gmail en développement. Pour passer à Brevo (ou tout autre
+// service), il suffit de changer SMTP_HOST / SMTP_USER / SMTP_PASS (relais
+// SMTP smtp-relay.brevo.com) ; les rebonds signalés ensuite par le service
+// arrivent sur /api/webhooks/mail (voir routes/mailWebhooks.js).
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST || "localhost",
   port: parseInt(process.env.SMTP_PORT || "1025"),
@@ -21,7 +25,14 @@ const ROLE_LABELS = {
 // Gabarit commun aux deux courriels transactionnels — un seul bouton large
 // "Accéder à mon compte", expéditeur identifiable, objet explicite, durée de
 // validité annoncée en clair (règle transverse §6.4).
-function accessButtonTemplate({ heading, bodyHtml, link, buttonLabel, validityLabel }) {
+function accessButtonTemplate({
+  heading,
+  bodyHtml,
+  link,
+  buttonLabel,
+  validityLabel,
+  footer = "Si vous n'êtes pas à l'origine de cette demande, vous pouvez ignorer ce courriel.",
+}) {
   return `
     <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto; color: #1f2937;">
       <h2 style="color:#0d9488;">${heading}</h2>
@@ -31,7 +42,7 @@ function accessButtonTemplate({ heading, bodyHtml, link, buttonLabel, validityLa
         text-decoration:none;display:inline-block;font-weight:600;">${buttonLabel}</a>
       </p>
       <p style="color:#9ca3af;font-size:12px;">
-        ${validityLabel} Si vous n'êtes pas à l'origine de cette demande, vous pouvez ignorer ce courriel.
+        ${validityLabel} ${footer}
       </p>
     </div>
   `;
@@ -104,4 +115,24 @@ export async function sendVerificationEmail({ to, name, token }) {
       validityLabel: "Ce lien expire dans 24 heures.",
     }),
   });
+}
+
+// Courriel d'une notification (rappel de rendez-vous, de prise, de vaccin).
+// Renvoie l'identifiant du message, qui permet de rattacher un rebond signalé
+// plus tard par le service d'envoi à cette notification.
+export async function sendNotificationEmail({ to, subject, heading, lines = [], link, buttonLabel = "Voir dans SunuSanté Famille" }) {
+  const info = await transporter.sendMail({
+    from: FROM,
+    to,
+    subject,
+    html: accessButtonTemplate({
+      heading: escapeHtml(heading),
+      bodyHtml: lines.map((l) => `<p>${escapeHtml(l)}</p>`).join(""),
+      link: `${FRONTEND_URL}${link ?? "/dashboard"}`,
+      buttonLabel,
+      validityLabel: "Vous pouvez choisir vos canaux de notification dans l'application.",
+      footer: "",
+    }),
+  });
+  return info.messageId ?? null;
 }

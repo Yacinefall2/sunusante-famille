@@ -29,6 +29,16 @@ versionnées du dossier `Backend/drizzle/` avant de lancer le serveur — aucune
 commande manuelle n'est nécessaire. Une base créée par l'ancien
 `drizzle-kit push` est reprise automatiquement au premier démarrage.
 
+### Rappels et notifications
+
+Le service `worker` (même image que le backend) passe toutes les minutes :
+rappels de rendez-vous (J-3 et J-1), de vaccin (7 jours avant la prochaine
+dose) et de prise de médicament (à l'heure, une relance 30 min plus tard),
+dans l'application et par courriel selon les préférences de chacun. Un
+courriel non remis après 3 tentatives est signalé dans l'application à la
+personne et à l'administrateur familial. Fuseau de référence : `APP_TIMEZONE`
+(Africa/Dakar par défaut). Journal : `docker compose logs -f worker`.
+
 ### Modifier le schéma de la base
 
 1. Modifier `Backend/src/db/schema.js`

@@ -19,7 +19,8 @@ export async function resetDatabase() {
   await db.execute(sql`
     truncate table users, families, members, document_roles, appointments, treatments,
       treatment_medications, vaccinations, documents, email_verification_tokens,
-      family_memberships, refresh_tokens, pending_invitations
+      family_memberships, refresh_tokens, pending_invitations, notifications,
+      medication_intakes, notification_preferences
     restart identity cascade
   `);
 }

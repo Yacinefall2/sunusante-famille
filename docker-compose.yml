@@ -57,8 +57,10 @@ services:
     build: ./Backend
     container_name: santefamille-backend
     restart: unless-stopped
-    environment:
+    environment: &backend-env
       PORT: 4000
+      APP_TIMEZONE: ${APP_TIMEZONE:-Africa/Dakar}
+      MAIL_WEBHOOK_SECRET: ${MAIL_WEBHOOK_SECRET:-}
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-santefamille}
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:8080}
       JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?La variable JWT_ACCESS_SECRET est requise — voir .env.example}
@@ -80,6 +82,25 @@ services:
       - "4000:4000"
     volumes:
       - uploads_data:/app/uploads
+
+  # Moteur de rappels et de notifications (phase D) : même image que le
+  # backend, passe toutes les minutes. Démarre une fois le backend prêt (les
+  # migrations sont alors appliquées).
+  worker:
+    build: ./Backend
+    container_name: santefamille-worker
+    restart: unless-stopped
+    entrypoint: ["node", "worker.js"]
+    environment: *backend-env
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "process.exit(Date.now() - Number(require('fs').readFileSync('/tmp/worker-heartbeat', 'utf8')) < 180000 ? 0 : 1)"]
+      interval: 60s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
 
   frontend:
     build: ./Frontend
