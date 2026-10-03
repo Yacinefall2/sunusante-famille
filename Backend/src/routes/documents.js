@@ -3,37 +3,21 @@ import { eq, inArray } from "drizzle-orm";
 import fs from "node:fs";
 import path from "node:path";
 import { db } from "../db/index.js";
-import { documents, members } from "../db/schema.js";
+import { documents } from "../db/schema.js";
 import { upload, UPLOAD_DIR_PATH } from "../middleware/upload.js";
 import { requireFamilyMembership } from "../middleware/auth.js";
 import { familyIdForListQuery, familyIdFromMemberId, familyIdFromResource } from "../lib/familyResolvers.js";
-import { canWriteDocument } from "../lib/documentAccess.js";
+import { canWriteMember, readableScope } from "../lib/documentAccess.js";
 
 const router = Router();
 
 router.get("/", requireFamilyMembership(familyIdForListQuery), async (req, res) => {
   try {
-    // Un Dépendant ne voit que les documents de sa propre fiche liée.
-    if (req.membership.role === "dependent") {
-      if (!req.membership.linkedMemberId) return res.json([]);
-      const own = await db
-        .select()
-        .from(documents)
-        .where(eq(documents.memberId, req.membership.linkedMemberId))
-        .orderBy(documents.uploadedAt);
-      return res.json(own);
-    }
-
-    const { memberId } = req.query;
-
-    if (memberId) {
-      const all = await db.select().from(documents).where(eq(documents.memberId, parseInt(memberId))).orderBy(documents.uploadedAt);
-      return res.json(all);
-    }
-
-    const familyMembers = await db.select({ id: members.id }).from(members).where(eq(members.familyId, req.familyId));
-    if (familyMembers.length === 0) return res.json([]);
-    const memberIds = familyMembers.map((m) => m.id);
+    // Seules les fiches dont le dossier est lisible par ce compte (voir
+    // lib/documentAccess.js) ; ?memberId= sur une fiche non lisible → 403.
+    const memberIds = await readableScope(req);
+    if (!memberIds) return res.status(403).json({ error: "Accès refusé à ce dossier" });
+    if (memberIds.length === 0) return res.json([]);
     const all = await db.select().from(documents).where(inArray(documents.memberId, memberIds)).orderBy(documents.uploadedAt);
     res.json(all);
   } catch (error) {
@@ -56,7 +40,7 @@ router.put(
 
       const [existing] = await db.select({ memberId: documents.memberId }).from(documents).where(eq(documents.id, parseInt(id)));
       if (!existing) return res.status(404).json({ error: "Document introuvable" });
-      if (!(await canWriteDocument(existing.memberId, req.user.id, req.membership))) {
+      if (!(await canWriteMember(req, existing.memberId))) {
         return res.status(403).json({ error: "Vous n'avez pas les droits d'écriture sur ce dossier" });
       }
 
@@ -94,7 +78,7 @@ router.post(
         return res.status(400).json({ error: "Données manquantes" });
       }
 
-      if (!(await canWriteDocument(parseInt(memberId), req.user.id, req.membership))) {
+      if (!(await canWriteMember(req, parseInt(memberId)))) {
         if (req.file) fs.unlink(req.file.path, () => {});
         return res.status(403).json({ error: "Vous n'avez pas les droits d'écriture sur ce dossier" });
       }
@@ -136,7 +120,7 @@ router.delete(
 
       const [doc] = await db.select().from(documents).where(eq(documents.id, id));
       if (!doc) return res.status(404).json({ error: "Document introuvable" });
-      if (!(await canWriteDocument(doc.memberId, req.user.id, req.membership))) {
+      if (!(await canWriteMember(req, doc.memberId))) {
         return res.status(403).json({ error: "Vous n'avez pas les droits d'écriture sur ce dossier" });
       }
 

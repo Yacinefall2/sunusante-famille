@@ -7,7 +7,9 @@ import {
   timestamp,
   boolean,
   integer,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 
 // ── Familles ────────────────────────────────────────────────────────────────
 export const families = pgTable("families", {
@@ -22,13 +24,6 @@ export const members = pgTable("members", {
   familyId: integer("family_id")
     .references(() => families.id, { onDelete: "cascade" })
     .notNull(),
-  // Compte qui a créé cette fiche — seul ce compte (ou un Parent) peut la
-  // modifier. NULL = fiche créée avant l'ajout de cette règle (modifiable
-  // uniquement par un Parent, par défaut).
-  // Exception : si ce compte a lui-même le rôle "parent" dans la famille,
-  // aucun AUTRE parent ne peut modifier cette fiche — seul ce parent peut
-  // modifier ses propres informations (voir routes/members.js).
-  guardianUserId: integer("guardian_user_id").references(() => users.id, { onDelete: "set null" }),
   firstName: varchar("first_name", { length: 100 }).notNull(),
   lastName: varchar("last_name", { length: 100 }).notNull(),
   dateOfBirth: date("date_of_birth"),
@@ -46,10 +41,10 @@ export const members = pgTable("members", {
 });
 
 // ── Rôles sur un dossier (Axe 2 du modèle d'acteurs) ──────────────────────────
-// Contrairement à guardianUserId (un seul propriétaire par fiche, conservé
-// pour compatibilité), une même fiche peut avoir PLUSIEURS personnes avec des
-// rôles différents et cumulables : Titulaire, Gestionnaire, Relais, Lecteur
-// invité. C'est cette table qui porte l'Axe 2 de la spécification.
+// Une même fiche peut avoir PLUSIEURS personnes avec des rôles différents et
+// cumulables : Gestionnaire (R2), Relais (R3), Lecteur invité (R4). Le
+// Titulaire (R1) n'est pas stocké ici : c'est le compte relié à la fiche
+// (family_memberships.linkedMemberId). Une personne a au plus un rôle par fiche.
 export const documentRoles = pgTable("document_roles", {
   id: serial("id").primaryKey(),
   memberId: integer("member_id")
@@ -61,7 +56,7 @@ export const documentRoles = pgTable("document_roles", {
   // "titulaire" (R1) | "gestionnaire" (R2) | "relais" (R3) | "lecteur_invite" (R4)
   role: varchar("role", { length: 30 }).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+}, (t) => [uniqueIndex("document_roles_member_user_uq").on(t.memberId, t.userId)]);
 
 // ── Rendez-vous ────────────────────────────────────────────────────────────────
 export const appointments = pgTable("appointments", {
@@ -183,11 +178,15 @@ export const familyMemberships = pgTable("family_memberships", {
   // l'espace, promouvoir un co-administrateur, ou être retiré par personne
   // d'autre que lui-même. true uniquement pour le créateur de la famille.
   isPrimaryAdmin: boolean("is_primary_admin").default(false).notNull(),
-  // Fiche membre correspondant à ce compte — utilisé pour le rôle "dependent"
-  // (limite ce qu'il voit à sa propre fiche). Choisi par un Parent, jamais deviné.
+  // Fiche de la personne elle-même (« ma fiche ») : ce compte en est le
+  // Titulaire (R1). Valable pour tous les rôles ; obligatoire pour un
+  // "dependent", qui ne voit que cette fiche. Une fiche n'est reliée qu'à un
+  // seul compte.
   linkedMemberId: integer("linked_member_id").references(() => members.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+}, (t) => [
+  uniqueIndex("family_memberships_linked_member_uq").on(t.linkedMemberId).where(sql`${t.linkedMemberId} is not null`),
+]);
 
 // ── Refresh tokens (permet la révocation au logout + la rotation) ────────────
 export const refreshTokens = pgTable("refresh_tokens", {
@@ -210,10 +209,11 @@ export const pendingInvitations = pgTable("pending_invitations", {
   email: varchar("email", { length: 255 }).notNull(),
   // "parent" | "adult" | "dependent"
   role: varchar("role", { length: 30 }).notNull().default("adult"),
-  // Fiche membre choisie par un Parent si role = "dependent" — reportée sur
+  // Fiche de la personne invitée (« sa fiche »), choisie par un Parent —
+  // obligatoire si role = "dependent", optionnelle sinon. Reportée sur
   // family_memberships.linkedMemberId au moment de l'acceptation.
   linkedMemberId: integer("linked_member_id").references(() => members.id, { onDelete: "set null" }),
-  // Rôle Axe 2 (Titulaire/Gestionnaire/Relais/Lecteur invité) proposé sur un
+  // Rôle Axe 2 (Gestionnaire/Relais/Lecteur invité) proposé sur un
   // dossier précis, fixé AVANT l'envoi comme le rôle d'espace (§6.2/6.3) —
   // reporté dans document_roles au moment de l'acceptation. Optionnel : une
   // invitation peut ne concerner que le rôle d'espace.

@@ -3,7 +3,7 @@ import { eq, and } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { documentRoles, familyMemberships, members, users } from "../db/schema.js";
 import { requireFamilyMembership } from "../middleware/auth.js";
-import { DOCUMENT_ROLES, setDocumentRole } from "../lib/documentAccess.js";
+import { DOCUMENT_ROLES, canManageRoles, setDocumentRole } from "../lib/documentAccess.js";
 
 const router = Router();
 
@@ -32,15 +32,18 @@ async function resolveFamilyIdFromDocumentRoleId(req) {
   return member?.familyId ?? null;
 }
 
-// Liste des rôles Axe 2 attribués sur une fiche — utile pour l'écran de
-// gestion des accès d'un dossier (UC-04). Réservé aux Parents (A1/A2), qui
-// sont les seuls habilités à consulter/modifier l'attribution des rôles.
+// Liste des rôles Axe 2 attribués sur une fiche — écran de gestion des
+// accès d'un dossier (UC-04). Visible de qui peut gérer ces rôles : le
+// Titulaire de la fiche ou un Administrateur y ayant un accès complet.
 router.get(
   "/",
-  requireFamilyMembership(resolveFamilyIdFromMemberQuery, { roles: ["parent"] }),
+  requireFamilyMembership(resolveFamilyIdFromMemberQuery),
   async (req, res) => {
     try {
       const memberId = parseInt(req.query.memberId);
+      if (!(await canManageRoles(req, memberId))) {
+        return res.status(403).json({ error: "Vous ne pouvez pas gérer les accès de ce dossier" });
+      }
       const rows = await db
         .select({
           id: documentRoles.id,
@@ -61,16 +64,20 @@ router.get(
   }
 );
 
-// Attribuer un rôle Axe 2 (Titulaire / Gestionnaire / Relais / Lecteur
-// invité) à un membre de l'espace familial sur une fiche donnée — UC-04.
+// Attribuer un rôle Axe 2 (Gestionnaire / Relais / Lecteur invité) à un
+// membre de l'espace familial sur une fiche donnée — UC-04, et délégation
+// de son propre dossier par le Titulaire (UC-26).
 router.post(
   "/",
-  requireFamilyMembership(resolveFamilyIdFromMemberBody, { roles: ["parent"] }),
+  requireFamilyMembership(resolveFamilyIdFromMemberBody),
   async (req, res) => {
     try {
       const { memberId, userId, role } = req.body;
       if (!memberId || !userId || !DOCUMENT_ROLES.includes(role)) {
         return res.status(400).json({ error: "Données manquantes ou rôle invalide" });
+      }
+      if (!(await canManageRoles(req, memberId))) {
+        return res.status(403).json({ error: "Vous ne pouvez pas gérer les accès de ce dossier" });
       }
       // Un rôle de dossier n'est attribué qu'à un compte de CET espace
       // familial (le Relais est réservé à un membre de la famille, §11).
@@ -81,6 +88,14 @@ router.post(
       if (!targetMembership) {
         return res.status(400).json({ error: "Ce compte n'appartient pas à cet espace familial" });
       }
+      // Le Titulaire d'une fiche en a déjà l'accès complet : pas de rôle en plus.
+      const [holder] = await db
+        .select({ id: familyMemberships.id })
+        .from(familyMemberships)
+        .where(and(eq(familyMemberships.userId, parseInt(userId)), eq(familyMemberships.linkedMemberId, parseInt(memberId))));
+      if (holder) {
+        return res.status(400).json({ error: "Cette personne est déjà titulaire de ce dossier" });
+      }
       const created = await setDocumentRole(parseInt(memberId), parseInt(userId), role);
       res.status(201).json(created);
     } catch (error) {
@@ -90,16 +105,19 @@ router.post(
   }
 );
 
-// Révoquer un rôle Axe 2 — un rôle de dossier est révocable à tout moment
-// (règle transverse §10). Réservé aux Parents pour cette version ; la
-// révocation par le Titulaire lui-même viendra avec l'écran dédié.
+// Révoquer un rôle Axe 2 — révocable à tout moment, par le Titulaire de la
+// fiche ou par un Administrateur y ayant un accès complet (§10 « Révocation »).
 router.delete(
   "/",
-  requireFamilyMembership(resolveFamilyIdFromDocumentRoleId, { roles: ["parent"] }),
+  requireFamilyMembership(resolveFamilyIdFromDocumentRoleId),
   async (req, res) => {
     try {
       const id = parseInt(req.query.id ?? "");
       if (isNaN(id)) return res.status(400).json({ error: "ID invalide" });
+      const [row] = await db.select({ memberId: documentRoles.memberId }).from(documentRoles).where(eq(documentRoles.id, id));
+      if (!(await canManageRoles(req, row.memberId))) {
+        return res.status(403).json({ error: "Vous ne pouvez pas gérer les accès de ce dossier" });
+      }
       await db.delete(documentRoles).where(eq(documentRoles.id, id));
       res.json({ success: true });
     } catch (error) {

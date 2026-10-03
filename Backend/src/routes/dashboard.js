@@ -1,8 +1,9 @@
 import { Router } from "express";
-import { eq, inArray } from "drizzle-orm";
+import { inArray } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { members, appointments, treatments, vaccinations, documents } from "../db/schema.js";
 import { requireFamilyMembership } from "../middleware/auth.js";
+import { readableMemberIds } from "../lib/documentAccess.js";
 
 const router = Router();
 
@@ -11,32 +12,20 @@ router.get(
   requireFamilyMembership((req) => parseInt(req.query.familyId) || null),
   async (req, res) => {
     try {
-      const familyId = req.familyId;
-
-      // Un Dépendant n'a un dashboard scopé qu'à sa propre fiche liée —
-      // le reste de la logique (agrégation) fonctionne à l'identique, juste
-      // sur une liste d'un seul membre au lieu de toute la famille.
-      let familyMembers;
-      if (req.membership.role === "dependent") {
-        if (!req.membership.linkedMemberId) {
-          return res.json({
-            membersCount: 0,
-            upcomingAppointments: [],
-            activeTreatmentsCount: 0,
-            recentVaccinations: [],
-            recentDocuments: [],
-          });
-        }
-        familyMembers = await db.select().from(members).where(eq(members.id, req.membership.linkedMemberId));
-      } else {
-        familyMembers = await db.select().from(members).where(eq(members.familyId, familyId));
-      }
+      // Tableau de bord limité aux dossiers lisibles par ce compte (le sien,
+      // ceux qu'il gère ou consulte) — jamais ceux auxquels il n'a pas accès.
+      const readableIds = await readableMemberIds(req);
+      const familyMembers =
+        readableIds.length > 0
+          ? await db.select().from(members).where(inArray(members.id, readableIds)).orderBy(members.id)
+          : [];
 
       if (familyMembers.length === 0) {
         return res.json({
           membersCount: 0,
+          members: [],
           upcomingAppointments: [],
-          activetreatments: 0,
+          activeTreatmentsCount: 0,
           recentVaccinations: [],
           recentDocuments: [],
         });

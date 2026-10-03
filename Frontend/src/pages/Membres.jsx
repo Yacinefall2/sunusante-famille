@@ -1,13 +1,12 @@
 ﻿import { useEffect, useState } from "react";
 import { AppShell } from "../components/layout/AppShell";
 import { useFamily } from "../context/FamilyContext";
-import { useAuth } from "../context/AuthContext";
 import { Modal } from "../components/ui/Modal";
 import { Button } from "../components/ui/Button";
 import { Input, Textarea, Select } from "../components/ui/Input";
 import { Badge } from "../components/ui/Badge";
 import { MemberAvatar } from "../components/members/MemberAvatar";
-import { Plus, Pencil, Trash2, Loader2, Users, Heart, Droplets, AlertTriangle, Calendar, FileText, Pill, Syringe } from "lucide-react";
+import { Plus, Pencil, Trash2, Loader2, Users, Heart, Droplets, AlertTriangle, Calendar, FileText, Pill, Syringe, Lock } from "lucide-react";
 import { calculateAge, AVATAR_COLORS, BLOOD_TYPES, formatDate } from "../lib/utils";
 import toast from "react-hot-toast";
 
@@ -34,8 +33,9 @@ const STATUS_OPTIONS = [
 ];
 
 // Axe 2 du modèle d'acteurs — rôles attribuables sur un dossier précis.
+// Le Titulaire n'est pas un rôle attribuable : c'est le compte relié à la
+// fiche ("ma fiche").
 const DOCUMENT_ROLE_OPTIONS = [
-  { value: "titulaire", label: "Titulaire (propriétaire du dossier)" },
   { value: "gestionnaire", label: "Gestionnaire (saisit et administre)" },
   { value: "relais", label: "Relais (rappel à transmettre uniquement)" },
   { value: "lecteur_invite", label: "Lecteur invité (consultation seule)" },
@@ -43,10 +43,15 @@ const DOCUMENT_ROLE_OPTIONS = [
 const DOCUMENT_ROLE_LABELS = Object.fromEntries(DOCUMENT_ROLE_OPTIONS.map((r) => [r.value, r.label.split(" (")[0]]));
 
 export default function MembresPage() {
-  const { selectedFamily, isParent, canWrite } = useFamily();
-  const { user } = useAuth();
-  const [members, setMembers] = useState([]);
-  const [loading, setLoading] = useState(false);
+  const {
+    selectedFamily,
+    isParent,
+    isAdult,
+    isDependent,
+    members,
+    membersLoading: loading,
+    reloadMembers: loadMembers,
+  } = useFamily();
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(defaultForm);
@@ -55,14 +60,11 @@ export default function MembresPage() {
   const [viewing, setViewing] = useState(null);
   const [memberStats, setMemberStats] = useState(null);
   const [statsLoading, setStatsLoading] = useState(false);
-  // Rôle (par userId) de chaque compte de la famille — permet de savoir si la
-  // fiche d'un membre appartient à un AUTRE Parent (auquel cas ni modifiable
-  // ni supprimable par le Parent courant, seul l'intéressé peut la modifier).
-  const [roleByUserId, setRoleByUserId] = useState({});
-  // Liste complète des comptes de la famille (nom, email, rôle) — pour le
-  // sélecteur d'attribution de rôle Axe 2 (UC-04).
+  // Liste complète des comptes de la famille (nom, email, rôle, fiche liée) —
+  // pour le sélecteur d'attribution de rôle Axe 2 (UC-04) et pour afficher
+  // le titulaire de chaque fiche.
   const [familyAccounts, setFamilyAccounts] = useState([]);
-  // Rôles Axe 2 (Titulaire/Gestionnaire/Relais/Lecteur invité) attribués sur
+  // Rôles Axe 2 (Gestionnaire/Relais/Lecteur invité) attribués sur
   // la fiche actuellement affichée dans le détail.
   const [memberDocRoles, setMemberDocRoles] = useState([]);
   const [docRolesLoading, setDocRolesLoading] = useState(false);
@@ -71,34 +73,21 @@ export default function MembresPage() {
   const [assigningRole, setAssigningRole] = useState(false);
   const [revokingRoleId, setRevokingRoleId] = useState(null);
 
+  // La liste des fiches vient du contexte famille (rechargée via loadMembers
+  // après chaque création / modification / suppression).
   useEffect(() => {
     if (selectedFamily) {
-      loadMembers();
       loadMemberships();
     }
   }, [selectedFamily]);
-
-  const loadMembers = async () => {
-    if (!selectedFamily) return;
-    setLoading(true);
-    try {
-      const res = await fetch(`/api/members?familyId=${selectedFamily.id}`);
-      const data = await res.json();
-      setMembers(data);
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const loadMemberships = async () => {
     if (!selectedFamily) return;
     try {
       const res = await fetch(`/api/family-memberships?familyId=${selectedFamily.id}`);
       const rows = await res.json();
-      setRoleByUserId(Object.fromEntries(rows.map((r) => [r.userId, r.role])));
-      setFamilyAccounts(rows);
+      setFamilyAccounts(Array.isArray(rows) ? rows : []);
     } catch {
-      setRoleByUserId({});
       setFamilyAccounts([]);
     }
   };
@@ -144,9 +133,14 @@ export default function MembresPage() {
   const revokeDocumentRole = async (id) => {
     setRevokingRoleId(id);
     try {
-      await fetch(`/api/document-roles?id=${id}`, { method: "DELETE" });
-      toast.success("Rôle révoqué");
-      loadDocumentRoles(viewing.id);
+      const res = await fetch(`/api/document-roles?id=${id}`, { method: "DELETE" });
+      if (res.ok) {
+        toast.success("Rôle révoqué");
+        loadDocumentRoles(viewing.id);
+      } else {
+        const err = await res.json().catch(() => ({}));
+        toast.error(err.error || "Erreur lors de la révocation du rôle");
+      }
     } finally {
       setRevokingRoleId(null);
     }
@@ -158,7 +152,14 @@ export default function MembresPage() {
     setMemberStats(null);
     setNewRoleUserId("");
     setNewRoleType("gestionnaire");
-    if (isParent) loadDocumentRoles(m.id);
+    setMemberDocRoles([]);
+    if (canManageRoles(m)) loadDocumentRoles(m.id);
+    // Activité médicale : uniquement pour un dossier lisible (le serveur
+    // refuserait l'accès aux autres).
+    if (!canRead(m)) {
+      setStatsLoading(false);
+      return;
+    }
     try {
       const [apptsRes, vaccsRes, treatsRes, docsRes] = await Promise.all([
         fetch(`/api/appointments?memberId=${m.id}`),
@@ -219,6 +220,9 @@ export default function MembresPage() {
           toast.success("Membre modifié !");
           setShowForm(false);
           loadMembers();
+        } else {
+          const err = await res.json().catch(() => ({}));
+          toast.error(err.error || "Erreur lors de la modification");
         }
       } else {
         const res = await fetch("/api/members", {
@@ -230,6 +234,9 @@ export default function MembresPage() {
           toast.success("Membre ajouté !");
           setShowForm(false);
           loadMembers();
+        } else {
+          const err = await res.json().catch(() => ({}));
+          toast.error(err.error || "Erreur lors de l'ajout");
         }
       }
     } finally {
@@ -241,9 +248,14 @@ export default function MembresPage() {
     if (!confirm("Supprimer ce membre et toutes ses données médicales ?")) return;
     setDeleting(id);
     try {
-      await fetch(`/api/members?id=${id}`, { method: "DELETE" });
-      toast.success("Membre supprimé");
-      loadMembers();
+      const res = await fetch(`/api/members?id=${id}`, { method: "DELETE" });
+      if (res.ok) {
+        toast.success("Membre supprimé");
+        loadMembers();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        toast.error(err.error || "Erreur lors de la suppression");
+      }
     } finally {
       setDeleting(null);
     }
@@ -251,17 +263,29 @@ export default function MembresPage() {
 
   const f = (key) => (e) => setForm((prev) => ({ ...prev, [key]: e.target.value }));
 
-  // Une fiche appartient à un AUTRE Parent si son créateur (guardianUserId)
-  // a le rôle "parent" dans cette famille et n'est pas l'utilisateur courant.
-  // Dans ce cas, aucun Parent ne peut la modifier ni la supprimer — seul
-  // l'intéressé le peut.
-  const isOwnedByAnotherParent = (m) =>
-    !!m.guardianUserId && m.guardianUserId !== user?.id && roleByUserId[m.guardianUserId] === "parent";
+  // Droits par fiche, calculés par le serveur (champ access) :
+  // - modifier : accès complet ("full") ;
+  // - supprimer : Parent avec accès complet, et fiche reliée à aucun compte
+  //   (on ne supprime pas la fiche d'une personne qui a son compte) ;
+  // - gérer les rôles du dossier : sa propre fiche (hors Dépendant), ou
+  //   Parent avec accès complet.
+  const canEdit = (m) => m?.access === "full";
+  const canDelete = (m) => isParent && m?.access === "full" && !m.hasAccount;
+  const canRead = (m) => m?.access === "full" || m?.access === "read";
+  const canManageRoles = (m) => (m?.isMine && !isDependent) || (isParent && m?.access === "full");
+  // Seuls les Parents et Adultes peuvent créer une fiche
+  const canCreateFiche = isParent || isAdult;
 
-  // Seul l'Admin ou la personne qui a créé la fiche peut la modifier — sauf
-  // s'il s'agit de la fiche d'un autre Parent, qui reste réservée à celui-ci.
-  const canEdit = (m) => m.guardianUserId === user?.id || (isParent && !isOwnedByAnotherParent(m));
-  const canDelete = (m) => isParent && !isOwnedByAnotherParent(m);
+  // Compte titulaire d'une fiche (compte qui y est relié), s'il existe
+  const holderOf = (m) => familyAccounts.find((a) => a.linkedMemberId === m.id) ?? null;
+
+  // Badge affiché sur une fiche selon le lien de l'utilisateur avec elle
+  const accessBadge = (m) => {
+    if (m.isMine) return <Badge variant="success">Ma fiche</Badge>;
+    if (m.access === "relay") return <Badge variant="warning">Relais</Badge>;
+    if (m.access === "read") return <Badge variant="info">Lecture seule</Badge>;
+    return null;
+  };
 
   if (!selectedFamily) {
     return (
@@ -285,7 +309,7 @@ export default function MembresPage() {
               {members.length} membre{members.length > 1 ? "s" : ""} enregistré{members.length > 1 ? "s" : ""}
             </p>
           </div>
-          {canWrite && (
+          {canCreateFiche && (
             <Button onClick={openAdd}>
               <Plus size={16} />
               Ajouter un membre
@@ -304,7 +328,7 @@ export default function MembresPage() {
             </div>
             <h3 className="text-lg font-bold text-gray-700 mb-2">Aucun membre</h3>
             <p className="text-gray-400 mb-6">Ajoutez les membres de votre famille pour commencer le suivi médical.</p>
-            {canWrite && (
+            {canCreateFiche && (
               <Button onClick={openAdd}>
                 <Plus size={16} />
                 Ajouter un membre
@@ -323,7 +347,10 @@ export default function MembresPage() {
                   title="Double-cliquez pour voir les détails"
                 >
                   <div className="flex items-start justify-between mb-4">
-                    <MemberAvatar member={m} size="lg" showName showAge />
+                    <div className="space-y-2">
+                      <MemberAvatar member={m} size="lg" showName showAge />
+                      {accessBadge(m)}
+                    </div>
                     <div className="flex gap-1" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
                       {canEdit(m) && (
                         <button onClick={() => openEdit(m)} className="p-2 rounded-xl hover:bg-gray-100 text-gray-400 hover:text-teal-600 transition-colors">
@@ -342,6 +369,12 @@ export default function MembresPage() {
                     </div>
                   </div>
 
+                  {!canRead(m) ? (
+                    <p className="flex items-center gap-2 text-xs text-gray-400 italic">
+                      <Lock size={12} />
+                      Dossier non partagé avec vous
+                    </p>
+                  ) : (
                   <div className="space-y-2">
                     {m.dateOfBirth && (
                       <div className="flex items-center gap-2 text-sm text-gray-600">
@@ -370,6 +403,7 @@ export default function MembresPage() {
                       </div>
                     )}
                   </div>
+                  )}
                 </div>
               );
             })}
@@ -391,10 +425,28 @@ export default function MembresPage() {
                 <p className="text-sm text-gray-500">
                   Membre depuis le {formatDate(viewing.createdAt)}
                 </p>
+                <div className="flex items-center gap-2 flex-wrap mt-1">
+                  {accessBadge(viewing)}
+                  <span className="text-xs text-gray-500">
+                    {holderOf(viewing) ? `Titulaire : ${holderOf(viewing).name}` : "Aucun compte relié à cette fiche"}
+                  </span>
+                </div>
               </div>
             </div>
 
+            {!canRead(viewing) && (
+              <div className="flex items-start gap-3 bg-gray-50 border border-gray-200 rounded-xl p-4 text-sm text-gray-600">
+                <Lock size={16} className="text-gray-400 mt-0.5 flex-shrink-0" />
+                <p>
+                  Dossier non partagé avec vous.
+                  {viewing.access === "relay" &&
+                    " En tant que Relais, vous voyez uniquement la date, l'heure et le lieu de ses rendez-vous, pour les lui transmettre."}
+                </p>
+              </div>
+            )}
+
             {/* Informations personnelles */}
+            {canRead(viewing) && (
             <div>
               <h4 className="text-sm font-bold text-gray-700 uppercase tracking-wide mb-3">Informations personnelles</h4>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -436,6 +488,7 @@ export default function MembresPage() {
                 </div>
               </div>
             </div>
+            )}
 
             {/* Allergies */}
             {viewing.allergies && (
@@ -460,6 +513,7 @@ export default function MembresPage() {
             )}
 
             {/* Statistiques médicales */}
+            {canRead(viewing) && (
             <div>
               <h4 className="text-sm font-bold text-gray-700 uppercase tracking-wide mb-3">Activité médicale</h4>
               {statsLoading ? (
@@ -491,9 +545,11 @@ export default function MembresPage() {
                 </div>
               ) : null}
             </div>
+            )}
 
-            {/* Rôles Axe 2 sur ce dossier — UC-04, réservé aux Parents (A1/A2) */}
-            {isParent && (
+            {/* Rôles Axe 2 sur ce dossier — UC-04 : gérés par le titulaire de la
+                fiche, ou par un Parent (A1/A2) qui y a un accès complet */}
+            {canManageRoles(viewing) && (
               <div>
                 <h4 className="text-sm font-bold text-gray-700 uppercase tracking-wide mb-3">
                   Rôles attribués sur ce dossier
@@ -536,11 +592,14 @@ export default function MembresPage() {
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     <Select value={newRoleUserId} onChange={(e) => setNewRoleUserId(e.target.value)}>
                       <option value="">Choisir une personne</option>
-                      {familyAccounts.map((a) => (
-                        <option key={a.userId} value={a.userId}>
-                          {a.name} ({a.email})
-                        </option>
-                      ))}
+                      {/* Le titulaire de la fiche n'a pas besoin de rôle sur son propre dossier */}
+                      {familyAccounts
+                        .filter((a) => a.linkedMemberId !== viewing.id)
+                        .map((a) => (
+                          <option key={a.userId} value={a.userId}>
+                            {a.name} ({a.email})
+                          </option>
+                        ))}
                     </Select>
                     <Select value={newRoleType} onChange={(e) => setNewRoleType(e.target.value)}>
                       {DOCUMENT_ROLE_OPTIONS.map((r) => (

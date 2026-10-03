@@ -24,9 +24,11 @@ const defaultForm = {
 };
 
 export default function TraitementsPage() {
-  const { selectedFamily, isParent, canWrite } = useFamily();
+  // Fiches de la famille issues du contexte, avec le niveau d'accès de
+  // l'utilisateur : saisie / modification / suppression uniquement sur les
+  // fiches en accès complet.
+  const { selectedFamily, members, writableMembers, canWriteMember } = useFamily();
   const [treatments, setTreatments] = useState([]);
-  const [members, setMembers] = useState([]);
   const [loading, setLoading] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -38,7 +40,6 @@ export default function TraitementsPage() {
   useEffect(() => {
     if (selectedFamily) {
       load();
-      loadMembers();
     }
   }, [selectedFamily]);
 
@@ -53,15 +54,9 @@ export default function TraitementsPage() {
     }
   };
 
-  const loadMembers = async () => {
-    if (!selectedFamily) return;
-    const res = await fetch(`/api/members?familyId=${selectedFamily.id}`);
-    setMembers(await res.json());
-  };
-
   const openAdd = () => {
     setEditing(null);
-    setForm({ ...defaultForm, memberId: members[0]?.id?.toString() ?? "", medications: [{ ...emptyMedication }] });
+    setForm({ ...defaultForm, memberId: writableMembers[0]?.id?.toString() ?? "", medications: [{ ...emptyMedication }] });
     setShowForm(true);
   };
 
@@ -151,20 +146,26 @@ export default function TraitementsPage() {
     }
   };
 
-  const deleteTreatment = async (id) => {
-    if (!confirm("Supprimer ce traitement ?")) return;
-    await fetch(`/api/treatments?id=${id}`, { method: "DELETE" });
+  // Suppression (depuis la carte ou le détail) — refusée par le serveur si
+  // l'utilisateur n'a pas l'accès complet au dossier.
+  const removeTreatment = async (id) => {
+    if (!confirm("Supprimer ce traitement ?")) return false;
+    const res = await fetch(`/api/treatments?id=${id}`, { method: "DELETE" });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      toast.error(err.error || "Erreur lors de la suppression");
+      return false;
+    }
     toast.success("Supprimé");
-    setViewing(null);
     load();
+    return true;
   };
 
-  const deleteTreatmentFromCard = async (id) => {
-    if (!confirm("Supprimer ce traitement ?")) return;
-    await fetch(`/api/treatments?id=${id}`, { method: "DELETE" });
-    toast.success("Supprimé");
-    load();
+  const deleteTreatment = async (id) => {
+    if (await removeTreatment(id)) setViewing(null);
   };
+
+  const deleteTreatmentFromCard = (id) => removeTreatment(id);
 
   const f = (key) => (e) => setForm((p) => ({ ...p, [key]: e.target.value }));
 
@@ -199,8 +200,8 @@ export default function TraitementsPage() {
               {treatments.filter((t) => t.isActive).length} actif(s) · {treatments.filter((t) => !t.isActive).length} terminé(s)
             </p>
           </div>
-          {canWrite && (
-            <Button onClick={openAdd} disabled={members.length === 0}>
+          {writableMembers.length > 0 && (
+            <Button onClick={openAdd}>
               <Plus size={16} />
               Nouveau traitement
             </Button>
@@ -240,7 +241,7 @@ export default function TraitementsPage() {
               <p className="text-sm text-amber-600 bg-amber-50 px-4 py-2 rounded-xl inline-block">
                 ⚠️ Ajoutez d'abord un membre depuis la page Membres
               </p>
-            ) : canWrite ? (
+            ) : writableMembers.length > 0 ? (
               <Button onClick={openAdd}>
                 <Plus size={16} />
                 Ajouter un traitement
@@ -277,12 +278,12 @@ export default function TraitementsPage() {
                     </div>
                     <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                       <Badge variant={t.isActive ? "success" : "default"}>{t.isActive ? "Actif" : "Terminé"}</Badge>
-                      {canWrite && (
+                      {canWriteMember(t.memberId) && (
                         <button onClick={() => openEdit(t)} className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-teal-600 transition-colors">
                           <Pencil size={14} />
                         </button>
                       )}
-                      {isParent && (
+                      {canWriteMember(t.memberId) && (
                         <button onClick={() => deleteTreatmentFromCard(t.id)} className="p-1.5 rounded-lg hover:bg-red-50 text-gray-400 hover:text-red-500 transition-colors">
                           <Trash2 size={14} />
                         </button>
@@ -436,13 +437,13 @@ export default function TraitementsPage() {
 
             {/* Actions */}
             <div className="flex gap-3 pt-2 border-t border-gray-100">
-              {isParent && (
+              {canWriteMember(viewing.memberId) && (
                 <Button variant="ghost" onClick={() => deleteTreatment(viewing.id)} className="flex-1 text-red-500 hover:bg-red-50">
                   <Trash2 size={15} />
                   Supprimer
                 </Button>
               )}
-              {canWrite && (
+              {canWriteMember(viewing.memberId) && (
                 <Button variant="ghost" onClick={() => openEdit(viewing)} className="flex-1">
                   <Pencil size={15} />
                   Modifier
@@ -459,9 +460,10 @@ export default function TraitementsPage() {
       {/* Modal d'ajout / modification */}
       <Modal open={showForm} onClose={() => setShowForm(false)} title={editing ? "Modifier le traitement" : "Nouveau traitement"} size="lg">
         <div className="space-y-4">
+          {/* Uniquement les fiches sur lesquelles l'utilisateur peut écrire */}
           <Select label="Membre *" value={form.memberId} onChange={f("memberId")}>
             <option value="">Sélectionnez un membre</option>
-            {members.map((m) => (
+            {writableMembers.map((m) => (
               <option key={m.id} value={m.id}>
                 {m.firstName} {m.lastName}
               </option>

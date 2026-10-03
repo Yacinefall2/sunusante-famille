@@ -1,10 +1,10 @@
 ﻿import { Router } from "express";
 import { eq, inArray } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { treatments, treatmentMedications, members } from "../db/schema.js";
+import { treatments, treatmentMedications } from "../db/schema.js";
 import { requireFamilyMembership } from "../middleware/auth.js";
 import { familyIdForListQuery, familyIdFromMemberId, familyIdFromResource } from "../lib/familyResolvers.js";
-import { canWriteDocument } from "../lib/documentAccess.js";
+import { canWriteMember, readableScope } from "../lib/documentAccess.js";
 
 const router = Router();
 
@@ -41,27 +41,11 @@ function sanitizeMedications(medications) {
 
 router.get("/", requireFamilyMembership(familyIdForListQuery), async (req, res) => {
   try {
-    // Un Dépendant ne voit que les traitements de sa propre fiche liée.
-    if (req.membership.role === "dependent") {
-      if (!req.membership.linkedMemberId) return res.json([]);
-      const own = await db
-        .select()
-        .from(treatments)
-        .where(eq(treatments.memberId, req.membership.linkedMemberId))
-        .orderBy(treatments.createdAt);
-      return res.json(await attachMedications(own));
-    }
-
-    const { memberId } = req.query;
-
-    if (memberId) {
-      const all = await db.select().from(treatments).where(eq(treatments.memberId, parseInt(memberId))).orderBy(treatments.createdAt);
-      return res.json(await attachMedications(all));
-    }
-
-    const familyMembers = await db.select({ id: members.id }).from(members).where(eq(members.familyId, req.familyId));
-    if (familyMembers.length === 0) return res.json([]);
-    const memberIds = familyMembers.map((m) => m.id);
+    // Seules les fiches dont le dossier est lisible par ce compte (voir
+    // lib/documentAccess.js) ; ?memberId= sur une fiche non lisible → 403.
+    const memberIds = await readableScope(req);
+    if (!memberIds) return res.status(403).json({ error: "Accès refusé à ce dossier" });
+    if (memberIds.length === 0) return res.json([]);
     const all = await db.select().from(treatments).where(inArray(treatments.memberId, memberIds)).orderBy(treatments.createdAt);
     res.json(await attachMedications(all));
   } catch (error) {
@@ -87,7 +71,7 @@ router.post(
 
       // Axe 2 — seuls le Titulaire, le Gestionnaire de ce dossier, ou un Parent
       // (Admin), peuvent déclarer un traitement.
-      if (!(await canWriteDocument(parseInt(memberId), req.user.id, req.membership))) {
+      if (!(await canWriteMember(req, parseInt(memberId)))) {
         return res.status(403).json({ error: "Vous n'avez pas les droits d'écriture sur ce dossier" });
       }
 
@@ -136,7 +120,7 @@ router.put(
 
       const [existing] = await db.select({ memberId: treatments.memberId }).from(treatments).where(eq(treatments.id, treatmentId));
       if (!existing) return res.status(404).json({ error: "Traitement introuvable" });
-      if (!(await canWriteDocument(existing.memberId, req.user.id, req.membership))) {
+      if (!(await canWriteMember(req, existing.memberId))) {
         return res.status(403).json({ error: "Vous n'avez pas les droits d'écriture sur ce dossier" });
       }
 
@@ -181,7 +165,7 @@ router.delete(
 
       const [existing] = await db.select({ memberId: treatments.memberId }).from(treatments).where(eq(treatments.id, id));
       if (!existing) return res.status(404).json({ error: "Traitement introuvable" });
-      if (!(await canWriteDocument(existing.memberId, req.user.id, req.membership))) {
+      if (!(await canWriteMember(req, existing.memberId))) {
         return res.status(403).json({ error: "Vous n'avez pas les droits d'écriture sur ce dossier" });
       }
 

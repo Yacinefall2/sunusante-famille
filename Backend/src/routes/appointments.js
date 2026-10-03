@@ -1,38 +1,42 @@
 import { Router } from "express";
 import { eq, inArray } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { appointments, members } from "../db/schema.js";
+import { appointments } from "../db/schema.js";
 import { requireFamilyMembership } from "../middleware/auth.js";
 import { familyIdForListQuery, familyIdFromMemberId, familyIdFromResource } from "../lib/familyResolvers.js";
-import { canWriteDocument } from "../lib/documentAccess.js";
+import { ACCESS, canRead, canWriteMember, getFamilyAccess } from "../lib/documentAccess.js";
 
 const router = Router();
 
 router.get("/", requireFamilyMembership(familyIdForListQuery), async (req, res) => {
   try {
-    // Un Dépendant ne voit que les rendez-vous de sa propre fiche liée.
-    if (req.membership.role === "dependent") {
-      if (!req.membership.linkedMemberId) return res.json([]);
-      const own = await db
-        .select()
-        .from(appointments)
-        .where(eq(appointments.memberId, req.membership.linkedMemberId))
-        .orderBy(appointments.appointmentDate);
-      return res.json(own);
+    // Fiches lisibles (dossier complet) + fiches dont on est Relais : pour
+    // celles-ci, seuls la date, l'heure et le lieu sont renvoyés (§4.4) —
+    // ni le titre, ni le praticien, ni les notes.
+    const access = await getFamilyAccess(req);
+    const visible = (id) => canRead(access.get(id)) || access.get(id) === ACCESS.RELAY;
+    let memberIds;
+    if (req.query.memberId) {
+      const id = parseInt(req.query.memberId);
+      if (!visible(id)) return res.status(403).json({ error: "Accès refusé à ce dossier" });
+      memberIds = [id];
+    } else {
+      memberIds = [...access.keys()].filter(visible);
     }
+    if (memberIds.length === 0) return res.json([]);
 
-    const { memberId } = req.query;
-
-    if (memberId) {
-      const all = await db.select().from(appointments).where(eq(appointments.memberId, parseInt(memberId))).orderBy(appointments.appointmentDate);
-      return res.json(all);
-    }
-
-    const familyMembers = await db.select({ id: members.id }).from(members).where(eq(members.familyId, req.familyId));
-    if (familyMembers.length === 0) return res.json([]);
-    const memberIds = familyMembers.map((m) => m.id);
-    const all = await db.select().from(appointments).where(inArray(appointments.memberId, memberIds)).orderBy(appointments.appointmentDate);
-    res.json(all);
+    const rows = await db
+      .select()
+      .from(appointments)
+      .where(inArray(appointments.memberId, memberIds))
+      .orderBy(appointments.appointmentDate);
+    res.json(
+      rows.map((a) =>
+        canRead(access.get(a.memberId))
+          ? a
+          : { id: a.id, memberId: a.memberId, appointmentDate: a.appointmentDate, location: a.location, status: a.status, restricted: true }
+      )
+    );
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Erreur serveur" });
@@ -48,7 +52,7 @@ router.post(
       if (!memberId || !title?.trim() || !appointmentDate) {
         return res.status(400).json({ error: "Données manquantes" });
       }
-      if (!(await canWriteDocument(parseInt(memberId), req.user.id, req.membership))) {
+      if (!(await canWriteMember(req, parseInt(memberId)))) {
         return res.status(403).json({ error: "Vous n'avez pas les droits d'écriture sur ce dossier" });
       }
       const [created] = await db
@@ -80,7 +84,7 @@ router.put(
 
       const [existing] = await db.select({ memberId: appointments.memberId }).from(appointments).where(eq(appointments.id, parseInt(id)));
       if (!existing) return res.status(404).json({ error: "Rendez-vous introuvable" });
-      if (!(await canWriteDocument(existing.memberId, req.user.id, req.membership))) {
+      if (!(await canWriteMember(req, existing.memberId))) {
         return res.status(403).json({ error: "Vous n'avez pas les droits d'écriture sur ce dossier" });
       }
 
@@ -115,7 +119,7 @@ router.delete(
 
       const [existing] = await db.select({ memberId: appointments.memberId }).from(appointments).where(eq(appointments.id, id));
       if (!existing) return res.status(404).json({ error: "Rendez-vous introuvable" });
-      if (!(await canWriteDocument(existing.memberId, req.user.id, req.membership))) {
+      if (!(await canWriteMember(req, existing.memberId))) {
         return res.status(403).json({ error: "Vous n'avez pas les droits d'écriture sur ce dossier" });
       }
 

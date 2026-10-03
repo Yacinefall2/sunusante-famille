@@ -6,7 +6,7 @@ import { Button } from "../components/ui/Button";
 import { Input, Textarea, Select } from "../components/ui/Input";
 import { Badge } from "../components/ui/Badge";
 import { MemberAvatar } from "../components/members/MemberAvatar";
-import { Plus, Pencil, Trash2, Loader2, Calendar, Clock, MapPin, Stethoscope, User } from "lucide-react";
+import { Plus, Pencil, Trash2, Loader2, Calendar, Clock, MapPin, Stethoscope, User, BellRing } from "lucide-react";
 import { formatDateTime, APPOINTMENT_STATUSES } from "../lib/utils";
 import toast from "react-hot-toast";
 
@@ -21,9 +21,11 @@ const defaultForm = {
 };
 
 export default function RendezVousPage() {
-  const { selectedFamily, isParent, canWrite } = useFamily();
+  // Fiches de la famille (avec le niveau d'accès de l'utilisateur) issues du
+  // contexte : on ne saisit / modifie / supprime que sur les fiches en accès
+  // complet ; les autres sont en lecture seule ou "à relayer".
+  const { selectedFamily, members, writableMembers, canWriteMember } = useFamily();
   const [appointments, setAppointments] = useState([]);
-  const [members, setMembers] = useState([]);
   const [loading, setLoading] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -35,7 +37,6 @@ export default function RendezVousPage() {
   useEffect(() => {
     if (selectedFamily) {
       load();
-      loadMembers();
     }
   }, [selectedFamily]);
 
@@ -50,15 +51,9 @@ export default function RendezVousPage() {
     }
   };
 
-  const loadMembers = async () => {
-    if (!selectedFamily) return;
-    const res = await fetch(`/api/members?familyId=${selectedFamily.id}`);
-    setMembers(await res.json());
-  };
-
   const openAdd = () => {
     setEditing(null);
-    setForm({ ...defaultForm, memberId: members[0]?.id?.toString() ?? "" });
+    setForm({ ...defaultForm, memberId: writableMembers[0]?.id?.toString() ?? "" });
     setShowForm(true);
   };
 
@@ -96,6 +91,9 @@ export default function RendezVousPage() {
           toast.success("Rendez-vous modifié !");
           setShowForm(false);
           load();
+        } else {
+          const err = await res.json().catch(() => ({}));
+          toast.error(err.error || "Erreur lors de la modification");
         }
       } else {
         const res = await fetch("/api/appointments", {
@@ -107,6 +105,9 @@ export default function RendezVousPage() {
           toast.success("Rendez-vous ajouté !");
           setShowForm(false);
           load();
+        } else {
+          const err = await res.json().catch(() => ({}));
+          toast.error(err.error || "Erreur lors de l'ajout");
         }
       }
     } finally {
@@ -114,20 +115,30 @@ export default function RendezVousPage() {
     }
   };
 
-  const deleteAppt = async (id) => {
-    if (!confirm("Supprimer ce rendez-vous ?")) return;
-    await fetch(`/api/appointments?id=${id}`, { method: "DELETE" });
+  // Suppression (depuis la carte ou le détail) — refusée par le serveur si
+  // l'utilisateur n'a pas l'accès complet au dossier.
+  const removeAppt = async (id) => {
+    if (!confirm("Supprimer ce rendez-vous ?")) return false;
+    const res = await fetch(`/api/appointments?id=${id}`, { method: "DELETE" });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      toast.error(err.error || "Erreur lors de la suppression");
+      return false;
+    }
     toast.success("Supprimé");
-    setViewing(null);
     load();
+    return true;
   };
 
-  const deleteApptFromCard = async (id) => {
-    if (!confirm("Supprimer ce rendez-vous ?")) return;
-    await fetch(`/api/appointments?id=${id}`, { method: "DELETE" });
-    toast.success("Supprimé");
-    load();
+  const deleteAppt = async (id) => {
+    if (await removeAppt(id)) setViewing(null);
   };
+
+  const deleteApptFromCard = (id) => removeAppt(id);
+
+  // Modifiable / supprimable : accès complet sur la fiche, et jamais une
+  // ligne restreinte (rendez-vous à relayer).
+  const canManage = (appt) => !appt.restricted && canWriteMember(appt.memberId);
 
   const f = (key) => (e) => setForm((p) => ({ ...p, [key]: e.target.value }));
 
@@ -163,8 +174,8 @@ export default function RendezVousPage() {
             <h2 className="text-xl font-bold text-gray-800">Rendez-vous — {selectedFamily.name}</h2>
             <p className="text-sm text-gray-500">{appointments.length} rendez-vous au total</p>
           </div>
-          {canWrite && (
-            <Button onClick={openAdd} disabled={members.length === 0}>
+          {writableMembers.length > 0 && (
+            <Button onClick={openAdd}>
               <Plus size={16} />
               Nouveau rendez-vous
             </Button>
@@ -201,7 +212,7 @@ export default function RendezVousPage() {
               <p className="text-sm text-amber-600 bg-amber-50 px-4 py-2 rounded-xl inline-block">
                 ⚠️ Ajoutez d'abord un membre depuis la page Membres
               </p>
-            ) : canWrite ? (
+            ) : writableMembers.length > 0 ? (
               <Button onClick={openAdd}>
                 <Plus size={16} />
                 Planifier un rendez-vous
@@ -212,6 +223,45 @@ export default function RendezVousPage() {
           <div className="space-y-3">
             {filtered.map((appt) => {
               const member = getMember(appt.memberId);
+              // Rendez-vous d'un dossier dont on est Relais : seuls la date,
+              // l'heure et le lieu sont connus, à transmettre à la personne.
+              if (appt.restricted) {
+                return (
+                  <div
+                    key={appt.id}
+                    onClick={() => setViewing(appt)}
+                    className="bg-white rounded-2xl shadow-sm border border-amber-100 p-5 hover:shadow-md transition-all duration-200 cursor-pointer"
+                    title="Cliquez pour voir les détails"
+                  >
+                    <div className="flex flex-col sm:flex-row sm:items-start gap-4">
+                      <div className="flex-shrink-0">
+                        <div className="w-12 h-12 bg-amber-50 rounded-xl flex items-center justify-center">
+                          <BellRing size={22} className="text-amber-600" />
+                        </div>
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <h3 className="font-bold text-gray-800">Rendez-vous à relayer</h3>
+                          {getStatusBadge(appt.status)}
+                        </div>
+                        <div className="flex flex-wrap gap-4 mt-3 text-sm text-gray-500">
+                          <span className="flex items-center gap-1.5">
+                            <Clock size={13} className="text-amber-500" />
+                            {formatDateTime(appt.appointmentDate)}
+                          </span>
+                          {appt.location && (
+                            <span className="flex items-center gap-1.5">
+                              <MapPin size={13} className="text-amber-500" />
+                              {appt.location}
+                            </span>
+                          )}
+                          {member && <MemberAvatar member={member} size="sm" showName />}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
               return (
                 <div
                   key={appt.id}
@@ -239,12 +289,12 @@ export default function RendezVousPage() {
                           )}
                         </div>
                         <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
-                          {canWrite && (
+                          {canManage(appt) && (
                             <button onClick={() => openEdit(appt)} className="p-2 rounded-xl hover:bg-gray-100 text-gray-400 hover:text-teal-600 transition-colors">
                               <Pencil size={15} />
                             </button>
                           )}
-                          {isParent && (
+                          {canManage(appt) && (
                             <button onClick={() => deleteApptFromCard(appt.id)} className="p-2 rounded-xl hover:bg-red-50 text-gray-400 hover:text-red-500 transition-colors">
                               <Trash2 size={15} />
                             </button>
@@ -283,10 +333,16 @@ export default function RendezVousPage() {
               <div className="flex items-start justify-between gap-3 flex-wrap">
                 <div className="flex items-center gap-4">
                   <div className="w-14 h-14 bg-blue-100 rounded-2xl flex items-center justify-center flex-shrink-0">
-                    <Stethoscope size={26} className="text-blue-600" />
+                    {viewing.restricted ? (
+                      <BellRing size={26} className="text-amber-600" />
+                    ) : (
+                      <Stethoscope size={26} className="text-blue-600" />
+                    )}
                   </div>
                   <div>
-                    <h3 className="text-lg font-bold text-gray-800">{viewing.title}</h3>
+                    <h3 className="text-lg font-bold text-gray-800">
+                      {viewing.restricted ? "Rendez-vous à relayer" : viewing.title}
+                    </h3>
                     <div className="mt-1">{getStatusBadge(viewing.status)}</div>
                   </div>
                 </div>
@@ -329,10 +385,12 @@ export default function RendezVousPage() {
                     <p className="text-sm font-semibold text-gray-700">{viewing.location}</p>
                   </div>
                 )}
-                <div className="bg-gray-50 rounded-xl p-3">
-                  <p className="text-xs text-gray-400 font-medium">Créé le</p>
-                  <p className="text-sm font-semibold text-gray-700">{formatDateTime(viewing.createdAt)}</p>
-                </div>
+                {viewing.createdAt && (
+                  <div className="bg-gray-50 rounded-xl p-3">
+                    <p className="text-xs text-gray-400 font-medium">Créé le</p>
+                    <p className="text-sm font-semibold text-gray-700">{formatDateTime(viewing.createdAt)}</p>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -346,9 +404,16 @@ export default function RendezVousPage() {
               </div>
             )}
 
+            {viewing.restricted && (
+              <p className="text-sm text-amber-700 bg-amber-50 border border-amber-100 rounded-xl p-3">
+                Vous êtes Relais pour ce dossier : seuls la date, l'heure et le lieu vous sont communiqués, pour que
+                vous puissiez rappeler ce rendez-vous à la personne.
+              </p>
+            )}
+
             {/* Actions */}
             <div className="flex gap-3 pt-2 border-t border-gray-100">
-              {isParent && (
+              {canManage(viewing) && (
                 <Button
                   variant="ghost"
                   onClick={() => deleteAppt(viewing.id)}
@@ -358,7 +423,7 @@ export default function RendezVousPage() {
                   Supprimer
                 </Button>
               )}
-              {canWrite && (
+              {canManage(viewing) && (
                 <Button
                   variant="ghost"
                   onClick={() => openEdit(viewing)}
@@ -378,9 +443,10 @@ export default function RendezVousPage() {
 
       <Modal open={showForm} onClose={() => setShowForm(false)} title={editing ? "Modifier le rendez-vous" : "Nouveau rendez-vous"} size="lg">
         <div className="space-y-4">
+          {/* Uniquement les fiches sur lesquelles l'utilisateur peut écrire */}
           <Select label="Membre *" value={form.memberId} onChange={f("memberId")}>
             <option value="">Sélectionnez un membre</option>
-            {members.map((m) => (
+            {writableMembers.map((m) => (
               <option key={m.id} value={m.id}>
                 {m.firstName} {m.lastName}
               </option>

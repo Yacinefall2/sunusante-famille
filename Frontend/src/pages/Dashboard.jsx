@@ -25,7 +25,9 @@ import { formatDateTime, formatDate, APPOINTMENT_STATUSES } from "../lib/utils";
 import toast from "react-hot-toast";
 
 export default function DashboardPage() {
-  const { selectedFamily, families, loadFamilies, loading: familyLoading, isDependent } = useFamily();
+  const { selectedFamily, families, loadFamilies, loading: familyLoading, isParent, isAdult, myMember } = useFamily();
+  // Seuls les Parents et Adultes peuvent créer une fiche (pas les Dépendants)
+  const canCreateFiche = isParent || isAdult;
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [showNewFamily, setShowNewFamily] = useState(false);
@@ -239,21 +241,24 @@ export default function DashboardPage() {
             ) : data?.members && data.members.length > 0 ? (
               <div className="space-y-3">
                 {data.members.slice(0, 5).map((m) => (
-                  <div key={m.id} className="flex items-center gap-3 p-3 rounded-xl hover:bg-gray-50 transition-colors">
+                  <div key={m.id} className="flex items-center justify-between gap-3 p-3 rounded-xl hover:bg-gray-50 transition-colors">
                     <MemberAvatar member={m} size="md" showName showAge />
+                    {myMember?.id === m.id && <Badge variant="success">Ma fiche</Badge>}
                   </div>
                 ))}
               </div>
             ) : (
               <div className="text-center py-8 text-gray-400">
                 <Users size={32} className="mx-auto mb-2 opacity-30" />
-                <p className="text-sm">Aucun membre pour l&apos;instant</p>
-                <Link to="/membres">
-                  <Button variant="outline" size="sm" className="mt-3">
-                    <Plus size={14} />
-                    Ajouter un membre
-                  </Button>
-                </Link>
+                <p className="text-sm">Aucun dossier partagé avec vous pour l&apos;instant</p>
+                {canCreateFiche && (
+                  <Link to="/membres">
+                    <Button variant="outline" size="sm" className="mt-3">
+                      <Plus size={14} />
+                      Ajouter un membre
+                    </Button>
+                  </Link>
+                )}
               </div>
             )}
           </div>
@@ -297,7 +302,7 @@ export default function DashboardPage() {
                         )}
                       </div>
                       <div className="mt-1">
-                        <MemberAvatar member={appt.member} size="sm" showName />
+                        {appt.member && <MemberAvatar member={appt.member} size="sm" showName />}
                       </div>
                     </div>
                   </div>
@@ -342,7 +347,7 @@ export default function DashboardPage() {
                       <p className="font-semibold text-gray-800 text-sm">{v.vaccineName}</p>
                       <p className="text-xs text-gray-500">{formatDate(v.dateAdministered)}</p>
                     </div>
-                    <MemberAvatar member={v.member} size="sm" />
+                    {v.member && <MemberAvatar member={v.member} size="sm" />}
                   </div>
                 ))}
               </div>
@@ -379,7 +384,7 @@ export default function DashboardPage() {
                       <p className="font-semibold text-gray-800 text-sm truncate">{doc.title}</p>
                       <p className="text-xs text-gray-500 capitalize">{doc.documentType}</p>
                     </div>
-                    <MemberAvatar member={doc.member} size="sm" />
+                    {doc.member && <MemberAvatar member={doc.member} size="sm" />}
                   </div>
                 ))}
               </div>

@@ -3,6 +3,7 @@ import { eq, and, sql, inArray } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { familyMemberships, users, members, documentRoles } from "../db/schema.js";
 import { requireFamilyMembership } from "../middleware/auth.js";
+import { canWriteMember } from "../lib/documentAccess.js";
 
 const router = Router();
 
@@ -95,23 +96,35 @@ router.put("/", requireFamilyMembership(resolveFamilyIdFromMembershipId, { roles
       }
     }
 
-    // Si on passe (ou reste) au rôle "dependent", une fiche liée est
-    // obligatoire — soit fournie maintenant, soit déjà présente avant.
+    // Fiche de la personne (« sa fiche », dont elle est Titulaire) — valable
+    // pour tous les rôles, conservée d'un rôle à l'autre, obligatoire pour un
+    // "dependent". Un Parent relie ici le compte d'un AUTRE ; pour soi-même,
+    // c'est POST /api/members/claim (on ne s'attribue pas une fiche qu'on
+    // ne gère pas).
     let newLinkedMemberId = existing.linkedMemberId;
-    if (role === "dependent") {
-      const parsedId = parseInt(linkedMemberId);
-      if (parsedId) {
-        const [member] = await db.select().from(members).where(eq(members.id, parsedId));
-        if (!member || member.familyId !== req.familyId) {
-          return res.status(400).json({ error: "Fiche membre introuvable dans cette famille" });
-        }
-        newLinkedMemberId = parsedId;
-      } else if (!existing.linkedMemberId) {
-        return res.status(400).json({ error: "Choisissez la fiche membre correspondant à cette personne" });
+    const parsedId = parseInt(linkedMemberId);
+    if (parsedId && parsedId !== existing.linkedMemberId) {
+      if (existing.userId === req.user.id) {
+        return res.status(403).json({ error: "Utilisez « Ma fiche » pour désigner votre propre fiche" });
       }
-    } else {
-      // On quitte le rôle dépendant : le lien n'a plus lieu d'être
-      newLinkedMemberId = null;
+      const [member] = await db.select().from(members).where(eq(members.id, parsedId));
+      if (!member || member.familyId !== req.familyId) {
+        return res.status(400).json({ error: "Fiche membre introuvable dans cette famille" });
+      }
+      const [alreadyLinked] = await db
+        .select({ id: familyMemberships.id })
+        .from(familyMemberships)
+        .where(eq(familyMemberships.linkedMemberId, parsedId));
+      if (alreadyLinked) {
+        return res.status(409).json({ error: "Cette fiche est déjà celle d'un autre compte" });
+      }
+      if (!(await canWriteMember(req, parsedId))) {
+        return res.status(403).json({ error: "Vous n'avez pas les droits sur cette fiche" });
+      }
+      newLinkedMemberId = parsedId;
+    }
+    if (role === "dependent" && !newLinkedMemberId) {
+      return res.status(400).json({ error: "Choisissez la fiche membre correspondant à cette personne" });
     }
 
     const [updated] = await db

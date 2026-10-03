@@ -13,6 +13,17 @@ import TraitementsPage from "./pages/Traitements.jsx";
 import VaccinationsPage from "./pages/Vaccinations.jsx";
 import DocumentsPage from "./pages/Documents.jsx";
 import FamilySettingsPage from "./pages/FamilySettings.jsx";
+import MaFichePage from "./pages/MaFiche.jsx";
+import { useFamily } from "./context/FamilyContext";
+
+// Tant que l'utilisateur n'a pas de fiche à lui dans la famille sélectionnée
+// (il n'est titulaire d'aucun dossier), il doit d'abord la désigner ou la
+// créer — écran bloquant, sur le modèle de la vérification de courriel.
+function MyFicheGate({ children }) {
+  const { needsMyFiche } = useFamily();
+  if (needsMyFiche) return <MaFichePage />;
+  return children;
+}
 
 export default function App() {
   return (
@@ -27,17 +38,19 @@ export default function App() {
         element={
           <ProtectedRoute>
             <FamilyProvider>
-              <Routes>
-                <Route path="/" element={<Navigate to="/dashboard" replace />} />
-                <Route path="/dashboard" element={<DashboardPage />} />
-                <Route path="/membres" element={<MembresPage />} />
-                <Route path="/rendez-vous" element={<RendezVousPage />} />
-                <Route path="/traitements" element={<TraitementsPage />} />
-                <Route path="/vaccinations" element={<VaccinationsPage />} />
-                <Route path="/documents" element={<DocumentsPage />} />
-                <Route path="/famille" element={<FamilySettingsPage />} />
-                <Route path="*" element={<Navigate to="/dashboard" replace />} />
-              </Routes>
+              <MyFicheGate>
+                <Routes>
+                  <Route path="/" element={<Navigate to="/dashboard" replace />} />
+                  <Route path="/dashboard" element={<DashboardPage />} />
+                  <Route path="/membres" element={<MembresPage />} />
+                  <Route path="/rendez-vous" element={<RendezVousPage />} />
+                  <Route path="/traitements" element={<TraitementsPage />} />
+                  <Route path="/vaccinations" element={<VaccinationsPage />} />
+                  <Route path="/documents" element={<DocumentsPage />} />
+                  <Route path="/famille" element={<FamilySettingsPage />} />
+                  <Route path="*" element={<Navigate to="/dashboard" replace />} />
+                </Routes>
+              </MyFicheGate>
             </FamilyProvider>
           </ProtectedRoute>
         }

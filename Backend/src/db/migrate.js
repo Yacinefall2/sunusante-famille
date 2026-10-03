@@ -1,6 +1,5 @@
 import "dotenv/config";
 import path from "node:path";
-import { execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
@@ -13,9 +12,11 @@ import { Pool } from "pg";
 //
 // Transition : une base créée par l'ancien `push` contient déjà les tables
 // mais aucun historique de migrations. Dans ce cas (et seulement celui-là),
-// on l'aligne une dernière fois sur le schéma avec `push`, puis on marque la
-// migration initiale comme déjà appliquée pour que `migrate` ne tente pas de
-// recréer des tables existantes.
+// on vérifie qu'elle contient bien toutes les tables de la migration
+// initiale, puis on marque celle-ci comme déjà appliquée ; les migrations
+// suivantes s'appliquent ensuite normalement. Surtout pas de `push` ici : il
+// alignerait la base sur le schéma ACTUEL et supprimerait des colonnes avant
+// que les migrations suivantes n'aient converti leurs données.
 
 const migrationsFolder = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "drizzle");
 
@@ -29,9 +30,17 @@ export async function runMigrations(databaseUrl = process.env.DATABASE_URL) {
         to_regclass('drizzle.__drizzle_migrations') is not null as has_history
     `);
     if (rows[0].has_tables && !rows[0].has_history) {
-      console.log("ℹ️  Base créée par l'ancien drizzle-kit push : alignement puis adoption des migrations versionnées.");
-      execSync("npx drizzle-kit push --force", { stdio: "inherit", env: { ...process.env, DATABASE_URL: databaseUrl } });
+      console.log("ℹ️  Base créée par l'ancien drizzle-kit push : adoption des migrations versionnées.");
       const [initial] = readMigrationFiles({ migrationsFolder });
+      const expectedTables = [...initial.sql.join("\n").matchAll(/CREATE TABLE "(\w+)"/g)].map((m) => m[1]);
+      const missing = [];
+      for (const table of expectedTables) {
+        const { rows: found } = await pool.query(`select to_regclass($1) is not null as ok`, [`public.${table}`]);
+        if (!found[0].ok) missing.push(table);
+      }
+      if (missing.length > 0) {
+        throw new Error(`Base existante incomplète (tables absentes : ${missing.join(", ")}) — migration manuelle requise`);
+      }
       await pool.query(`create schema if not exists drizzle`);
       await pool.query(
         `create table if not exists drizzle.__drizzle_migrations (id serial primary key, hash text not null, created_at bigint)`

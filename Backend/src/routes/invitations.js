@@ -5,7 +5,7 @@ import { families, familyMemberships, pendingInvitations, members, users } from 
 import { requireAuth, requireFamilyMembership, requireVerifiedEmail } from "../middleware/auth.js";
 import { generateToken } from "../lib/token.js";
 import { sendInvitationEmail } from "../lib/mailer.js";
-import { DOCUMENT_ROLES, setDocumentRole } from "../lib/documentAccess.js";
+import { DOCUMENT_ROLES, canManageRoles, canWriteMember, setDocumentRole } from "../lib/documentAccess.js";
 
 const router = Router();
 
@@ -56,13 +56,28 @@ router.post(
         }
       }
 
+      // Fiche de la personne invitée (« sa fiche ») — obligatoire pour un
+      // "dependent", optionnelle sinon (l'invité la créera à son arrivée).
+      // Elle doit être libre et l'invitant doit en avoir l'accès complet.
       let validatedLinkedMemberId = null;
-      if (role === "dependent") {
-        if (!linkedMemberId) return res.status(400).json({ error: "Choisissez la fiche membre correspondante" });
+      if (role === "dependent" && !linkedMemberId) {
+        return res.status(400).json({ error: "Choisissez la fiche membre correspondante" });
+      }
+      if (linkedMemberId) {
         const parsedId = parseInt(linkedMemberId);
         const [member] = await db.select().from(members).where(eq(members.id, parsedId));
         if (!member || member.familyId !== req.familyId) {
           return res.status(400).json({ error: "Fiche membre introuvable dans cette famille" });
+        }
+        const [alreadyLinked] = await db
+          .select({ id: familyMemberships.id })
+          .from(familyMemberships)
+          .where(eq(familyMemberships.linkedMemberId, parsedId));
+        if (alreadyLinked) {
+          return res.status(409).json({ error: "Cette fiche est déjà celle d'un autre compte" });
+        }
+        if (!(await canWriteMember(req, parsedId))) {
+          return res.status(403).json({ error: "Vous n'avez pas les droits sur cette fiche" });
         }
         validatedLinkedMemberId = parsedId;
       }
@@ -80,6 +95,12 @@ router.post(
         const [docMember] = await db.select().from(members).where(eq(members.id, parsedDocMemberId));
         if (!docMember || docMember.familyId !== req.familyId) {
           return res.status(400).json({ error: "Fiche membre introuvable dans cette famille" });
+        }
+        if (!(await canManageRoles(req, parsedDocMemberId))) {
+          return res.status(403).json({ error: "Vous ne pouvez pas gérer les accès de ce dossier" });
+        }
+        if (parsedDocMemberId === validatedLinkedMemberId) {
+          return res.status(400).json({ error: "La personne sera déjà titulaire de ce dossier" });
         }
         validatedDocumentMemberId = parsedDocMemberId;
         validatedDocumentRole = documentRole;
@@ -235,11 +256,26 @@ router.post("/:token/accept", requireAuth, async (req, res) => {
       return res.status(409).json({ error: "Vous êtes déjà membre d'un espace familial" });
     }
 
+    // La fiche prévue a pu être reliée à un autre compte depuis l'envoi.
+    let linkedMemberId = invitation.linkedMemberId;
+    if (linkedMemberId) {
+      const [taken] = await db
+        .select({ id: familyMemberships.id })
+        .from(familyMemberships)
+        .where(eq(familyMemberships.linkedMemberId, linkedMemberId));
+      if (taken) {
+        if (invitation.role === "dependent") {
+          return res.status(409).json({ error: "La fiche prévue n'est plus disponible : demandez une nouvelle invitation" });
+        }
+        linkedMemberId = null;
+      }
+    }
+
     await db.insert(familyMemberships).values({
       userId: req.user.id,
       familyId: invitation.familyId,
       role: invitation.role,
-      linkedMemberId: invitation.linkedMemberId,
+      linkedMemberId,
     });
     await db.update(pendingInvitations).set({ acceptedAt: new Date() }).where(eq(pendingInvitations.id, invitation.id));
 

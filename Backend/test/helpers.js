@@ -1,5 +1,5 @@
 import request from "supertest";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import app from "../src/app.js";
 import { db } from "../src/db/index.js";
 import {
@@ -11,6 +11,7 @@ import {
   treatments,
   vaccinations,
   documents,
+  documentRoles,
 } from "../src/db/schema.js";
 import { signAccessToken } from "../src/lib/jwt.js";
 
@@ -59,6 +60,16 @@ export async function createMember(family, firstName = "Fiche") {
     .values({ familyId: family.id, firstName, lastName: "Test" })
     .returning();
   return member;
+}
+
+// Relie un compte à sa fiche (il en devient Titulaire).
+export async function linkMember(membership, member) {
+  await db.update(familyMemberships).set({ linkedMemberId: member.id }).where(eq(familyMemberships.id, membership.id));
+  membership.linkedMemberId = member.id;
+}
+
+export async function grantRole(member, user, role) {
+  await db.insert(documentRoles).values({ memberId: member.id, userId: user.id, role });
 }
 
 // Une donnée médicale de chaque type sur une fiche — de quoi détecter toute fuite.

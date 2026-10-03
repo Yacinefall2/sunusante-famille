@@ -1,8 +1,6 @@
 import express from "express";
 import cookieParser from "cookie-parser";
 import cors from "cors";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import authRouter from "./routes/auth.js";
 import familiesRouter from "./routes/families.js";
 import membersRouter from "./routes/members.js";
@@ -14,9 +12,8 @@ import dashboardRouter from "./routes/dashboard.js";
 import invitationsRouter from "./routes/invitations.js";
 import familyMembershipsRouter from "./routes/familyMemberships.js";
 import documentRolesRouter from "./routes/documentRoles.js";
+import uploadsRouter from "./routes/uploads.js";
 import { requireAuth, requireVerifiedEmail } from "./middleware/auth.js";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app = express();
 
@@ -24,7 +21,8 @@ app.use(cors({ origin: process.env.FRONTEND_URL || "http://localhost:5173", cred
 app.use(express.json());
 app.use(cookieParser());
 
-app.use("/uploads", requireAuth, express.static(path.join(__dirname, "..", "uploads")));
+// Fichiers téléversés : contrôle d'accès au dossier, comme les données médicales.
+app.use("/uploads", requireAuth, requireVerifiedEmail, uploadsRouter);
 
 app.use("/api/auth", authRouter);
 app.use("/api/invitations", invitationsRouter);

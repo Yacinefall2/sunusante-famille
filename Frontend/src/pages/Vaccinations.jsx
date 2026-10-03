@@ -36,9 +36,11 @@ const defaultForm = {
 };
 
 export default function VaccinationsPage() {
-  const { selectedFamily, isParent } = useFamily();
+  // Fiches de la famille issues du contexte, avec le niveau d'accès de
+  // l'utilisateur : saisie / modification / suppression uniquement sur les
+  // fiches en accès complet.
+  const { selectedFamily, members, writableMembers, canWriteMember, canReadMember } = useFamily();
   const [vaccinations, setVaccinations] = useState([]);
-  const [members, setMembers] = useState([]);
   const [loading, setLoading] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -50,7 +52,6 @@ export default function VaccinationsPage() {
   useEffect(() => {
     if (selectedFamily) {
       load();
-      loadMembers();
     }
   }, [selectedFamily]);
 
@@ -65,15 +66,9 @@ export default function VaccinationsPage() {
     }
   };
 
-  const loadMembers = async () => {
-    if (!selectedFamily) return;
-    const res = await fetch(`/api/members?familyId=${selectedFamily.id}`);
-    setMembers(await res.json());
-  };
-
   const openAdd = () => {
     setEditing(null);
-    setForm({ ...defaultForm, memberId: members[0]?.id?.toString() ?? "" });
+    setForm({ ...defaultForm, memberId: writableMembers[0]?.id?.toString() ?? "" });
     setShowForm(true);
   };
 
@@ -109,6 +104,9 @@ export default function VaccinationsPage() {
           toast.success("Vaccination modifiée !");
           setShowForm(false);
           load();
+        } else {
+          const err = await res.json().catch(() => ({}));
+          toast.error(err.error || "Erreur lors de la modification");
         }
       } else {
         const res = await fetch("/api/vaccinations", {
@@ -120,6 +118,9 @@ export default function VaccinationsPage() {
           toast.success("Vaccination enregistrée !");
           setShowForm(false);
           load();
+        } else {
+          const err = await res.json().catch(() => ({}));
+          toast.error(err.error || "Erreur lors de l'enregistrement");
         }
       }
     } finally {
@@ -127,20 +128,26 @@ export default function VaccinationsPage() {
     }
   };
 
-  const deleteVacc = async (id) => {
-    if (!confirm("Supprimer cette vaccination ?")) return;
-    await fetch(`/api/vaccinations?id=${id}`, { method: "DELETE" });
+  // Suppression (depuis la carte ou le détail) — refusée par le serveur si
+  // l'utilisateur n'a pas l'accès complet au dossier.
+  const removeVacc = async (id) => {
+    if (!confirm("Supprimer cette vaccination ?")) return false;
+    const res = await fetch(`/api/vaccinations?id=${id}`, { method: "DELETE" });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      toast.error(err.error || "Erreur lors de la suppression");
+      return false;
+    }
     toast.success("Supprimé");
-    setViewing(null);
     load();
+    return true;
   };
 
-  const deleteVaccFromCard = async (id) => {
-    if (!confirm("Supprimer cette vaccination ?")) return;
-    await fetch(`/api/vaccinations?id=${id}`, { method: "DELETE" });
-    toast.success("Supprimé");
-    load();
+  const deleteVacc = async (id) => {
+    if (await removeVacc(id)) setViewing(null);
   };
+
+  const deleteVaccFromCard = (id) => removeVacc(id);
 
   const f = (key) => (e) => setForm((p) => ({ ...p, [key]: e.target.value }));
 
@@ -177,10 +184,12 @@ export default function VaccinationsPage() {
             <h2 className="text-xl font-bold text-gray-800">Vaccinations — {selectedFamily.name}</h2>
             <p className="text-sm text-gray-500">{vaccinations.length} vaccination(s) enregistrée(s)</p>
           </div>
-          <Button onClick={openAdd} disabled={members.length === 0}>
-            <Plus size={16} />
-            Ajouter une vaccination
-          </Button>
+          {writableMembers.length > 0 && (
+            <Button onClick={openAdd}>
+              <Plus size={16} />
+              Ajouter une vaccination
+            </Button>
+          )}
         </div>
 
         {/* Member filter */}
@@ -193,7 +202,7 @@ export default function VaccinationsPage() {
           >
             Tous
           </button>
-          {members.map((m) => (
+          {members.filter((m) => canReadMember(m.id)).map((m) => (
             <button
               key={m.id}
               onClick={() => setFilterMember(m.id.toString())}
@@ -221,12 +230,12 @@ export default function VaccinationsPage() {
               <p className="text-sm text-amber-600 bg-amber-50 px-4 py-2 rounded-xl inline-block">
                 ⚠️ Ajoutez d'abord un membre depuis la page Membres
               </p>
-            ) : (
+            ) : writableMembers.length > 0 ? (
               <Button onClick={openAdd}>
                 <Plus size={16} />
                 Enregistrer une vaccination
               </Button>
-            )}
+            ) : null}
           </div>
         ) : (
           <div className="space-y-6">
@@ -275,7 +284,7 @@ export default function VaccinationsPage() {
                           </div>
                           {v.notes && <p className="text-xs text-gray-400 mt-1 italic">{v.notes}</p>}
                         </div>
-                        {isParent && (
+                        {canWriteMember(v.memberId) && (
                           <button onClick={(e) => { e.stopPropagation(); deleteVaccFromCard(v.id); }} className="p-2 rounded-xl hover:bg-red-50 text-gray-300 hover:text-red-500 transition-colors">
                             <Trash2 size={15} />
                           </button>
@@ -368,7 +377,7 @@ export default function VaccinationsPage() {
 
             {/* Actions */}
             <div className="flex gap-3 pt-2 border-t border-gray-100">
-              {isParent && (
+              {canWriteMember(viewing.memberId) && (
                 <Button
                   variant="ghost"
                   onClick={() => deleteVacc(viewing.id)}
@@ -378,14 +387,16 @@ export default function VaccinationsPage() {
                   Supprimer
                 </Button>
               )}
-              <Button
-                variant="ghost"
-                onClick={() => openEdit(viewing)}
-                className="flex-1"
-              >
-                <Pencil size={15} />
-                Modifier
-              </Button>
+              {canWriteMember(viewing.memberId) && (
+                <Button
+                  variant="ghost"
+                  onClick={() => openEdit(viewing)}
+                  className="flex-1"
+                >
+                  <Pencil size={15} />
+                  Modifier
+                </Button>
+              )}
               <Button onClick={() => setViewing(null)} className="flex-1">
                 Fermer
               </Button>
@@ -396,9 +407,10 @@ export default function VaccinationsPage() {
 
       <Modal open={showForm} onClose={() => setShowForm(false)} title={editing ? "Modifier la vaccination" : "Enregistrer une vaccination"} size="lg">
         <div className="space-y-4">
+          {/* Uniquement les fiches sur lesquelles l'utilisateur peut écrire */}
           <Select label="Membre *" value={form.memberId} onChange={f("memberId")}>
             <option value="">Sélectionnez un membre</option>
-            {members.map((m) => (
+            {writableMembers.map((m) => (
               <option key={m.id} value={m.id}>
                 {m.firstName} {m.lastName}
               </option>

@@ -53,9 +53,12 @@ const isPdfFile = (url) => {
 };
 
 export default function DocumentsPage() {
-  const { selectedFamily, isParent } = useFamily();
+  // Fiches de la famille issues du contexte, avec le niveau d'accès de
+  // l'utilisateur : on ne consulte que les dossiers lisibles, et on n'ajoute /
+  // modifie / supprime que sur ceux en accès complet.
+  const { selectedFamily, members: allMembers, writableMembers, canWriteMember, canReadMember } = useFamily();
+  const members = allMembers.filter((m) => canReadMember(m.id));
   const [docs, setDocs] = useState([]);
-  const [members, setMembers] = useState([]);
   const [loading, setLoading] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -73,7 +76,6 @@ export default function DocumentsPage() {
   useEffect(() => {
     if (selectedFamily) {
       load();
-      loadMembers();
     }
     setStepMember(null);
     setStepType(null);
@@ -105,19 +107,15 @@ export default function DocumentsPage() {
     }
   };
 
-  const loadMembers = async () => {
-    if (!selectedFamily) return;
-    const res = await fetch(`/api/members?familyId=${selectedFamily.id}`);
-    setMembers(await res.json());
-  };
-
   const openAdd = () => {
     setEditing(null);
 
+    // Membre présélectionné : celui de l'étape en cours s'il est modifiable,
+    // sinon la première fiche modifiable.
     const preselectedMemberId =
-      stepMember && stepMember !== "all"
+      stepMember && stepMember !== "all" && canWriteMember(stepMember)
         ? stepMember
-        : members[0]?.id?.toString() ?? "";
+        : writableMembers[0]?.id?.toString() ?? "";
 
     const preselectedType =
       stepType && stepType !== "all"
@@ -247,40 +245,37 @@ export default function DocumentsPage() {
     }
   };
 
+  // Suppression (depuis la carte ou le détail) — refusée par le serveur si
+  // l'utilisateur n'a pas l'accès complet au dossier.
+  const removeDoc = async (id) => {
+    if (
+      !confirm(
+        "Supprimer ce document ? Le fichier associé sera aussi supprimé."
+      )
+    ) {
+      return false;
+    }
+
+    const res = await fetch(`/api/documents?id=${id}`, {
+      method: "DELETE",
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      toast.error(err.error || "Erreur lors de la suppression");
+      return false;
+    }
+
+    toast.success("Supprimé");
+    load();
+    return true;
+  };
+
   const deleteDoc = async (id) => {
-    if (
-      !confirm(
-        "Supprimer ce document ? Le fichier associé sera aussi supprimé."
-      )
-    ) {
-      return;
-    }
-
-    await fetch(`/api/documents?id=${id}`, {
-      method: "DELETE",
-    });
-
-    toast.success("Supprimé");
-    setViewing(null);
-    load();
+    if (await removeDoc(id)) setViewing(null);
   };
 
-  const deleteDocFromCard = async (id) => {
-    if (
-      !confirm(
-        "Supprimer ce document ? Le fichier associé sera aussi supprimé."
-      )
-    ) {
-      return;
-    }
-
-    await fetch(`/api/documents?id=${id}`, {
-      method: "DELETE",
-    });
-
-    toast.success("Supprimé");
-    load();
-  };
+  const deleteDocFromCard = (id) => removeDoc(id);
 
   const f = (key) => (e) =>
     setForm((p) => ({
@@ -369,13 +364,12 @@ export default function DocumentsPage() {
             </p>
           </div>
 
-          <Button
-            onClick={openAdd}
-            disabled={members.length === 0}
-          >
-            <Plus size={16} />
-            Ajouter un document
-          </Button>
+          {writableMembers.length > 0 && (
+            <Button onClick={openAdd}>
+              <Plus size={16} />
+              Ajouter un document
+            </Button>
+          )}
         </div>
 
         {members.length === 0 ? (
@@ -532,10 +526,12 @@ export default function DocumentsPage() {
                   Aucun document pour {stepMemberLabel} · {stepTypeLabel}.
                 </p>
 
-                <Button onClick={openAdd}>
-                  <Plus size={16} />
-                  Ajouter ce document
-                </Button>
+                {writableMembers.length > 0 && (
+                  <Button onClick={openAdd}>
+                    <Plus size={16} />
+                    Ajouter ce document
+                  </Button>
+                )}
               </div>
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -580,7 +576,7 @@ export default function DocumentsPage() {
                             </a>
                           )}
 
-                          {isParent && (
+                          {canWriteMember(doc.memberId) && (
                             <button
                               onClick={() =>
                                 deleteDocFromCard(doc.id)
@@ -867,7 +863,7 @@ export default function DocumentsPage() {
             )}
 
             <div className="flex gap-3 pt-2 border-t border-gray-100">
-              {isParent && (
+              {canWriteMember(viewing.memberId) && (
                 <Button
                   variant="ghost"
                   onClick={() =>
@@ -880,16 +876,18 @@ export default function DocumentsPage() {
                 </Button>
               )}
 
-              <Button
-                variant="ghost"
-                onClick={() =>
-                  openEditDoc(viewing)
-                }
-                className="flex-1"
-              >
-                <Pencil size={15} />
-                Modifier
-              </Button>
+              {canWriteMember(viewing.memberId) && (
+                <Button
+                  variant="ghost"
+                  onClick={() =>
+                    openEditDoc(viewing)
+                  }
+                  className="flex-1"
+                >
+                  <Pencil size={15} />
+                  Modifier
+                </Button>
+              )}
 
               <Button
                 onClick={() => setViewing(null)}
@@ -922,7 +920,8 @@ export default function DocumentsPage() {
               Sélectionnez un membre
             </option>
 
-            {members.map((m) => (
+            {/* Uniquement les fiches sur lesquelles l'utilisateur peut écrire */}
+            {writableMembers.map((m) => (
               <option
                 key={m.id}
                 value={m.id}
