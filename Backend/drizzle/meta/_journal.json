@@ -50,6 +50,13 @@
       "when": 1791044880143,
       "tag": "0006_liens_parente",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1791223752884,
+      "tag": "0007_suivi_vaccins",
+      "breakpoints": true
     }
   ]
 }

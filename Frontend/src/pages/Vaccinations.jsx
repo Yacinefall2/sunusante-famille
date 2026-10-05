@@ -6,8 +6,10 @@ import { Button } from "../components/ui/Button";
 import { Input, Textarea, Select } from "../components/ui/Input";
 import { Badge } from "../components/ui/Badge";
 import { MemberAvatar } from "../components/members/MemberAvatar";
-import { Plus, Trash2, Loader2, Syringe, Calendar, User, Hash, Pencil } from "lucide-react";
-import { formatDate, isFuture } from "../lib/utils";
+import { Plus, Trash2, Loader2, Syringe, Calendar, User, Hash, Pencil, CheckCircle2, AlertTriangle } from "lucide-react";
+import { formatDate } from "../lib/utils";
+import { notifyNotificationsChanged } from "../components/notifications/intakes";
+import { format } from "date-fns";
 import toast from "react-hot-toast";
 
 const COMMON_VACCINES = [
@@ -24,6 +26,45 @@ const COMMON_VACCINES = [
   "Rotavirus",
   "Autre",
 ];
+
+// Date du jour au format des champs date (yyyy-MM-dd), en heure locale.
+const todayISO = () => format(new Date(), "yyyy-MM-dd");
+
+// Badge du statut de rappel renvoyé par le serveur (boosterStatus).
+// `boosterDose` : vaccination qui a enregistré le rappel, si présente dans la liste.
+function BoosterBadge({ vaccination, boosterDose }) {
+  switch (vaccination.boosterStatus) {
+    case "a_faire":
+      return <Badge variant="warning">Rappel à faire le {formatDate(vaccination.nextDoseDate)}</Badge>;
+    case "en_retard":
+      return (
+        <Badge variant="danger">
+          <AlertTriangle size={11} />
+          Rappel en retard depuis le {formatDate(vaccination.nextDoseDate)}
+        </Badge>
+      );
+    case "fait":
+      return (
+        <Badge variant="success">
+          <CheckCircle2 size={11} />
+          Rappel effectué{boosterDose ? ` le ${formatDate(boosterDose.dateAdministered)}` : ""}
+        </Badge>
+      );
+    default:
+      return null;
+  }
+}
+
+// Rappel encore à enregistrer (à faire ou en retard).
+const needsBooster = (v) => v.boosterStatus === "a_faire" || v.boosterStatus === "en_retard";
+
+const defaultBoosterForm = {
+  dateAdministered: "",
+  administeredBy: "",
+  lotNumber: "",
+  nextDoseDate: "",
+  notes: "",
+};
 
 const defaultForm = {
   memberId: "",
@@ -48,6 +89,12 @@ export default function VaccinationsPage() {
   const [saving, setSaving] = useState(false);
   const [filterMember, setFilterMember] = useState("all");
   const [viewing, setViewing] = useState(null);
+  // Filtre « En retard » : uniquement les rappels dépassés.
+  const [onlyOverdue, setOnlyOverdue] = useState(false);
+  // Enregistrement d'un rappel effectué : vaccination d'origine + formulaire.
+  const [boosterFor, setBoosterFor] = useState(null);
+  const [boosterForm, setBoosterForm] = useState(defaultBoosterForm);
+  const [boosterSaving, setBoosterSaving] = useState(false);
 
   useEffect(() => {
     if (selectedFamily) {
@@ -60,7 +107,8 @@ export default function VaccinationsPage() {
     setLoading(true);
     try {
       const res = await fetch(`/api/vaccinations?familyId=${selectedFamily.id}`);
-      setVaccinations(await res.json());
+      const data = res.ok ? await res.json() : [];
+      setVaccinations(Array.isArray(data) ? data : []);
     } finally {
       setLoading(false);
     }
@@ -149,11 +197,78 @@ export default function VaccinationsPage() {
 
   const deleteVaccFromCard = (id) => removeVacc(id);
 
+  // Ouvre la fenêtre « Enregistrer le rappel » pour une vaccination dont le
+  // rappel est à faire ou en retard.
+  const openBooster = (v) => {
+    setBoosterFor(v);
+    setBoosterForm({
+      ...defaultBoosterForm,
+      dateAdministered: todayISO(),
+      administeredBy: v.administeredBy ?? "",
+    });
+  };
+
+  const saveBooster = async () => {
+    if (!boosterFor) return;
+    if (!boosterForm.dateAdministered) {
+      toast.error("Indiquez la date de la dose");
+      return;
+    }
+    if (boosterForm.dateAdministered > todayISO()) {
+      toast.error("La date de la dose ne peut pas être dans le futur");
+      return;
+    }
+    setBoosterSaving(true);
+    try {
+      // Champs vides non envoyés : le serveur applique ses valeurs par défaut.
+      const body = Object.fromEntries(
+        Object.entries(boosterForm)
+          .map(([k, val]) => [k, typeof val === "string" ? val.trim() : val])
+          .filter(([, val]) => val !== "")
+      );
+      const res = await fetch(`/api/vaccinations/${boosterFor.id}/booster-done`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (res.ok) {
+        toast.success("Rappel enregistré");
+        setBoosterFor(null);
+        setViewing(null);
+        notifyNotificationsChanged();
+        load();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        const fallback =
+          res.status === 409
+            ? "Ce rappel est déjà enregistré"
+            : res.status === 403
+            ? "Vous n'avez pas l'accès complet à cette fiche"
+            : "Erreur lors de l'enregistrement du rappel";
+        toast.error(err.error || fallback);
+        if (res.status === 409) load();
+      }
+    } catch {
+      toast.error("Erreur lors de l'enregistrement du rappel");
+    } finally {
+      setBoosterSaving(false);
+    }
+  };
+
   const f = (key) => (e) => setForm((p) => ({ ...p, [key]: e.target.value }));
+  const bf = (key) => (e) => setBoosterForm((p) => ({ ...p, [key]: e.target.value }));
 
   const getMember = (id) => members.find((m) => m.id === id);
+  const getVaccination = (id) => (id ? vaccinations.find((x) => x.id === id) : null);
 
-  const filtered = filterMember === "all" ? vaccinations : vaccinations.filter((v) => v.memberId.toString() === filterMember);
+  // Rappels en retard (tous membres), du plus ancien au plus récent.
+  const overdue = vaccinations
+    .filter((v) => v.boosterStatus === "en_retard")
+    .sort((a, b) => (a.nextDoseDate < b.nextDoseDate ? -1 : 1));
+
+  const filtered = vaccinations
+    .filter((v) => filterMember === "all" || v.memberId.toString() === filterMember)
+    .filter((v) => !onlyOverdue || v.boosterStatus === "en_retard");
 
   // Regroupement par membre
   const grouped = filtered.reduce((acc, v) => {
@@ -192,6 +307,37 @@ export default function VaccinationsPage() {
           )}
         </div>
 
+        {/* Bandeau des rappels en retard */}
+        {overdue.length > 0 && (
+          <div className="bg-red-50 border border-red-200 rounded-2xl p-5">
+            <h3 className="font-bold text-red-700 flex items-center gap-2 mb-3">
+              <AlertTriangle size={18} />
+              {overdue.length} rappel{overdue.length > 1 ? "s" : ""} de vaccin en retard
+            </h3>
+            <div className="space-y-2">
+              {overdue.map((v) => {
+                const member = getMember(v.memberId);
+                return (
+                  <div key={v.id} className="flex items-center justify-between gap-3 flex-wrap bg-white rounded-xl px-3 py-2 border border-red-100">
+                    <button type="button" onClick={() => setViewing(v)} className="text-sm text-left text-gray-700 min-w-0 hover:underline">
+                      <span className="font-semibold">{member ? `${member.firstName} ${member.lastName}` : "Membre"}</span>
+                      {" · "}
+                      {v.vaccineName}
+                      <span className="text-red-600"> — prévu le {formatDate(v.nextDoseDate)}</span>
+                    </button>
+                    {canWriteMember(v.memberId) && (
+                      <Button size="sm" onClick={() => openBooster(v)}>
+                        <CheckCircle2 size={14} />
+                        Rappel effectué
+                      </Button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {/* Member filter */}
         <div className="flex gap-2 flex-wrap">
           <button
@@ -213,6 +359,16 @@ export default function VaccinationsPage() {
               {m.firstName}
             </button>
           ))}
+          {/* Filtre complémentaire : rappels en retard uniquement */}
+          <button
+            onClick={() => setOnlyOverdue((o) => !o)}
+            className={`px-4 py-1.5 rounded-full text-sm font-medium transition-all inline-flex items-center gap-1.5 ${
+              onlyOverdue ? "bg-red-600 text-white shadow-sm" : "bg-white text-red-600 border border-red-200 hover:border-red-300"
+            }`}
+          >
+            <AlertTriangle size={13} />
+            En retard{overdue.length > 0 ? ` (${overdue.length})` : ""}
+          </button>
         </div>
 
         {loading ? (
@@ -224,9 +380,11 @@ export default function VaccinationsPage() {
             <div className="w-20 h-20 bg-amber-50 rounded-2xl flex items-center justify-center mx-auto mb-4">
               <Syringe size={36} className="text-amber-400" />
             </div>
-            <h3 className="text-lg font-bold text-gray-700 mb-2">Aucune vaccination</h3>
-            <p className="text-gray-400 mb-6">Tenez à jour le carnet de vaccinations de votre famille.</p>
-            {members.length === 0 ? (
+            <h3 className="text-lg font-bold text-gray-700 mb-2">{onlyOverdue ? "Aucun rappel en retard" : "Aucune vaccination"}</h3>
+            <p className="text-gray-400 mb-6">
+              {onlyOverdue ? "Tous les rappels prévus sont à jour." : "Tenez à jour le carnet de vaccinations de votre famille."}
+            </p>
+            {onlyOverdue ? null : members.length === 0 ? (
               <p className="text-sm text-amber-600 bg-amber-50 px-4 py-2 rounded-xl inline-block">
                 ⚠️ Ajoutez d'abord un membre depuis la page Membres
               </p>
@@ -261,7 +419,7 @@ export default function VaccinationsPage() {
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 flex-wrap">
                             <h3 className="font-semibold text-gray-800">{v.vaccineName}</h3>
-                            {v.nextDoseDate && isFuture(v.nextDoseDate) && <Badge variant="warning">Rappel prévu</Badge>}
+                            <BoosterBadge vaccination={v} boosterDose={getVaccination(v.boosterDoneVaccinationId)} />
                           </div>
                           <div className="flex flex-wrap gap-3 mt-1 text-xs text-gray-500">
                             <span className="flex items-center gap-1">
@@ -284,6 +442,18 @@ export default function VaccinationsPage() {
                           </div>
                           {v.notes && <p className="text-xs text-gray-400 mt-1 italic">{v.notes}</p>}
                         </div>
+                        {canWriteMember(v.memberId) && needsBooster(v) && (
+                          <Button
+                            size="sm"
+                            variant={v.boosterStatus === "en_retard" ? "danger" : "outline"}
+                            onClick={(e) => { e.stopPropagation(); openBooster(v); }}
+                            className="flex-shrink-0"
+                            title="Rappel effectué"
+                          >
+                            <CheckCircle2 size={14} />
+                            <span className="hidden sm:inline">Rappel effectué</span>
+                          </Button>
+                        )}
                         {canWriteMember(v.memberId) && (
                           <button onClick={(e) => { e.stopPropagation(); deleteVaccFromCard(v.id); }} className="p-2 rounded-xl hover:bg-red-50 text-gray-300 hover:text-red-500 transition-colors">
                             <Trash2 size={15} />
@@ -311,9 +481,9 @@ export default function VaccinationsPage() {
                 </div>
                 <div className="flex-1">
                   <h3 className="text-lg font-bold text-gray-800">{viewing.vaccineName}</h3>
-                  {viewing.nextDoseDate && isFuture(viewing.nextDoseDate) && (
+                  {viewing.boosterStatus && (
                     <div className="mt-1">
-                      <Badge variant="warning">Rappel prévu</Badge>
+                      <BoosterBadge vaccination={viewing} boosterDose={getVaccination(viewing.boosterDoneVaccinationId)} />
                     </div>
                   )}
                 </div>
@@ -343,7 +513,9 @@ export default function VaccinationsPage() {
                 {viewing.nextDoseDate && (
                   <div className="bg-gray-50 rounded-xl p-3">
                     <p className="text-xs text-gray-400 font-medium">Prochain rappel</p>
-                    <p className="text-sm font-semibold text-gray-700">{formatDate(viewing.nextDoseDate)}</p>
+                    <p className={`text-sm font-semibold ${viewing.boosterStatus === "en_retard" ? "text-red-600" : "text-gray-700"}`}>
+                      {formatDate(viewing.nextDoseDate)}
+                    </p>
                   </div>
                 )}
                 {viewing.administeredBy && (
@@ -376,6 +548,16 @@ export default function VaccinationsPage() {
             )}
 
             {/* Actions */}
+            {canWriteMember(viewing.memberId) && needsBooster(viewing) && (
+              <Button
+                variant={viewing.boosterStatus === "en_retard" ? "danger" : "outline"}
+                onClick={() => openBooster(viewing)}
+                className="w-full"
+              >
+                <CheckCircle2 size={15} />
+                Rappel effectué
+              </Button>
+            )}
             <div className="flex gap-3 pt-2 border-t border-gray-100">
               {canWriteMember(viewing.memberId) && (
                 <Button
@@ -399,6 +581,39 @@ export default function VaccinationsPage() {
               )}
               <Button onClick={() => setViewing(null)} className="flex-1">
                 Fermer
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* Modal « Enregistrer le rappel » : crée la dose de rappel côté serveur */}
+      <Modal open={!!boosterFor} onClose={() => setBoosterFor(null)} title="Enregistrer le rappel">
+        {boosterFor && (
+          <div className="space-y-4">
+            <div className="bg-amber-50 border border-amber-100 rounded-xl px-4 py-3 text-sm text-gray-700">
+              <p className="font-semibold">{boosterFor.vaccineName}</p>
+              <p className="text-xs text-gray-500">
+                {getMember(boosterFor.memberId) &&
+                  `${getMember(boosterFor.memberId).firstName} ${getMember(boosterFor.memberId).lastName} · `}
+                Rappel prévu le {formatDate(boosterFor.nextDoseDate)}
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <Input label="Date de la dose *" type="date" max={todayISO()} value={boosterForm.dateAdministered} onChange={bf("dateAdministered")} />
+              <Input label="Prochain rappel" type="date" value={boosterForm.nextDoseDate} onChange={bf("nextDoseDate")} />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <Input label="Administré par" placeholder="Dr. Dupont" value={boosterForm.administeredBy} onChange={bf("administeredBy")} />
+              <Input label="Numéro de lot" placeholder="Numéro de lot" value={boosterForm.lotNumber} onChange={bf("lotNumber")} />
+            </div>
+            <Textarea label="Notes" placeholder="Réactions éventuelles, remarques..." value={boosterForm.notes} onChange={bf("notes")} />
+            <div className="flex gap-3 pt-2">
+              <Button variant="ghost" onClick={() => setBoosterFor(null)} className="flex-1">
+                Annuler
+              </Button>
+              <Button onClick={saveBooster} loading={boosterSaving} className="flex-1">
+                Enregistrer
               </Button>
             </div>
           </div>

@@ -1,0 +1,2 @@
+ALTER TABLE "vaccinations" ADD COLUMN "booster_done_vaccination_id" integer;--> statement-breakpoint
+ALTER TABLE "vaccinations" ADD CONSTRAINT "vaccinations_booster_done_vaccination_id_vaccinations_id_fk" FOREIGN KEY ("booster_done_vaccination_id") REFERENCES "public"."vaccinations"("id") ON DELETE set null ON UPDATE no action;

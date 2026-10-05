@@ -9,7 +9,7 @@ import { MemberAvatar } from "../components/members/MemberAvatar";
 import { Plus, Pencil, Trash2, Loader2, Pill, User, Calendar, Stethoscope, X, Clock, History } from "lucide-react";
 import { formatDate } from "../lib/utils";
 import { IntakeAnswerButtons, IntakeStatusBadge, NOTIFICATIONS_REFRESH_EVENT } from "../components/notifications/intakes";
-import { format, isToday, parseISO } from "date-fns";
+import { format, isToday, parseISO, startOfDay, subDays } from "date-fns";
 import { fr } from "date-fns/locale";
 import toast from "react-hot-toast";
 
@@ -212,6 +212,102 @@ function IntakeHistory({ intakes, canAnswer }) {
   );
 }
 
+// Fenêtres d'affichage : historique détaillé (14 j) et taux de suivi (30 j).
+const HISTORY_DAYS = 14;
+const ADHERENCE_DAYS = 30;
+
+// Début de la fenêtre des `days` derniers jours (aujourd'hui inclus).
+const windowStart = (days) => startOfDay(subDays(new Date(), days - 1));
+
+// Prises d'un médicament : par identifiant, à défaut par nom.
+const intakesOfMedication = (intakes, med) =>
+  intakes.filter((it) => (med.id != null ? it.medicationId === med.id : it.medicationName === med.name));
+
+// Taux de suivi (observance) sur les 30 derniers jours : les prises en
+// attente sont ignorées ; « pas prise » et « sans réponse » comptent comme
+// non suivies.
+function computeAdherence(intakes) {
+  const since = windowStart(ADHERENCE_DAYS);
+  let taken = 0;
+  let notTaken = 0;
+  let missed = 0;
+  for (const it of intakes) {
+    if (parseISO(it.scheduledAt) < since) continue;
+    if (it.status === "taken") taken++;
+    else if (it.status === "not_taken") notTaken++;
+    else if (it.status === "missed") missed++;
+  }
+  const total = taken + notTaken + missed;
+  return { taken, notTaken, missed, total, pct: total > 0 ? Math.round((taken / total) * 100) : null };
+}
+
+// Couleur selon le taux : ≥ 80 % vert, 50–79 % orange, < 50 % rouge.
+function adherenceTone(pct) {
+  if (pct >= 80) return { dot: "bg-emerald-500", bar: "bg-emerald-500", text: "text-emerald-700" };
+  if (pct >= 50) return { dot: "bg-amber-500", bar: "bg-amber-500", text: "text-amber-700" };
+  return { dot: "bg-red-500", bar: "bg-red-500", text: "text-red-700" };
+}
+
+function adherenceText(a) {
+  return `${a.taken} prise${a.taken > 1 ? "s" : ""} sur ${a.total} — ${a.pct} %`;
+}
+
+// Taux de suivi en version compacte (carte du traitement).
+function AdherenceCompact({ name, adherence }) {
+  if (adherence.pct === null) {
+    return (
+      <p className="text-xs text-gray-400 flex items-center gap-1.5 min-w-0">
+        <span className="w-2 h-2 rounded-full bg-gray-300 flex-shrink-0" />
+        <span className="truncate">
+          {name && <span className="font-medium text-gray-500">{name} : </span>}
+          Pas encore de prise suivie
+        </span>
+      </p>
+    );
+  }
+  const tone = adherenceTone(adherence.pct);
+  return (
+    <p className="text-xs text-gray-600 flex items-center gap-1.5 min-w-0" title="Taux de suivi sur 30 jours">
+      <span className={`w-2 h-2 rounded-full flex-shrink-0 ${tone.dot}`} />
+      <span className="truncate">
+        {name && <span className="font-medium text-gray-700">{name} : </span>}
+        <span className={tone.text}>{adherenceText(adherence)}</span>
+      </span>
+    </p>
+  );
+}
+
+// Taux de suivi détaillé avec barre de progression (fenêtre de détail).
+function AdherenceBar({ adherence }) {
+  if (adherence.pct === null) {
+    return <p className="text-xs text-gray-400 italic">Pas encore de prise suivie</p>;
+  }
+  const tone = adherenceTone(adherence.pct);
+  return (
+    <div>
+      <div className="flex items-center justify-between gap-2 text-xs">
+        <span className={`font-semibold ${tone.text}`}>{adherenceText(adherence)}</span>
+        <span className="text-gray-400">
+          {adherence.notTaken} pas prise{adherence.notTaken > 1 ? "s" : ""} · {adherence.missed} sans réponse
+        </span>
+      </div>
+      <div className="h-2 bg-gray-100 rounded-full overflow-hidden mt-1">
+        <div className={`h-full rounded-full ${tone.bar}`} style={{ width: `${adherence.pct}%` }} />
+      </div>
+    </div>
+  );
+}
+
+// Statut affiché d'un traitement : le serveur le désactive automatiquement
+// le lendemain de sa date de fin.
+function treatmentStatus(t, activeLabel = "Actif") {
+  if (t.isActive) return { label: activeLabel, variant: "success" };
+  if (t.endDate && parseISO(t.endDate) < startOfDay(new Date())) {
+    return { label: `Terminé le ${formatDate(t.endDate)}`, variant: "default" };
+  }
+  return { label: "Terminé", variant: "default" };
+}
+
 const defaultForm = {
   memberId: "",
   disease: "",
@@ -236,13 +332,14 @@ export default function TraitementsPage() {
   const [saving, setSaving] = useState(false);
   const [filterActive, setFilterActive] = useState("all");
   const [viewing, setViewing] = useState(null);
-  // Prises de médicaments des 14 derniers jours (fiches lisibles).
+  // Prises de médicaments des 30 derniers jours (fiches lisibles) : taux de
+  // suivi sur 30 jours, historique détaillé sur les 14 derniers.
   const [intakes, setIntakes] = useState([]);
 
   const loadIntakes = useCallback(async () => {
     if (!selectedFamily) return;
     try {
-      const res = await fetch(`/api/intakes?familyId=${selectedFamily.id}&days=14`);
+      const res = await fetch(`/api/intakes?familyId=${selectedFamily.id}&days=${ADHERENCE_DAYS}`);
       const data = res.ok ? await res.json() : [];
       setIntakes(Array.isArray(data) ? data : []);
     } catch {
@@ -269,6 +366,15 @@ export default function TraitementsPage() {
   const canAnswer = (memberId) => !!members.find((m) => m.id === memberId)?.isMine || canWriteMember(memberId);
 
   const intakesOf = (treatmentId) => intakes.filter((it) => it.treatmentId === treatmentId);
+  const recentIntakesOf = (treatmentId) => {
+    const since = windowStart(HISTORY_DAYS);
+    return intakesOf(treatmentId).filter((it) => parseISO(it.scheduledAt) >= since);
+  };
+  // Médicaments suivis (au moins une heure de prise) avec leur taux de suivi.
+  const adherenceOf = (t) =>
+    (t.medications ?? [])
+      .filter((m) => normalizeTimes(m.intakeTimes).length > 0)
+      .map((m) => ({ med: m, adherence: computeAdherence(intakesOfMedication(intakesOf(t.id), m)) }));
   const todayIntakesOf = (treatmentId) =>
     intakesOf(treatmentId)
       .filter((it) => isToday(parseISO(it.scheduledAt)))
@@ -488,6 +594,8 @@ export default function TraitementsPage() {
             {filtered.map((t) => {
               const member = getMember(t.memberId);
               const meds = t.medications ?? [];
+              const status = treatmentStatus(t);
+              const tracked = adherenceOf(t);
               return (
                 <div
                   key={t.id}
@@ -512,7 +620,7 @@ export default function TraitementsPage() {
                       </div>
                     </div>
                     <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-                      <Badge variant={t.isActive ? "success" : "default"}>{t.isActive ? "Actif" : "Terminé"}</Badge>
+                      <Badge variant={status.variant}>{status.label}</Badge>
                       {canWriteMember(t.memberId) && (
                         <button onClick={() => openEdit(t)} className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-teal-600 transition-colors">
                           <Pencil size={14} />
@@ -544,6 +652,16 @@ export default function TraitementsPage() {
                       {meds.length > 3 && (
                         <span className="text-xs px-2 py-0.5 rounded-full bg-gray-50 text-gray-500 font-medium">+{meds.length - 3}</span>
                       )}
+                    </div>
+                  )}
+
+                  {/* Taux de suivi sur 30 jours (médicaments avec heures de prise) */}
+                  {tracked.length > 0 && (
+                    <div className="mb-2 space-y-0.5">
+                      {tracked.slice(0, 3).map(({ med, adherence }, i) => (
+                        <AdherenceCompact key={med.id ?? i} name={tracked.length > 1 ? med.name : null} adherence={adherence} />
+                      ))}
+                      {tracked.length > 3 && <p className="text-xs text-gray-400">+{tracked.length - 3} autre(s)</p>}
                     </div>
                   )}
 
@@ -589,7 +707,7 @@ export default function TraitementsPage() {
                   <p className="text-xs text-gray-400 font-medium uppercase tracking-wide">Maladie / motif</p>
                   <h3 className="text-lg font-bold text-gray-800">{viewing.disease}</h3>
                   <div className="mt-1">
-                    <Badge variant={viewing.isActive ? "success" : "default"}>{viewing.isActive ? "En cours" : "Terminé"}</Badge>
+                    <Badge variant={treatmentStatus(viewing, "En cours").variant}>{treatmentStatus(viewing, "En cours").label}</Badge>
                   </div>
                 </div>
               </div>
@@ -637,6 +755,25 @@ export default function TraitementsPage() {
               )}
             </div>
 
+            {/* Taux de suivi par médicament (30 derniers jours) */}
+            {adherenceOf(viewing).length > 0 && (
+              <div>
+                <h4 className="text-sm font-bold text-gray-700 uppercase tracking-wide mb-3">Suivi des prises (30 derniers jours)</h4>
+                <div className="space-y-3">
+                  {adherenceOf(viewing).map(({ med, adherence }, i) => (
+                    <div key={med.id ?? i} className="bg-gray-50 rounded-xl p-3">
+                      <p className="text-sm font-semibold text-gray-800 flex items-center gap-1.5 mb-1.5">
+                        <Pill size={12} className="text-violet-500 flex-shrink-0" />
+                        {med.name}
+                        {med.dosage && <span className="font-normal text-gray-400">({med.dosage})</span>}
+                      </p>
+                      <AdherenceBar adherence={adherence} />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Informations générales du traitement */}
             <div>
               <h4 className="text-sm font-bold text-gray-700 uppercase tracking-wide mb-3">Informations générales</h4>
@@ -672,9 +809,9 @@ export default function TraitementsPage() {
             {/* Historique des prises */}
             <div>
               <h4 className="text-sm font-bold text-gray-700 uppercase tracking-wide mb-3 flex items-center gap-1.5">
-                <History size={14} className="text-violet-500" /> Historique des prises (14 derniers jours)
+                <History size={14} className="text-violet-500" /> Historique des prises ({HISTORY_DAYS} derniers jours)
               </h4>
-              <IntakeHistory intakes={intakesOf(viewing.id)} canAnswer={canAnswer} />
+              <IntakeHistory intakes={recentIntakesOf(viewing.id)} canAnswer={canAnswer} />
             </div>
 
             {/* Notes */}

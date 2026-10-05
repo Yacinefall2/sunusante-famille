@@ -20,6 +20,7 @@ import {
   ChevronRight,
   Loader2,
   Heart,
+  AlertTriangle,
 } from "lucide-react";
 import { formatDateTime, formatDate, APPOINTMENT_STATUSES } from "../lib/utils";
 import { familyRoleBadgeVariant, noAccountSubtitle } from "../lib/roles";
@@ -53,6 +54,30 @@ export default function DashboardPage() {
       setIntakes([]);
     }
   }, [selectedFamily]);
+
+  // Rappels de vaccins en retard (statut calculé par le serveur).
+  const [overdueBoosters, setOverdueBoosters] = useState([]);
+
+  const loadOverdueBoosters = useCallback(async () => {
+    if (!selectedFamily) return;
+    try {
+      const res = await fetch(`/api/vaccinations?familyId=${selectedFamily.id}`);
+      const d = res.ok ? await res.json() : [];
+      setOverdueBoosters(
+        (Array.isArray(d) ? d : [])
+          .filter((v) => v.boosterStatus === "en_retard")
+          .sort((a, b) => (a.nextDoseDate < b.nextDoseDate ? -1 : 1))
+      );
+    } catch {
+      setOverdueBoosters([]);
+    }
+  }, [selectedFamily]);
+
+  useEffect(() => {
+    loadOverdueBoosters();
+    window.addEventListener(NOTIFICATIONS_REFRESH_EVENT, loadOverdueBoosters);
+    return () => window.removeEventListener(NOTIFICATIONS_REFRESH_EVENT, loadOverdueBoosters);
+  }, [loadOverdueBoosters]);
 
   // Chargement initial, puis rechargement après chaque réponse à une prise
   // (événement global émis par `respondIntake`).
@@ -305,6 +330,47 @@ export default function DashboardPage() {
                     </div>
                     <IntakeAnswerButtons intakeId={it.id} />
                   </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Rappels de vaccins en retard (masquée s'il n'y en a aucun) */}
+        {overdueBoosters.length > 0 && (
+          <div className="bg-white rounded-2xl shadow-sm border border-red-200 p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-bold text-gray-800 flex items-center gap-2">
+                <AlertTriangle size={18} className="text-red-600" /> Rappels de vaccins en retard
+                <Badge variant="danger" className="px-2 py-0.5">{overdueBoosters.length}</Badge>
+              </h3>
+              <Link to="/vaccinations" className="text-xs text-teal-600 hover:underline font-medium">
+                Voir les vaccinations
+              </Link>
+            </div>
+            <div className="space-y-2">
+              {overdueBoosters.map((v) => {
+                const member = memberById(v.memberId);
+                return (
+                  <Link
+                    key={v.id}
+                    to="/vaccinations"
+                    className="flex items-center justify-between gap-3 p-3 rounded-xl border border-red-50 hover:bg-red-50/50 transition-colors"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-10 h-10 rounded-xl bg-red-50 flex items-center justify-center flex-shrink-0">
+                        <Syringe size={18} className="text-red-600" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="font-semibold text-gray-800 text-sm truncate">{v.vaccineName}</p>
+                        <p className="text-xs text-gray-500 truncate">
+                          {member ? `${member.firstName} ${member.lastName} · ` : ""}
+                          <span className="text-red-600">en retard depuis le {formatDate(v.nextDoseDate)}</span>
+                        </p>
+                      </div>
+                    </div>
+                    <ChevronRight size={16} className="text-gray-300 flex-shrink-0" />
+                  </Link>
                 );
               })}
             </div>

@@ -39,6 +39,9 @@ function sanitizeMedications(medications) {
   return medications
     .filter((m) => m?.name?.trim())
     .map((m) => ({
+      // Identifiant d'un médicament existant (modification) : conservé pour le
+      // mettre à jour sur place et garder son historique de prises.
+      id: parseInt(m.id) || null,
       name: m.name.trim(),
       dosage: m.dosage?.trim() || null,
       frequency: m.frequency?.trim() || null,
@@ -98,7 +101,7 @@ router.post(
 
       const insertedMeds = await db
         .insert(treatmentMedications)
-        .values(meds.map((m) => ({ ...m, treatmentId: created.id })))
+        .values(meds.map(({ id: _id, ...m }) => ({ ...m, treatmentId: created.id })))
         .returning();
 
       res.status(201).json({ ...created, medications: insertedMeds });
@@ -145,12 +148,27 @@ router.put(
         .where(eq(treatments.id, treatmentId))
         .returning();
 
-      // Remplace entièrement la liste des médicaments par celle envoyée.
-      await db.delete(treatmentMedications).where(eq(treatmentMedications.treatmentId, treatmentId));
-      const insertedMeds = await db
-        .insert(treatmentMedications)
-        .values(meds.map((m) => ({ ...m, treatmentId })))
-        .returning();
+      // Synchronise les médicaments : ceux qui existent déjà sont mis à jour
+      // SUR PLACE (leur historique de prises, rattaché au médicament, est
+      // conservé) ; les nouveaux sont créés ; ceux retirés du traitement sont
+      // supprimés. Les supprimer puis tout recréer effaçait l'historique.
+      const existingIds = new Set(
+        (await db.select({ id: treatmentMedications.id }).from(treatmentMedications).where(eq(treatmentMedications.treatmentId, treatmentId))).map((r) => r.id)
+      );
+      const kept = new Set();
+      const insertedMeds = [];
+      for (const { id: medId, ...med } of meds) {
+        if (medId && existingIds.has(medId)) {
+          const [row] = await db.update(treatmentMedications).set(med).where(eq(treatmentMedications.id, medId)).returning();
+          kept.add(medId);
+          insertedMeds.push(row);
+        } else {
+          const [row] = await db.insert(treatmentMedications).values({ ...med, treatmentId }).returning();
+          insertedMeds.push(row);
+        }
+      }
+      const removed = [...existingIds].filter((medId) => !kept.has(medId));
+      if (removed.length > 0) await db.delete(treatmentMedications).where(inArray(treatmentMedications.id, removed));
 
       res.json({ ...updated, medications: insertedMeds });
     } catch (error) {

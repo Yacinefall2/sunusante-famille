@@ -5,8 +5,55 @@ import { vaccinations } from "../db/schema.js";
 import { requireFamilyMembership } from "../middleware/auth.js";
 import { familyIdForListQuery, familyIdFromMemberId, familyIdFromResource } from "../lib/familyResolvers.js";
 import { canWriteMember, readableScope } from "../lib/documentAccess.js";
+import { localDate } from "../lib/time.js";
 
 const router = Router();
+
+// Statut du rappel d'une vaccination : null (aucun rappel prévu) | "a_faire"
+// (date à venir) | "en_retard" (date passée, aucune dose enregistrée) | "fait".
+export function boosterStatus(v, today = localDate()) {
+  if (!v.nextDoseDate) return null;
+  if (v.boosterDoneVaccinationId) return "fait";
+  return v.nextDoseDate < today ? "en_retard" : "a_faire";
+}
+
+// « Rappel effectué » : enregistre la nouvelle dose (même vaccin, date du
+// jour par défaut) et clôt le rappel de la vaccination d'origine.
+router.post(
+  "/:id/booster-done",
+  requireFamilyMembership((req) => familyIdFromResource(vaccinations, req.params.id)),
+  async (req, res) => {
+    try {
+      const [original] = await db.select().from(vaccinations).where(eq(vaccinations.id, parseInt(req.params.id)));
+      if (!original) return res.status(404).json({ error: "Vaccination introuvable" });
+      if (!(await canWriteMember(req, original.memberId))) {
+        return res.status(403).json({ error: "Vous n'avez pas les droits d'écriture sur ce dossier" });
+      }
+      if (!original.nextDoseDate) return res.status(400).json({ error: "Aucun rappel prévu pour cette vaccination" });
+      if (original.boosterDoneVaccinationId) return res.status(409).json({ error: "Ce rappel est déjà enregistré" });
+      const { vaccineName, dateAdministered, nextDoseDate, administeredBy, lotNumber, notes } = req.body;
+      const date = dateAdministered || localDate();
+      if (date > localDate()) return res.status(400).json({ error: "La date de la dose ne peut pas être dans le futur" });
+      const [dose] = await db
+        .insert(vaccinations)
+        .values({
+          memberId: original.memberId,
+          vaccineName: vaccineName?.trim() || original.vaccineName,
+          dateAdministered: date,
+          nextDoseDate: nextDoseDate || null,
+          administeredBy: administeredBy || original.administeredBy || null,
+          lotNumber: lotNumber || null,
+          notes: notes || null,
+        })
+        .returning();
+      await db.update(vaccinations).set({ boosterDoneVaccinationId: dose.id }).where(eq(vaccinations.id, original.id));
+      res.status(201).json({ ...dose, boosterStatus: boosterStatus(dose) });
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: "Erreur serveur" });
+    }
+  }
+);
 
 router.get("/", requireFamilyMembership(familyIdForListQuery), async (req, res) => {
   try {
@@ -16,7 +63,8 @@ router.get("/", requireFamilyMembership(familyIdForListQuery), async (req, res) 
     if (!memberIds) return res.status(403).json({ error: "Accès refusé à ce dossier" });
     if (memberIds.length === 0) return res.json([]);
     const all = await db.select().from(vaccinations).where(inArray(vaccinations.memberId, memberIds)).orderBy(vaccinations.dateAdministered);
-    res.json(all);
+    const today = localDate();
+    res.json(all.map((v) => ({ ...v, boosterStatus: boosterStatus(v, today) })));
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Erreur serveur" });

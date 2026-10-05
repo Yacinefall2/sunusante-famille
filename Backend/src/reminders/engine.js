@@ -103,6 +103,7 @@ async function vaccineReminders(now) {
     .innerJoin(members, eq(members.id, vaccinations.memberId))
     .where(
       and(
+        isNull(vaccinations.boosterDoneVaccinationId),
         sql`${vaccinations.nextDoseDate} >= ${today}`,
         sql`${vaccinations.nextDoseDate} <= ${addDays(today, 7)}`
       )
@@ -122,6 +123,47 @@ async function vaccineReminders(now) {
       });
     }
   }
+}
+
+// ── Vaccins en retard : une relance 7 jours après la date prévue ─────────────
+// (rappel non enregistré ; au-delà de 60 jours de retard, on ne relance plus).
+export const VACCINE_LATE_AFTER_DAYS = 7;
+async function lateVaccineReminders(now) {
+  const today = localDate(now);
+  const rows = await db
+    .select({ v: vaccinations, m: members })
+    .from(vaccinations)
+    .innerJoin(members, eq(members.id, vaccinations.memberId))
+    .where(
+      and(
+        isNull(vaccinations.boosterDoneVaccinationId),
+        sql`${vaccinations.nextDoseDate} <= ${addDays(today, -VACCINE_LATE_AFTER_DAYS)}`,
+        sql`${vaccinations.nextDoseDate} > ${addDays(today, -60)}`
+      )
+    );
+  for (const { v, m } of rows) {
+    for (const user of await recipientsFor(m.id)) {
+      await notify({
+        user,
+        category: "vaccine_reminder",
+        dedupeKey: `vac-late:${v.id}:${v.nextDoseDate}:u${user.id}`,
+        title: `Rappel de vaccin en retard : ${v.vaccineName} — ${memberName(m)}`,
+        body: `Prévu le ${formatDate(v.nextDoseDate)} · Pas encore enregistré : indiquez « Rappel effectué » une fois la dose faite.`,
+        link: "/vaccinations",
+        familyId: m.familyId,
+        memberId: m.id,
+        now,
+      });
+    }
+  }
+}
+
+// ── Traitements : fin automatique à la date de fin ───────────────────────────
+async function endFinishedTreatments(now) {
+  await db
+    .update(treatments)
+    .set({ isActive: false })
+    .where(and(eq(treatments.isActive, true), sql`${treatments.endDate} < ${localDate(now)}`));
 }
 
 // ── Prises de médicament : rappel à l'heure, une relance (UC-56) ─────────────
@@ -296,6 +338,8 @@ export async function runReminderTick({ now = new Date(), sendMail = sendNotific
   await appointmentReminders(now);
   await villageTick(now);
   await vaccineReminders(now);
+  await lateVaccineReminders(now);
+  await endFinishedTreatments(now);
   await medicationReminders(now);
   await dispatchEmails(now, sendMail);
 }

@@ -140,6 +140,11 @@ export const vaccinations = pgTable("vaccinations", {
   vaccineName: varchar("vaccine_name", { length: 255 }).notNull(),
   dateAdministered: date("date_administered").notNull(),
   nextDoseDate: date("next_dose_date"),
+  // Suivi du rappel : la vaccination qui l'a effectué (bouton « Rappel
+  // effectué »). Statut affiché : à faire / en retard / fait (routes/vaccinations.js).
+  boosterDoneVaccinationId: integer("booster_done_vaccination_id").references(() => vaccinations.id, {
+    onDelete: "set null",
+  }),
   administeredBy: varchar("administered_by", { length: 255 }),
   lotNumber: varchar("lot_number", { length: 100 }),
   notes: text("notes"),
