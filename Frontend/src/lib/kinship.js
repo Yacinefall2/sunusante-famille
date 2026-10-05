@@ -128,13 +128,16 @@ function sibling(target, viewer) {
   return a < b ? g(target, "Grand frère", "Grande sœur") : g(target, "Petit frère", "Petite sœur");
 }
 
-// Fils / Fille, avec le rang parmi les enfants du foyer quand il y en a au
-// moins deux : l'aîné(e) et le/la cadet(te). Ex. "Fils aîné", "Fille cadette".
+// Fils / Fille, avec le rang parmi les enfants DU MÊME SEXE quand il y en a
+// au moins deux, comme on le dit en famille : le fils aîné et la fille aînée,
+// le fils cadet et la fille cadette. Ex. avec Yacine (F, 2003), Medoune (M,
+// 2004), Souleymane (M, 2007), Toutou (F, 2012), Zahra (F, 2023) :
+// "Fille aînée", "Fils aîné", "Fils cadet", "Fille", "Fille cadette".
 function childWithRank(target, allMembers) {
   const base = g(target, "Fils", "Fille");
-  if (!target?.dateOfBirth) return base;
+  if (!target?.dateOfBirth || !target?.gender) return base;
   const children = (allMembers ?? [])
-    .filter((m) => m.kinship === "enfant" && m.dateOfBirth)
+    .filter((m) => m.kinship === "enfant" && m.dateOfBirth && m.gender === target.gender)
     .sort((x, y) => (x.dateOfBirth < y.dateOfBirth ? -1 : x.dateOfBirth > y.dateOfBirth ? 1 : 0));
   if (children.length < 2) return base;
   const first = children[0].dateOfBirth;
