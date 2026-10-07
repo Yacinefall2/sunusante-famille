@@ -18,6 +18,9 @@ import intakesRouter from "./routes/intakes.js";
 import mailWebhooksRouter from "./routes/mailWebhooks.js";
 import villageRouter from "./routes/village.js";
 import familyDashboardRouter from "./routes/familyDashboard.js";
+import doctorSharesRouter from "./routes/doctorShares.js";
+import emergencyRouter from "./routes/emergency.js";
+import publicRouter from "./routes/public.js";
 import { requireAuth, requireVerifiedEmail } from "./middleware/auth.js";
 
 const app = express();
@@ -32,6 +35,8 @@ app.use("/uploads", requireAuth, requireVerifiedEmail, uploadsRouter);
 app.use("/api/auth", authRouter);
 app.use("/api/invitations", invitationsRouter);
 app.use("/api/webhooks/mail", mailWebhooksRouter);
+// Lien médecin et fiche d'urgence : publics, sans compte (phase F).
+app.use("/api/public", publicRouter);
 
 // Toutes les routes ci-dessous nécessitent une session valide ET une adresse
 // courriel vérifiée (règle transverse §10, sans exception). L'isolation
@@ -51,6 +56,8 @@ app.use("/api/document-roles", requireAuth, requireVerifiedEmail, documentRolesR
 app.use("/api/notifications", requireAuth, requireVerifiedEmail, notificationsRouter);
 app.use("/api/intakes", requireAuth, requireVerifiedEmail, intakesRouter);
 app.use("/api/village", requireAuth, requireVerifiedEmail, villageRouter);
+app.use("/api/doctor-shares", requireAuth, requireVerifiedEmail, doctorSharesRouter);
+app.use("/api/emergency", requireAuth, requireVerifiedEmail, emergencyRouter);
 
 app.get("/api/health", (req, res) => res.json({ status: "ok" }));
 

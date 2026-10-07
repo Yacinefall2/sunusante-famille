@@ -262,6 +262,8 @@ describe("API des notifications", () => {
       ["relay_escalation", true, true],
       ["relay_alert", true, true],
       ["relay_update", true, false],
+      ["doctor_share", true, true],
+      ["emergency_view", true, true],
     ]);
     expect((await as(f.fatou).put("/api/notifications/preferences").send({ category: "delivery_failure", inApp: false, email: false })).status).toBe(400);
   });

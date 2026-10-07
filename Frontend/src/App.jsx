@@ -17,6 +17,9 @@ import FamilySettingsPage from "./pages/FamilySettings.jsx";
 import MaFichePage from "./pages/MaFiche.jsx";
 import NotificationsPage from "./pages/Notifications.jsx";
 import VillagePage from "./pages/Village.jsx";
+import PartagePage from "./pages/Partage.jsx";
+import PublicDoctorPage from "./pages/PublicDoctor.jsx";
+import PublicEmergencyPage from "./pages/PublicEmergency.jsx";
 import { useFamily } from "./context/FamilyContext";
 
 // Tant que l'utilisateur n'a pas de fiche à lui dans la famille sélectionnée
@@ -36,6 +39,9 @@ export default function App() {
       <Route path="/verification-en-attente" element={<PendingVerificationPage />} />
       <Route path="/verifier-email/:token" element={<VerifyEmailPage />} />
       <Route path="/invitations/:token" element={<AcceptInvitationPage />} />
+      {/* Pages publiques de la phase F : sans connexion */}
+      <Route path="/medecin/:token" element={<PublicDoctorPage />} />
+      <Route path="/urgence/:token" element={<PublicEmergencyPage />} />
       <Route
         path="/*"
         element={
@@ -53,6 +59,7 @@ export default function App() {
                   <Route path="/documents" element={<DocumentsPage />} />
                   <Route path="/famille" element={<FamilySettingsPage />} />
                   <Route path="/village" element={<VillagePage />} />
+                  <Route path="/partage" element={<PartagePage />} />
                   <Route path="/notifications" element={<NotificationsPage />} />
                   <Route path="*" element={<Navigate to="/dashboard" replace />} />
                 </Routes>

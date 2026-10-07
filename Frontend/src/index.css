@@ -51,3 +51,86 @@
 input[type="checkbox"] {
   accent-color: #0d9488;
 }
+
+/* ── Carte d'urgence imprimable (phase F) ─────────────────────────────────
+   Rendue hors de #root et masquée à l'écran ; quand <body> porte la classe
+   "printing-card", seule la carte est imprimée, au format carte bancaire. */
+.emergency-print-card {
+  display: none;
+}
+
+@media print {
+  body.printing-card > *:not(.emergency-print-card) {
+    display: none !important;
+  }
+  body.printing-card {
+    background: #fff !important;
+  }
+  body.printing-card .emergency-print-card {
+    display: block;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .epc-card {
+    width: 85.6mm;
+    height: 54mm;
+    border: 0.3mm dashed #9ca3af;
+    border-radius: 3mm;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    font-family: "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: #111827;
+    background: #fff;
+  }
+  .epc-head {
+    background: #dc2626;
+    color: #fff;
+    font-weight: 800;
+    font-size: 9pt;
+    letter-spacing: 0.04em;
+    text-align: center;
+    padding: 1.2mm 2mm;
+  }
+  .epc-body {
+    flex: 1;
+    display: flex;
+    gap: 2mm;
+    padding: 1.5mm 2.5mm 0;
+    min-height: 0;
+  }
+  .epc-text {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    font-size: 6.5pt;
+    line-height: 1.25;
+  }
+  .epc-name {
+    font-size: 9.5pt;
+    font-weight: 800;
+    margin-bottom: 0.8mm;
+  }
+  .epc-line {
+    margin-bottom: 0.4mm;
+  }
+  .epc-danger {
+    color: #b91c1c;
+    font-weight: 700;
+  }
+  .epc-qr {
+    flex-shrink: 0;
+    width: 25mm;
+  }
+  .epc-qr img,
+  .epc-qr div {
+    width: 25mm !important;
+    height: 25mm !important;
+  }
+  .epc-foot {
+    font-size: 5.5pt;
+    color: #4b5563;
+    text-align: center;
+    padding: 0.8mm 2mm 1.2mm;
+  }
+}

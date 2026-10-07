@@ -15,6 +15,9 @@ export const NOTIFICATION_CATEGORIES = {
   relay_escalation: { label: "Rappels à relayer (en tant que relais)", inApp: true, email: true },
   relay_alert: { label: "Alertes du Village (proche injoignable)", inApp: true, email: true },
   relay_update: { label: "Suivi du Village (relais effectué, présence au rendez-vous)", inApp: true, email: false },
+  // Partage (phase F) : le titulaire est toujours informé de ce qui sort de son dossier.
+  doctor_share: { label: "Partages avec un médecin (lien créé, ouvert, refusé ou révoqué)", inApp: true, email: true },
+  emergency_view: { label: "Consultations de ma fiche d'urgence", inApp: true, email: true },
 };
 
 // Échec de remise d'un courriel : jamais silencieux (§7.3), donc toujours

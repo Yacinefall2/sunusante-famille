@@ -24,6 +24,7 @@ import {
   Syringe,
   UserCircle,
   TreePine,
+  ShieldPlus,
 } from "lucide-react";
 import { calculateAge, formatDate } from "../lib/utils";
 import {
@@ -387,6 +388,18 @@ export default function FichesPage() {
                         <span className="text-gray-600 text-xs line-clamp-2">Allergies : {m.allergies}</span>
                       </div>
                     )}
+                  </div>
+
+                  {/* Partage médecin et fiche d'urgence de cette fiche */}
+                  <div className="pt-3 mt-3 border-t border-gray-50">
+                    <Link
+                      to={`/partage?fiche=${m.id}`}
+                      onClick={(e) => e.stopPropagation()}
+                      className="inline-flex items-center gap-1.5 text-xs font-medium text-gray-500 hover:text-teal-700"
+                    >
+                      <ShieldPlus size={13} />
+                      Partage & urgence
+                    </Link>
                   </div>
                 </div>
               );

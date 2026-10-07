@@ -20,7 +20,8 @@ export async function resetDatabase() {
     truncate table users, families, members, document_roles, appointments, treatments,
       treatment_medications, vaccinations, documents, email_verification_tokens,
       family_memberships, refresh_tokens, pending_invitations, notifications,
-      medication_intakes, notification_preferences, relay_tasks, relay_events
+      medication_intakes, notification_preferences, relay_tasks, relay_events,
+      doctor_shares, emergency_cards, emergency_card_views
     restart identity cascade
   `);
 }

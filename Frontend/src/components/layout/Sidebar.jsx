@@ -14,6 +14,7 @@ import {
   UserCog,
   Bell,
   TreePine,
+  ShieldPlus,
 } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { useState } from "react";
@@ -26,6 +27,7 @@ const navItems = [
   { href: "/traitements", label: "Traitements", icon: Pill },
   { href: "/vaccinations", label: "Vaccinations", icon: Syringe },
   { href: "/documents", label: "Documents", icon: FileText },
+  { href: "/partage", label: "Partage & urgence", icon: ShieldPlus },
   { href: "/village", label: "Village", icon: TreePine },
   { href: "/famille", label: "Comptes & invitations", icon: UserCog },
   { href: "/notifications", label: "Notifications", icon: Bell },

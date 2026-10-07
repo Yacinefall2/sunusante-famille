@@ -384,3 +384,64 @@ export const relayEvents = pgTable("relay_events", {
   userId: integer("user_id").references(() => users.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
+
+// ── Partage avec un professionnel de santé (A4, UC-22/23/37, UC-45 à 47) ─────
+// Lien à usage unique et à durée limitée (§10) : la première ouverture le
+// « consomme » et ouvre une consultation sur cet appareil jusqu'à
+// l'expiration ; toute autre ouverture est refusée et signalée.
+export const doctorShares = pgTable("doctor_shares", {
+  id: serial("id").primaryKey(),
+  memberId: integer("member_id")
+    .references(() => members.id, { onDelete: "cascade" })
+    .notNull(),
+  familyId: integer("family_id")
+    .references(() => families.id, { onDelete: "cascade" })
+    .notNull(),
+  createdByUserId: integer("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  tokenHash: varchar("token_hash", { length: 64 }).notNull().unique(),
+  // Éléments partagés, choisis à la création (UC-22)
+  includeEssentials: boolean("include_essentials").default(true).notNull(), // groupe sanguin, allergies, médecin traitant
+  includeTreatments: boolean("include_treatments").default(false).notNull(),
+  includeVaccinations: boolean("include_vaccinations").default(false).notNull(),
+  documentIds: integer("document_ids").array().default(sql`'{}'::integer[]`).notNull(),
+  expiresAt: timestamp("expires_at").notNull(),
+  revokedAt: timestamp("revoked_at"),
+  consumedAt: timestamp("consumed_at"),
+  sessionHash: varchar("session_hash", { length: 64 }),
+  lastViewedAt: timestamp("last_viewed_at"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+// ── Fiche d'urgence (A6, UC-24/38/48/49, §5) ─────────────────────────────────
+// Une par fiche. Rien n'est publié tant que le titulaire (ou le gestionnaire
+// d'un proche sans compte) n'a pas coché chaque information et activé la
+// fiche. Le jeton est imprimé dans le QR code : le régénérer invalide
+// l'ancienne carte.
+export const emergencyCards = pgTable("emergency_cards", {
+  id: serial("id").primaryKey(),
+  memberId: integer("member_id")
+    .references(() => members.id, { onDelete: "cascade" })
+    .notNull()
+    .unique(),
+  token: varchar("token", { length: 64 }).notNull().unique(),
+  active: boolean("active").default(false).notNull(),
+  showAge: boolean("show_age").default(false).notNull(),
+  showBloodType: boolean("show_blood_type").default(false).notNull(),
+  showAllergies: boolean("show_allergies").default(false).notNull(),
+  showTreatments: boolean("show_treatments").default(false).notNull(),
+  showEmergencyContact: boolean("show_emergency_contact").default(false).notNull(),
+  showDoctor: boolean("show_doctor").default(false).notNull(),
+  // Informations utiles en urgence, rédigées par le titulaire (ex. « diabétique »)
+  extraInfo: text("extra_info"),
+  updatedByUserId: integer("updated_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+// Consultations de la fiche d'urgence (traçabilité ; le titulaire est prévenu).
+export const emergencyCardViews = pgTable("emergency_card_views", {
+  id: serial("id").primaryKey(),
+  cardId: integer("card_id")
+    .references(() => emergencyCards.id, { onDelete: "cascade" })
+    .notNull(),
+  viewedAt: timestamp("viewed_at").defaultNow().notNull(),
+});

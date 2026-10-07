@@ -39,6 +39,22 @@ courriel non remis après 3 tentatives est signalé dans l'application à la
 personne et à l'administrateur familial. Fuseau de référence : `APP_TIMEZONE`
 (Africa/Dakar par défaut). Journal : `docker compose logs -f worker`.
 
+### Partage médecin et fiche d'urgence
+
+Page « Partage & urgence » (`/partage`) :
+
+- **Lien médecin** (2 h, 24 h ou 7 jours, révocable) : à usage unique, la
+  première ouverture le réserve à l'appareil du médecin jusqu'à l'expiration ;
+  une ouverture depuis un autre appareil est refusée et signalée. Vue en
+  lecture seule `/medecin/:jeton`, imprimable et téléchargeable en PDF.
+- **Fiche d'urgence** : rien n'est publié par défaut, le titulaire coche chaque
+  information. QR code vers `/urgence/:jeton` (régénérable : l'ancien cesse de
+  fonctionner), carte imprimable et image d'écran de verrouillage avec les
+  informations vitales en clair. Chaque consultation est journalisée et signalée.
+
+Les liens sont construits à partir de `FRONTEND_URL` : en production, elle
+doit être l'adresse publique de l'application.
+
 ### Modifier le schéma de la base
 
 1. Modifier `Backend/src/db/schema.js`

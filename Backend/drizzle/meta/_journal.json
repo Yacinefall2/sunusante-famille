@@ -57,6 +57,13 @@
       "when": 1791223752884,
       "tag": "0007_suivi_vaccins",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1791379318986,
+      "tag": "0008_partage_urgence",
+      "breakpoints": true
     }
   ]
 }
