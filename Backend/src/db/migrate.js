@@ -20,10 +20,28 @@ import { Pool } from "pg";
 
 const migrationsFolder = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "drizzle");
 
+// Au redémarrage de Docker, PostgreSQL peut accepter les connexions puis
+// répondre « the database system is starting up » quelques secondes encore :
+// on attend qu'il réponde vraiment (jusqu'à ~60 s) au lieu de planter.
+async function waitForDatabase(pool, { attempts = 30, delayMs = 2000 } = {}) {
+  for (let i = 1; ; i++) {
+    try {
+      await pool.query("select 1");
+      return;
+    } catch (error) {
+      const notReady = error.code === "57P03" || ["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN"].includes(error.code);
+      if (!notReady || i >= attempts) throw error;
+      console.log(`⏳ Base de données pas encore prête (${error.code}), nouvel essai dans ${delayMs / 1000} s…`);
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+}
+
 export async function runMigrations(databaseUrl = process.env.DATABASE_URL) {
   if (!databaseUrl) throw new Error("DATABASE_URL est requis (voir le fichier .env.example)");
   const pool = new Pool({ connectionString: databaseUrl });
   try {
+    await waitForDatabase(pool);
     const { rows } = await pool.query(`
       select
         to_regclass('public.users') is not null as has_tables,
