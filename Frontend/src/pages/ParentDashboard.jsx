@@ -865,6 +865,9 @@ export default function ParentDashboard() {
             </div>
           </div>
 
+          {/* Indicateurs de la famille en haut de page : l'état général d'un coup d'œil */}
+          <IndicatorsBlock indicators={data.indicators} />
+
           {/* 1. À traiter */}
           <TodoBlock todo={data.todo ?? []} memberById={memberById} busyKey={busyKey} handlers={handlers} />
 
@@ -900,8 +903,6 @@ export default function ParentDashboard() {
             )}
           </div>
 
-          {/* 4. Indicateurs */}
-          <IndicatorsBlock indicators={data.indicators} />
 
           {/* 5. Activité récente */}
           <ActivityBlock activity={data.activity ?? []} memberById={memberById} />
