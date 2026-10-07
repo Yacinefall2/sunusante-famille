@@ -52,7 +52,7 @@ Les tests vérifient notamment l'étanchéité entre familles et les droits
 d'administration de l'espace. Ils tournent sur une base jetable dédiée :
 
 ```bash
-docker compose --profile test up -d db-test   # base de test, port 55432
+docker compose --profile test up -d db-test   # base de test, port 15432
 cd Backend && npm test
 ```
 

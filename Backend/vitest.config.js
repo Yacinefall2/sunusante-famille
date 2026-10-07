@@ -4,7 +4,7 @@ import { defineConfig } from "vitest/config";
 // (santefamille_test), recréée à chaque lancement par test/globalSetup.js.
 // Prérequis : `docker compose --profile test up -d db-test` à la racine du projet.
 const TEST_DATABASE_URL =
-  process.env.TEST_DATABASE_URL || "postgresql://postgres:postgres@127.0.0.1:55432/santefamille_test";
+  process.env.TEST_DATABASE_URL || "postgresql://postgres:postgres@127.0.0.1:15432/santefamille_test";
 
 export default defineConfig({
   test: {

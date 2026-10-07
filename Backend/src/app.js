@@ -17,6 +17,7 @@ import notificationsRouter from "./routes/notifications.js";
 import intakesRouter from "./routes/intakes.js";
 import mailWebhooksRouter from "./routes/mailWebhooks.js";
 import villageRouter from "./routes/village.js";
+import familyDashboardRouter from "./routes/familyDashboard.js";
 import { requireAuth, requireVerifiedEmail } from "./middleware/auth.js";
 
 const app = express();
@@ -42,6 +43,8 @@ app.use("/api/appointments", requireAuth, requireVerifiedEmail, appointmentsRout
 app.use("/api/treatments", requireAuth, requireVerifiedEmail, treatmentsRouter);
 app.use("/api/vaccinations", requireAuth, requireVerifiedEmail, vaccinationsRouter);
 app.use("/api/documents", requireAuth, requireVerifiedEmail, documentsRouter);
+// Vue d'ensemble de la famille, réservée aux parents (avant /api/dashboard).
+app.use("/api/dashboard/family", requireAuth, requireVerifiedEmail, familyDashboardRouter);
 app.use("/api/dashboard", requireAuth, requireVerifiedEmail, dashboardRouter);
 app.use("/api/family-memberships", requireAuth, requireVerifiedEmail, familyMembershipsRouter);
 app.use("/api/document-roles", requireAuth, requireVerifiedEmail, documentRolesRouter);

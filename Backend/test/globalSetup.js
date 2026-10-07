@@ -6,7 +6,7 @@ import { runMigrations } from "../src/db/migrate.js";
 // versionnées construisent bien le schéma complet.
 export default async function setup() {
   const testUrl =
-    process.env.TEST_DATABASE_URL || "postgresql://postgres:postgres@127.0.0.1:55432/santefamille_test";
+    process.env.TEST_DATABASE_URL || "postgresql://postgres:postgres@127.0.0.1:15432/santefamille_test";
   const url = new URL(testUrl);
   const dbName = url.pathname.slice(1);
   if (!dbName.endsWith("_test")) {

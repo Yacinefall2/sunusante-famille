@@ -148,6 +148,7 @@ export function FamilyProvider({ children }) {
         canReadMember,
         writableMembers,
         needsMyFiche,
+        membershipLoaded,
       }}
     >
       {children}

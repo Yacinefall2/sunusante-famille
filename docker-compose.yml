@@ -19,7 +19,8 @@ services:
 
   # Base jetable pour les tests automatisés du backend (npm test). Ne démarre
   # qu'avec le profil "test" : docker compose --profile test up -d db-test
-  # Port 55432 pour ne jamais entrer en conflit avec un PostgreSQL local.
+  # Port 15432 : hors de la plage de ports que Windows attribue automatiquement
+  # aux applications (49152-65535) et différent d'un PostgreSQL local (5432).
   db-test:
     image: postgres:16-alpine
     container_name: santefamille-db-test
@@ -30,7 +31,7 @@ services:
     tmpfs:
       - /var/lib/postgresql/data
     ports:
-      - "55432:5432"
+      - "15432:5432"
 
   pgadmin:
     image: dpage/pgadmin4

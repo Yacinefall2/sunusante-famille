@@ -28,8 +28,26 @@ import { kinshipLabel, memberSubtitle } from "../lib/kinship";
 import { IntakeAnswerButtons, NOTIFICATIONS_REFRESH_EVENT } from "../components/notifications/intakes";
 import { format, isToday, parseISO } from "date-fns";
 import toast from "react-hot-toast";
+import ParentDashboard from "./ParentDashboard";
 
+// Les Parents (administrateurs) ont un tableau de bord dédié, centré sur
+// toute la famille ; les autres membres gardent le tableau de bord ci-dessous.
 export default function DashboardPage() {
+  const { isParent, selectedFamily, membershipLoaded } = useFamily();
+  // Tant que le rôle n'est pas connu, on n'affiche ni l'un ni l'autre :
+  // sinon un parent verrait un instant le tableau de bord des membres.
+  if (selectedFamily && !membershipLoaded) {
+    return (
+      <div className="flex justify-center py-24">
+        <Loader2 size={28} className="animate-spin text-teal-600" />
+      </div>
+    );
+  }
+  if (isParent && selectedFamily) return <ParentDashboard />;
+  return <MemberDashboard />;
+}
+
+function MemberDashboard() {
   const { selectedFamily, families, loadFamilies, loading: familyLoading, isParent, isAdult, myMember, members, canWriteMember } =
     useFamily();
   // Seuls les Parents et Adultes peuvent créer une fiche (pas les Dépendants)
