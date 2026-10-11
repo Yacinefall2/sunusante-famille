@@ -6,7 +6,7 @@ import { Button } from "../components/ui/Button";
 import { Input, Textarea, Select } from "../components/ui/Input";
 import { Badge } from "../components/ui/Badge";
 import { MemberAvatar } from "../components/members/MemberAvatar";
-import { Plus, Pencil, Trash2, Loader2, Pill, User, Calendar, Stethoscope, X, Clock, History } from "lucide-react";
+import { Plus, Pencil, Trash2, Loader2, Pill, User, Calendar, Stethoscope, X, Clock, History, Search } from "lucide-react";
 import { formatDate } from "../lib/utils";
 import { IntakeAnswerButtons, IntakeStatusBadge, NOTIFICATIONS_REFRESH_EVENT } from "../components/notifications/intakes";
 import { format, isToday, parseISO, startOfDay, subDays } from "date-fns";
@@ -308,6 +308,19 @@ function treatmentStatus(t, activeLabel = "Actif") {
   return { label: "Terminé", variant: "default" };
 }
 
+// Clé de regroupement d'une maladie : « Paludisme », « paludisme » et
+// « Paludisme » (espaces en trop) désignent la même maladie.
+const diseaseKey = (disease) =>
+  (disease ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+
+// Au-delà de ce nombre de maladies, un champ de recherche filtre la liste.
+const DISEASE_SEARCH_THRESHOLD = 8;
+
 const defaultForm = {
   memberId: "",
   disease: "",
@@ -323,7 +336,7 @@ export default function TraitementsPage() {
   // Fiches de la famille issues du contexte, avec le niveau d'accès de
   // l'utilisateur : saisie / modification / suppression uniquement sur les
   // fiches en accès complet.
-  const { selectedFamily, members, writableMembers, canWriteMember } = useFamily();
+  const { selectedFamily, members, writableMembers, canWriteMember, canReadMember } = useFamily();
   const [treatments, setTreatments] = useState([]);
   const [loading, setLoading] = useState(false);
   const [showForm, setShowForm] = useState(false);
@@ -332,6 +345,12 @@ export default function TraitementsPage() {
   const [saving, setSaving] = useState(false);
   const [filterActive, setFilterActive] = useState("all");
   const [viewing, setViewing] = useState(null);
+  // Recherche en deux temps, comme pour les documents : on choisit d'abord un
+  // membre (tous ses traitements) ou une maladie (les membres traités pour
+  // elle), avant d'afficher la liste.
+  // null | { by: "member", value: "<id>" | "all" } | { by: "disease", value: "<clé>" }
+  const [selection, setSelection] = useState(null);
+  const [diseaseQuery, setDiseaseQuery] = useState("");
   // Prises de médicaments des 30 derniers jours (fiches lisibles) : taux de
   // suivi sur 30 jours, historique détaillé sur les 14 derniers.
   const [intakes, setIntakes] = useState([]);
@@ -352,6 +371,8 @@ export default function TraitementsPage() {
       load();
       loadIntakes();
     }
+    setSelection(null);
+    setDiseaseQuery("");
   }, [selectedFamily, loadIntakes]);
 
   // Rechargement des prises après une réponse (ici, sur le tableau de bord
@@ -385,7 +406,8 @@ export default function TraitementsPage() {
     setLoading(true);
     try {
       const res = await fetch(`/api/treatments?familyId=${selectedFamily.id}`);
-      setTreatments(await res.json());
+      const data = await res.json().catch(() => null);
+      setTreatments(res.ok && Array.isArray(data) ? data : []);
     } finally {
       setLoading(false);
     }
@@ -393,7 +415,17 @@ export default function TraitementsPage() {
 
   const openAdd = () => {
     setEditing(null);
-    setForm({ ...defaultForm, memberId: writableMembers[0]?.id?.toString() ?? "", medications: [{ ...emptyMedication }] });
+    // Membre (ou maladie) présélectionné selon la recherche en cours.
+    const selectedMemberId =
+      selection?.by === "member" && selection.value !== "all" && canWriteMember(Number(selection.value))
+        ? selection.value
+        : null;
+    setForm({
+      ...defaultForm,
+      memberId: selectedMemberId ?? writableMembers[0]?.id?.toString() ?? "",
+      disease: selection?.by === "disease" ? diseases.find((d) => d.key === selection.value)?.label ?? "" : "",
+      medications: [{ ...emptyMedication }],
+    });
     setShowForm(true);
   };
 
@@ -512,7 +544,56 @@ export default function TraitementsPage() {
 
   const getMember = (id) => members.find((m) => m.id === id);
 
+  // Fiches consultables (celles dont l'API renvoie les traitements).
+  const readableMembers = members.filter((m) => canReadMember(m.id));
+
+  // Maladies distinctes de la famille, avec les membres traités pour chacune.
+  // Libellé affiché : l'orthographe la plus fréquente.
+  const diseases = useMemo(() => {
+    const groups = new Map();
+    for (const t of treatments) {
+      const key = diseaseKey(t.disease);
+      if (!key) continue;
+      if (!groups.has(key)) groups.set(key, { key, spellings: new Map(), memberIds: new Set(), activeCount: 0 });
+      const g = groups.get(key);
+      const spelling = t.disease.trim().replace(/\s+/g, " ");
+      g.spellings.set(spelling, (g.spellings.get(spelling) ?? 0) + 1);
+      g.memberIds.add(t.memberId);
+      if (t.isActive) g.activeCount++;
+    }
+    return [...groups.values()]
+      .map((g) => ({
+        key: g.key,
+        label: [...g.spellings.entries()].sort((a, b) => b[1] - a[1])[0][0],
+        memberIds: [...g.memberIds],
+        activeCount: g.activeCount,
+      }))
+      .sort((a, b) => a.label.localeCompare(b.label, "fr"));
+  }, [treatments]);
+
+  const shownDiseases = diseaseQuery.trim()
+    ? diseases.filter((d) => d.key.includes(diseaseKey(diseaseQuery)))
+    : diseases;
+
+  const treatmentCountOf = (memberId) => treatments.filter((t) => t.memberId === memberId).length;
+
+  const selectedDisease = selection?.by === "disease" ? diseases.find((d) => d.key === selection.value) : null;
+
+  const selectionLabel =
+    selection?.by === "member"
+      ? selection.value === "all"
+        ? "Tous les membres"
+        : getMember(Number(selection.value))?.firstName ?? ""
+      : selectedDisease?.label ?? "";
+
+  const resetSelection = () => {
+    setSelection(null);
+    setDiseaseQuery("");
+  };
+
   const filtered = treatments.filter((t) => {
+    if (selection?.by === "member" && selection.value !== "all" && t.memberId.toString() !== selection.value) return false;
+    if (selection?.by === "disease" && diseaseKey(t.disease) !== selection.value) return false;
     if (filterActive === "active") return t.isActive;
     if (filterActive === "inactive") return !t.isActive;
     return true;
@@ -549,29 +630,11 @@ export default function TraitementsPage() {
           )}
         </div>
 
-        <div className="flex gap-2 flex-wrap">
-          {[
-            { value: "all", label: "Tous" },
-            { value: "active", label: "En cours" },
-            { value: "inactive", label: "Terminés" },
-          ].map((opt) => (
-            <button
-              key={opt.value}
-              onClick={() => setFilterActive(opt.value)}
-              className={`px-4 py-1.5 rounded-full text-sm font-medium transition-all ${
-                filterActive === opt.value ? "bg-teal-600 text-white shadow-sm" : "bg-white text-gray-600 border border-gray-200 hover:border-teal-300"
-              }`}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
-
-        {loading ? (
+        {loading && treatments.length === 0 ? (
           <div className="flex justify-center py-20">
             <Loader2 className="animate-spin text-teal-600" size={36} />
           </div>
-        ) : filtered.length === 0 ? (
+        ) : treatments.length === 0 ? (
           <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-16 text-center">
             <div className="w-20 h-20 bg-violet-50 rounded-2xl flex items-center justify-center mx-auto mb-4">
               <Pill size={36} className="text-violet-400" />
@@ -589,107 +652,262 @@ export default function TraitementsPage() {
               </Button>
             ) : null}
           </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {filtered.map((t) => {
-              const member = getMember(t.memberId);
-              const meds = t.medications ?? [];
-              const status = treatmentStatus(t);
-              const tracked = adherenceOf(t);
-              return (
-                <div
-                  key={t.id}
-                  onClick={() => setViewing(t)}
-                  className={`bg-white rounded-2xl shadow-sm border p-5 hover:shadow-md transition-all duration-200 cursor-pointer ${t.isActive ? "border-gray-100" : "border-gray-100 opacity-70"}`}
-                  title="Cliquez pour voir les détails"
+        ) : selection === null ? (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {/* Recherche par membre : tous ses traitements */}
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 sm:p-8 text-center">
+              <div className="w-16 h-16 bg-violet-50 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                <User size={30} className="text-violet-400" />
+              </div>
+              <h3 className="text-lg font-bold text-gray-700 mb-1">Par membre</h3>
+              <p className="text-sm text-gray-400 mb-5">Choisissez un membre pour voir tous ses traitements.</p>
+              <div className="flex flex-wrap justify-center gap-2">
+                {readableMembers.map((m) => {
+                  const count = treatmentCountOf(m.id);
+                  return (
+                    <button
+                      key={m.id}
+                      onClick={() => setSelection({ by: "member", value: m.id.toString() })}
+                      className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium border bg-white text-gray-600 border-gray-200 hover:border-violet-300 transition-all"
+                    >
+                      <MemberAvatar member={m} size="sm" />
+                      {m.firstName}
+                      <span className={`text-xs ${count > 0 ? "text-violet-600 font-semibold" : "text-gray-400"}`}>{count}</span>
+                    </button>
+                  );
+                })}
+                <button
+                  onClick={() => setSelection({ by: "member", value: "all" })}
+                  className="px-3 py-1.5 rounded-full text-sm font-medium border border-dashed border-gray-300 text-gray-500 hover:border-violet-300 hover:text-violet-600 transition-all"
                 >
-                  <div className="flex items-start justify-between mb-3">
-                    <div className="flex items-center gap-3">
-                      <div className={`w-11 h-11 rounded-xl flex items-center justify-center ${t.isActive ? "bg-violet-100" : "bg-gray-100"}`}>
-                        <Stethoscope size={20} className={t.isActive ? "text-violet-600" : "text-gray-400"} />
-                      </div>
-                      <div>
-                        <h3 className="font-bold text-gray-800">{t.disease}</h3>
-                        <p className="text-sm text-gray-500">
-                          {meds.length === 0
-                            ? "Aucun médicament"
-                            : meds.length === 1
-                            ? meds[0].name
-                            : `${meds.length} médicaments`}
-                        </p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-                      <Badge variant={status.variant}>{status.label}</Badge>
-                      {canWriteMember(t.memberId) && (
-                        <button onClick={() => openEdit(t)} className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-teal-600 transition-colors">
-                          <Pencil size={14} />
-                        </button>
-                      )}
-                      {canWriteMember(t.memberId) && (
-                        <button onClick={() => deleteTreatmentFromCard(t.id)} className="p-1.5 rounded-lg hover:bg-red-50 text-gray-400 hover:text-red-500 transition-colors">
-                          <Trash2 size={14} />
-                        </button>
-                      )}
-                    </div>
-                  </div>
+                  Tous les membres
+                </button>
+              </div>
+            </div>
 
-                  <TodayIntakes intakes={todayIntakesOf(t.id)} canAnswer={canAnswer} />
-
-                  {meds.length > 0 && (
-                    <div className="flex flex-wrap gap-1.5 mb-2">
-                      {meds.slice(0, 3).map((m, i) => (
-                        <span key={i} className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-violet-50 text-violet-700 font-medium">
-                          <Pill size={10} />
-                          {m.name}
-                          {normalizeTimes(m.intakeTimes).length > 0 ? (
-                            <span className="text-violet-500 font-normal">({formatIntakeTimes(m.intakeTimes)})</span>
-                          ) : (
-                            t.isActive && <span className="text-amber-600 font-normal">(aucun rappel)</span>
-                          )}
-                        </span>
-                      ))}
-                      {meds.length > 3 && (
-                        <span className="text-xs px-2 py-0.5 rounded-full bg-gray-50 text-gray-500 font-medium">+{meds.length - 3}</span>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Taux de suivi sur 30 jours (médicaments avec heures de prise) */}
-                  {tracked.length > 0 && (
-                    <div className="mb-2 space-y-0.5">
-                      {tracked.slice(0, 3).map(({ med, adherence }, i) => (
-                        <AdherenceCompact key={med.id ?? i} name={tracked.length > 1 ? med.name : null} adherence={adherence} />
-                      ))}
-                      {tracked.length > 3 && <p className="text-xs text-gray-400">+{tracked.length - 3} autre(s)</p>}
-                    </div>
-                  )}
-
-                  <div className="space-y-1.5 text-sm text-gray-500">
-                    {(t.startDate || t.endDate) && (
-                      <p className="flex items-center gap-2">
-                        <Calendar size={13} className="text-teal-500" />
-                        {t.startDate ? formatDate(t.startDate) : "—"} → {t.endDate ? formatDate(t.endDate) : "En cours"}
-                      </p>
-                    )}
-                    {t.prescribedBy && (
-                      <p className="flex items-center gap-2">
-                        <User size={13} className="text-teal-500" />
-                        Prescrit par {t.prescribedBy}
-                      </p>
-                    )}
-                    {t.notes && <p className="text-xs bg-gray-50 rounded-lg px-2 py-1 italic mt-2">{t.notes}</p>}
-                  </div>
-
-                  {member && (
-                    <div className="mt-3 pt-3 border-t border-gray-50">
-                      <MemberAvatar member={member} size="sm" showName />
-                    </div>
-                  )}
+            {/* Recherche par maladie : les membres traités pour elle */}
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 sm:p-8 text-center">
+              <div className="w-16 h-16 bg-violet-50 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                <Stethoscope size={30} className="text-violet-400" />
+              </div>
+              <h3 className="text-lg font-bold text-gray-700 mb-1">Par maladie</h3>
+              <p className="text-sm text-gray-400 mb-5">Choisissez une maladie pour voir les membres qui la traitent.</p>
+              {diseases.length > DISEASE_SEARCH_THRESHOLD && (
+                <div className="relative max-w-xs mx-auto mb-3">
+                  <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                  <input
+                    type="search"
+                    value={diseaseQuery}
+                    onChange={(e) => setDiseaseQuery(e.target.value)}
+                    placeholder="Rechercher une maladie…"
+                    className="w-full pl-8 pr-3 py-1.5 rounded-full border border-gray-200 bg-white text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-teal-500"
+                  />
                 </div>
-              );
-            })}
+              )}
+              <div className="flex flex-wrap justify-center gap-2">
+                {shownDiseases.map((d) => (
+                  <button
+                    key={d.key}
+                    onClick={() => setSelection({ by: "disease", value: d.key })}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium border bg-white text-gray-600 border-gray-200 hover:border-teal-300 transition-all"
+                    title={`${d.memberIds.length} membre(s) · ${d.activeCount} traitement(s) en cours`}
+                  >
+                    {d.label}
+                    <span className="text-xs text-gray-400">
+                      {d.memberIds.length} membre{d.memberIds.length > 1 ? "s" : ""}
+                    </span>
+                  </button>
+                ))}
+                {shownDiseases.length === 0 && <p className="text-sm text-gray-400 italic">Aucune maladie ne correspond.</p>}
+              </div>
+            </div>
           </div>
+        ) : (
+          <>
+            <div className="flex flex-wrap items-center gap-2 text-sm text-gray-500">
+              <span>
+                {selection.by === "member" ? "Traitements de " : "Maladie : "}
+                <span className="font-semibold text-gray-700">{selectionLabel}</span>
+              </span>
+              <button
+                onClick={resetSelection}
+                className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-medium bg-white border border-gray-200 text-gray-600 hover:border-violet-300 hover:text-violet-600 transition-colors"
+              >
+                Changer la sélection
+              </button>
+            </div>
+
+            {/* Maladie choisie : les membres concernés, cliquables pour passer
+                à l'ensemble de leurs traitements. */}
+            {selectedDisease && (
+              <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
+                <p className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-2">
+                  {selectedDisease.memberIds.length} membre{selectedDisease.memberIds.length > 1 ? "s" : ""} concerné
+                  {selectedDisease.memberIds.length > 1 ? "s" : ""}
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {selectedDisease.memberIds.map((id) => {
+                    const m = getMember(id);
+                    if (!m) return null;
+                    const active = treatments.some((t) => t.memberId === id && t.isActive && diseaseKey(t.disease) === selectedDisease.key);
+                    return (
+                      <button
+                        key={id}
+                        onClick={() => setSelection({ by: "member", value: id.toString() })}
+                        className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium border bg-white text-gray-600 border-gray-200 hover:border-violet-300 transition-all"
+                        title={`Voir tous les traitements de ${m.firstName}`}
+                      >
+                        <MemberAvatar member={m} size="sm" />
+                        {m.firstName}
+                        <Badge variant={active ? "success" : "default"}>{active ? "En cours" : "Terminé"}</Badge>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+          <div className="flex gap-2 flex-wrap">
+            {[
+              { value: "all", label: "Tous" },
+              { value: "active", label: "En cours" },
+              { value: "inactive", label: "Terminés" },
+            ].map((opt) => (
+              <button
+                key={opt.value}
+                onClick={() => setFilterActive(opt.value)}
+                className={`px-4 py-1.5 rounded-full text-sm font-medium transition-all ${
+                  filterActive === opt.value ? "bg-teal-600 text-white shadow-sm" : "bg-white text-gray-600 border border-gray-200 hover:border-teal-300"
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+
+          {loading ? (
+            <div className="flex justify-center py-20">
+              <Loader2 className="animate-spin text-teal-600" size={36} />
+            </div>
+          ) : filtered.length === 0 ? (
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-16 text-center">
+              <div className="w-20 h-20 bg-violet-50 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                <Pill size={36} className="text-violet-400" />
+              </div>
+              <h3 className="text-lg font-bold text-gray-700 mb-2">Aucun traitement ne correspond</h3>
+              <p className="text-gray-400 mb-6">
+                Aucun traitement{filterActive === "active" ? " en cours" : filterActive === "inactive" ? " terminé" : ""} pour {selectionLabel}.
+              </p>
+              {writableMembers.length > 0 && (
+                <Button onClick={openAdd}>
+                  <Plus size={16} />
+                  Ajouter un traitement
+                </Button>
+              )}
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {filtered.map((t) => {
+                const member = getMember(t.memberId);
+                const meds = t.medications ?? [];
+                const status = treatmentStatus(t);
+                const tracked = adherenceOf(t);
+                return (
+                  <div
+                    key={t.id}
+                    onClick={() => setViewing(t)}
+                    className={`bg-white rounded-2xl shadow-sm border p-5 hover:shadow-md transition-all duration-200 cursor-pointer ${t.isActive ? "border-gray-100" : "border-gray-100 opacity-70"}`}
+                    title="Cliquez pour voir les détails"
+                  >
+                    <div className="flex items-start justify-between mb-3">
+                      <div className="flex items-center gap-3">
+                        <div className={`w-11 h-11 rounded-xl flex items-center justify-center ${t.isActive ? "bg-violet-100" : "bg-gray-100"}`}>
+                          <Stethoscope size={20} className={t.isActive ? "text-violet-600" : "text-gray-400"} />
+                        </div>
+                        <div>
+                          <h3 className="font-bold text-gray-800">{t.disease}</h3>
+                          <p className="text-sm text-gray-500">
+                            {meds.length === 0
+                              ? "Aucun médicament"
+                              : meds.length === 1
+                              ? meds[0].name
+                              : `${meds.length} médicaments`}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                        <Badge variant={status.variant}>{status.label}</Badge>
+                        {canWriteMember(t.memberId) && (
+                          <button onClick={() => openEdit(t)} className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-teal-600 transition-colors">
+                            <Pencil size={14} />
+                          </button>
+                        )}
+                        {canWriteMember(t.memberId) && (
+                          <button onClick={() => deleteTreatmentFromCard(t.id)} className="p-1.5 rounded-lg hover:bg-red-50 text-gray-400 hover:text-red-500 transition-colors">
+                            <Trash2 size={14} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <TodayIntakes intakes={todayIntakesOf(t.id)} canAnswer={canAnswer} />
+
+                    {meds.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 mb-2">
+                        {meds.slice(0, 3).map((m, i) => (
+                          <span key={i} className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-violet-50 text-violet-700 font-medium">
+                            <Pill size={10} />
+                            {m.name}
+                            {normalizeTimes(m.intakeTimes).length > 0 ? (
+                              <span className="text-violet-500 font-normal">({formatIntakeTimes(m.intakeTimes)})</span>
+                            ) : (
+                              t.isActive && <span className="text-amber-600 font-normal">(aucun rappel)</span>
+                            )}
+                          </span>
+                        ))}
+                        {meds.length > 3 && (
+                          <span className="text-xs px-2 py-0.5 rounded-full bg-gray-50 text-gray-500 font-medium">+{meds.length - 3}</span>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Taux de suivi sur 30 jours (médicaments avec heures de prise) */}
+                    {tracked.length > 0 && (
+                      <div className="mb-2 space-y-0.5">
+                        {tracked.slice(0, 3).map(({ med, adherence }, i) => (
+                          <AdherenceCompact key={med.id ?? i} name={tracked.length > 1 ? med.name : null} adherence={adherence} />
+                        ))}
+                        {tracked.length > 3 && <p className="text-xs text-gray-400">+{tracked.length - 3} autre(s)</p>}
+                      </div>
+                    )}
+
+                    <div className="space-y-1.5 text-sm text-gray-500">
+                      {(t.startDate || t.endDate) && (
+                        <p className="flex items-center gap-2">
+                          <Calendar size={13} className="text-teal-500" />
+                          {t.startDate ? formatDate(t.startDate) : "—"} → {t.endDate ? formatDate(t.endDate) : "En cours"}
+                        </p>
+                      )}
+                      {t.prescribedBy && (
+                        <p className="flex items-center gap-2">
+                          <User size={13} className="text-teal-500" />
+                          Prescrit par {t.prescribedBy}
+                        </p>
+                      )}
+                      {t.notes && <p className="text-xs bg-gray-50 rounded-lg px-2 py-1 italic mt-2">{t.notes}</p>}
+                    </div>
+
+                    {member && (
+                      <div className="mt-3 pt-3 border-t border-gray-50">
+                        <MemberAvatar member={member} size="sm" showName />
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          </>
         )}
       </div>
 
