@@ -21,6 +21,7 @@ import { clearAuthCookies, hashToken, setAuthCookies } from "../lib/session.js";
 import { ADULT_AGE, ageOn } from "../lib/family.js";
 import { documentFilesOf, removeFiles } from "../lib/documentFiles.js";
 import { archiveFicheOfLeavingAccount } from "../lib/archive.js";
+import { logActivity } from "../lib/activityLog.js";
 import { sendEmailChangeEmail, sendEmailChangeNotice, sendPasswordChangedAlert } from "../lib/mailer.js";
 import { clearFailures, lockedMinutes, recordFailure, tooManyAttemptsMessage } from "../lib/loginThrottle.js";
 
@@ -260,11 +261,24 @@ router.delete("/", async (req, res) => {
     }
 
     // Fiches qui restent dans une famille : archivées (gelées, plus lisibles
-    // par personne), comme lorsqu'un compte est retiré de l'espace.
+    // par personne), comme lorsqu'un compte est retiré de l'espace. Le
+    // journal de ces familles garde la trace du départ (le nom du compte y
+    // reste, suivi de « compte supprimé »).
     for (const { membership } of spaces) {
       if (familiesToDelete.includes(membership.familyId)) continue;
-      if (memberIdsToDelete.includes(membership.linkedMemberId)) continue;
-      await archiveFicheOfLeavingAccount(membership);
+      const actor = { id: user.id, name: user.name };
+      await logActivity({ familyId: membership.familyId, actor, action: "account_deleted" });
+      if (memberIdsToDelete.includes(membership.linkedMemberId)) {
+        await logActivity({
+          familyId: membership.familyId,
+          actor,
+          action: "member_deleted",
+          member: membership.linkedMemberId,
+          details: { withAccount: true },
+        });
+        continue;
+      }
+      await archiveFicheOfLeavingAccount(membership, { actor, reason: "account_deleted" });
     }
 
     const files = await documentFilesOf(memberIdsToDelete);

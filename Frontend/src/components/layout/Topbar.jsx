@@ -15,6 +15,7 @@ const pageTitles = {
   "/partage": { title: "Partage & urgence", subtitle: "Lien médecin et fiche d'urgence" },
   "/compte": { title: "Mon compte", subtitle: "Nom, adresse, mot de passe et données" },
   "/notifications": { title: "Notifications", subtitle: "Rappels et préférences" },
+  "/journal": { title: "Journal d'activité", subtitle: "Qui a fait quoi, et quand" },
 };
 
 export function Topbar() {

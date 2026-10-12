@@ -15,6 +15,7 @@ import {
   newToken,
   upgradeEmergencyCard,
 } from "../lib/sharing.js";
+import { logActivity } from "../lib/activityLog.js";
 
 // Fiche d'urgence (A6, UC-24/38) : composée champ par champ. Rien n'est
 // publié par défaut ; le QR code imprimé pointe vers le jeton de la fiche,
@@ -68,6 +69,30 @@ async function describe({ member, card, canEdit }) {
   };
 }
 
+// Journal : activation, désactivation ou modification de la fiche d'urgence,
+// avec la liste des informations publiées — jamais leurs valeurs. Rien si
+// l'enregistrement ne change rien.
+async function logEmergencyChange(req, member, before, after) {
+  const published = (card) => EMERGENCY_FIELDS.filter((f) => card?.[f]);
+  const wasActive = Boolean(before?.active);
+  const sameContent =
+    before &&
+    published(before).join() === published(after).join() &&
+    (before.extraInfo ?? null) === (after.extraInfo ?? null);
+  let action = null;
+  if (!wasActive && after.active) action = "emergency_activated";
+  else if (wasActive && !after.active) action = "emergency_deactivated";
+  else if (after.active && !sameContent) action = "emergency_updated";
+  if (!action) return;
+  await logActivity({
+    familyId: req.familyId,
+    actor: req.user,
+    action,
+    member,
+    details: { fields: published(after), extraInfo: Boolean(after.extraInfo) },
+  });
+}
+
 router.get("/:memberId", membershipFor, async (req, res) => {
   try {
     const ctx = await load(req, res);
@@ -96,6 +121,7 @@ router.put("/:memberId", membershipFor, async (req, res) => {
           .insert(emergencyCards)
           .values({ ...values, memberId: ctx.member.id, ...emergencyTokenColumns(newToken(), ctx.member.id) })
           .returning();
+    await logEmergencyChange(req, ctx.member, ctx.card, card);
     res.json(await describe({ ...ctx, card }));
   } catch (error) {
     console.error(error);
@@ -115,6 +141,7 @@ router.post("/:memberId/regenerate", membershipFor, async (req, res) => {
       .set({ ...emergencyTokenColumns(newToken(), ctx.member.id), updatedByUserId: req.user.id, updatedAt: new Date() })
       .where(eq(emergencyCards.id, ctx.card.id))
       .returning();
+    await logActivity({ familyId: req.familyId, actor: req.user, action: "emergency_qr_regenerated", member: ctx.member });
     res.json(await describe({ ...ctx, card }));
   } catch (error) {
     console.error(error);

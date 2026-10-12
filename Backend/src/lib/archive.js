@@ -1,4 +1,4 @@
-import { and, desc, eq, isNotNull, isNull, ne, or } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, ne, or } from "drizzle-orm";
 import { db } from "../db/index.js";
 import {
   doctorShares,
@@ -8,9 +8,11 @@ import {
   members,
   notifications,
   pendingInvitations,
+  users,
 } from "../db/schema.js";
 import { effectiveRole, statusForLinkedFiche } from "./family.js";
 import { userAccessTo } from "./documentAccess.js";
+import { logActivity } from "./activityLog.js";
 
 // ── Fiches reliées à un compte : liaison, départ, archivage ──────────────────
 // Décision métier « Fiche archivée » : quand un compte ADULTE quitte la
@@ -43,18 +45,22 @@ export async function purgeNotificationsWithoutAccess(memberId, userId = null) {
 // décide qui accède à son dossier (§10). Exception : la fiche d'un
 // adolescent garde ses gestionnaires (les parents gèrent l'adolescent).
 // Met aussi à jour le statut (Axe 3) et, pour un parent, le lien « Parent ».
+// Renvoie les rôles retirés à d'autres comptes que le nouveau titulaire
+// ([{ userId, name, role }]) — pour l'entrée récapitulative du journal
+// (logRolesAutoRevoked).
 export async function afterFicheLinked({ memberId, userId, role }) {
   const [fiche] = await db.select().from(members).where(eq(members.id, memberId));
-  if (!fiche) return;
+  if (!fiche) return [];
   const teen = effectiveRole(role, fiche.dateOfBirth) === "dependent";
-  await db
+  const removed = await db
     .delete(documentRoles)
     .where(
       and(
         eq(documentRoles.memberId, memberId),
         teen ? or(ne(documentRoles.role, "gestionnaire"), eq(documentRoles.userId, userId)) : undefined
       )
-    );
+    )
+    .returning({ userId: documentRoles.userId, role: documentRoles.role });
   await db
     .update(members)
     .set({
@@ -63,6 +69,24 @@ export async function afterFicheLinked({ memberId, userId, role }) {
     })
     .where(eq(members.id, memberId));
   await purgeNotificationsWithoutAccess(memberId);
+  const others = removed.filter((r) => r.userId !== userId);
+  if (others.length === 0) return [];
+  const names = new Map(
+    (await db.select({ id: users.id, name: users.name }).from(users).where(inArray(users.id, others.map((r) => r.userId)))).map((u) => [u.id, u.name])
+  );
+  return others.map((r) => ({ userId: r.userId, name: names.get(r.userId) ?? "un compte", role: r.role }));
+}
+
+// Journal : une seule entrée pour tous les rôles retirés à la liaison d'une fiche.
+export async function logRolesAutoRevoked({ familyId, actor, member, removed }) {
+  if (!removed?.length) return;
+  await logActivity({
+    familyId,
+    actor,
+    action: "document_roles_auto_revoked",
+    member,
+    details: { removed: removed.map((r) => ({ name: r.name, role: r.role })) },
+  });
 }
 
 // Une fiche n'a plus de titulaire (compte adolescent retiré, ou relié à une
@@ -75,13 +99,14 @@ export async function afterFicheUnlinked(memberId) {
 // (rôle ENREGISTRÉ dans `role`, ou dans `storedRole` si la ligne vient de
 // requireFamilyMembership). À appeler AVANT de supprimer cette ligne ou le
 // compte. Renvoie { memberId, archived } ou null si le compte n'avait pas de
-// fiche.
+// fiche. `actor` (qui a retiré le compte, ou le compte lui-même) et `reason`
+// ("removed" | "account_deleted") servent au journal d'activité.
 //   - compte adolescent : la fiche redevient gérée par les parents ;
 //   - compte adulte (ou parent) : la fiche est archivée — rôles de dossier
 //     supprimés, notifications effacées, invitations qui la visent annulées,
 //     liens médecin révoqués et fiche d'urgence désactivée (plus rien ne doit
 //     sortir d'un dossier gelé).
-export async function archiveFicheOfLeavingAccount(membership, now = new Date()) {
+export async function archiveFicheOfLeavingAccount(membership, { now = new Date(), actor = null, reason = "removed" } = {}) {
   if (!membership?.linkedMemberId) return null;
   const memberId = membership.linkedMemberId;
   const [fiche] = await db.select().from(members).where(eq(members.id, memberId));
@@ -100,7 +125,7 @@ export async function archiveFicheOfLeavingAccount(membership, now = new Date())
   }
 
   await db.update(members).set({ archivedAt: now, archivedUserId: membership.userId }).where(eq(members.id, memberId));
-  await db.delete(documentRoles).where(eq(documentRoles.memberId, memberId));
+  const rolesRemoved = await db.delete(documentRoles).where(eq(documentRoles.memberId, memberId)).returning({ id: documentRoles.id });
   await db.delete(notifications).where(eq(notifications.memberId, memberId));
   await db
     .delete(pendingInvitations)
@@ -115,6 +140,16 @@ export async function archiveFicheOfLeavingAccount(membership, now = new Date())
     .set({ revokedAt: now })
     .where(and(eq(doctorShares.memberId, memberId), isNull(doctorShares.revokedAt)));
   await db.update(emergencyCards).set({ active: false }).where(eq(emergencyCards.memberId, memberId));
+  // Entrée toujours visible des parents : rien du dossier lui-même.
+  await logActivity({
+    familyId: fiche.familyId,
+    actor,
+    action: "member_archived",
+    member: fiche,
+    target: membership.userId,
+    details: { reason, rolesRemoved: rolesRemoved.length },
+    at: now,
+  });
   return { memberId, archived: true };
 }
 

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { ChevronDown, UserCog, HeartPulse, ShieldPlus, BellRing, Users, Check, LogOut, Home } from "lucide-react";
+import { ChevronDown, UserCog, HeartPulse, ShieldPlus, BellRing, Users, Check, LogOut, Home, ScrollText } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
 import { useFamily } from "../../context/FamilyContext";
 import { familyRoleLabel } from "../../lib/roles";
@@ -57,6 +57,10 @@ export function UserMenu() {
     myMember && { to: `/partage?fiche=${myMember.id}`, icon: ShieldPlus, label: "Ma fiche d'urgence" },
     { to: "/notifications", icon: BellRing, label: "Notifications et préférences" },
     isParent && { to: "/famille", icon: Users, label: "Comptes & invitations" },
+    // Journal d'activité : toute la famille pour un parent, son seul dossier sinon.
+    isParent
+      ? { to: "/journal", icon: ScrollText, label: "Journal d'activité" }
+      : myMember && { to: `/journal?fiche=${myMember.id}`, icon: ScrollText, label: "Activité sur mon dossier" },
   ].filter(Boolean);
 
   return (

@@ -23,6 +23,7 @@ import doctorSharesRouter from "./routes/doctorShares.js";
 import emergencyRouter from "./routes/emergency.js";
 import publicRouter from "./routes/public.js";
 import accountRouter from "./routes/account.js";
+import activityRouter from "./routes/activity.js";
 import { requireAuth, requireVerifiedEmail } from "./middleware/auth.js";
 import { convertLegacyEmergencyTokens } from "./lib/sharing.js";
 
@@ -107,6 +108,8 @@ app.use("/api/intakes", requireAuth, requireVerifiedEmail, intakesRouter);
 app.use("/api/village", requireAuth, requireVerifiedEmail, villageRouter);
 app.use("/api/doctor-shares", requireAuth, requireVerifiedEmail, doctorSharesRouter);
 app.use("/api/emergency", requireAuth, requireVerifiedEmail, emergencyRouter);
+// Journal d'activité (UC-10) : lecture seule, visibilité calculée par la route.
+app.use("/api/activity", requireAuth, requireVerifiedEmail, activityRouter);
 
 app.get("/api/health", (req, res) => res.json({ status: "ok" }));
 

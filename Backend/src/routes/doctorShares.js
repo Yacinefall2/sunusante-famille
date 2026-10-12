@@ -10,6 +10,7 @@ import { formatDateTime } from "../lib/time.js";
 import { sendDoctorShareEmail } from "../lib/mailer.js";
 import { QUOTA_MESSAGE, overDailyQuota } from "../lib/sendQuota.js";
 import { notify } from "../reminders/notify.js";
+import { logActivity } from "../lib/activityLog.js";
 
 // Partage avec un professionnel de santé (A4) : UC-22 (titulaire), UC-37
 // (gestionnaire), A1/A2. Jamais un adolescent (lecture seule).
@@ -150,6 +151,22 @@ router.post("/", requireFamilyMembership((req) => familyIdFromMemberId(req.body.
       body: `${req.user.name} a envoyé à ${doctorEmail} un lien de consultation valable ${DURATION_LABEL[duration]} (jusqu'au ${formatDateTime(share.expiresAt)}). Il ne peut être ouvert qu'une fois, sur un seul appareil.`,
     });
 
+    await logActivity({
+      familyId: req.familyId,
+      actor: req.user,
+      action: "doctor_share_sent",
+      member,
+      details: {
+        shareId: share.id,
+        doctorEmail,
+        duration,
+        includeEssentials,
+        includeTreatments,
+        includeVaccinations,
+        documentsCount: documentIds.length,
+      },
+    });
+
     // Seule l'empreinte du lien est conservée ; il n'est jamais renvoyé ici.
     res.status(201).json(present(share, req.user.name));
   } catch (error) {
@@ -179,6 +196,13 @@ router.post(
         key: "revoked",
         title: `Lien médecin révoqué pour ${member.firstName}`,
         body: `${req.user.name} a révoqué le lien envoyé le ${formatDateTime(share.createdAt)}${share.doctorEmail ? ` à ${share.doctorEmail}` : ""}. Le médecin n'a plus accès au dossier.`,
+      });
+      await logActivity({
+        familyId: share.familyId,
+        actor: req.user,
+        action: "doctor_share_revoked",
+        member,
+        details: { shareId: share.id, doctorEmail: share.doctorEmail },
       });
       res.json(present(revoked));
     } catch (error) {

@@ -17,6 +17,7 @@ import {
 import { formatDateTime } from "../lib/time.js";
 import { notify } from "../reminders/notify.js";
 import { notifyShareEvent } from "./doctorShares.js";
+import { logActivity, recentlyLogged } from "../lib/activityLog.js";
 
 // Routes publiques, sans compte : lien médecin et fiche d'urgence. Aucune
 // autre donnée n'est accessible par ici.
@@ -81,6 +82,16 @@ function hasDeviceSession(req, share) {
 async function refuseOtherDevice(share, res) {
   const now = new Date();
   const [member] = await db.select().from(members).where(eq(members.id, share.memberId));
+  // Journal : une entrée par lien et par heure au plus (comme l'avis).
+  if (!(await recentlyLogged(share.familyId, "doctor_share_refused", "shareId", share.id, new Date(now.getTime() - 3600e3)))) {
+    await logActivity({
+      familyId: share.familyId,
+      action: "doctor_share_refused",
+      member,
+      details: { shareId: share.id, doctorEmail: share.doctorEmail },
+      at: now,
+    });
+  }
   await notifyShareEvent(share, member, {
     key: `refused:${Math.floor(now.getTime() / 3600e3)}`,
     title: `Ouverture refusée du lien médecin de ${member.firstName}`,
@@ -145,6 +156,13 @@ router.post("/doctor/:token/open", async (req, res) => {
       key: "opened",
       title: `Le lien médecin de ${member.firstName} a été ouvert`,
       body: `Le dossier partagé a été consulté le ${formatDateTime(now)}. Le lien reste lisible sur cet appareil jusqu'au ${formatDateTime(share.expiresAt)}.`,
+    });
+    await logActivity({
+      familyId: share.familyId,
+      action: "doctor_share_opened",
+      member,
+      details: { shareId: share.id, doctorEmail: share.doctorEmail },
+      at: now,
     });
     res.json({ state: "opened" });
   } catch (error) {
@@ -219,6 +237,8 @@ router.get("/emergency/:token", async (req, res) => {
       .limit(1);
     if (!recent) {
       await db.insert(emergencyCardViews).values({ cardId: card.id, viewedAt: now });
+      // Journal : une entrée par consultation enregistrée (même plafond).
+      await logActivity({ familyId: member.familyId, action: "emergency_viewed", member, at: now });
       // Un avis par quart d'heure au plus : rafraîchir la page n'inonde pas le titulaire.
       const bucket = Math.floor(now.getTime() / (15 * 60e3));
       for (const user of await recipientsFor(member)) {

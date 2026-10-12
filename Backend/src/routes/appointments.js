@@ -7,6 +7,7 @@ import { requireFamilyMembership } from "../middleware/auth.js";
 import { familyIdForListQuery, familyIdFromMemberId, familyIdFromResource } from "../lib/familyResolvers.js";
 import { ACCESS, canRead, canWriteMember, getFamilyAccess } from "../lib/documentAccess.js";
 import { INVALID_DATETIME, INVALID_ID, parseDateTime, parseId, tooLong } from "../lib/validation.js";
+import { logActivity } from "../lib/activityLog.js";
 
 const router = Router();
 
@@ -72,14 +73,25 @@ function resolveAttendance(attendance, date, status) {
 }
 
 // Village : la présence au rendez-vous d'un proche non connecté entre dans
-// l'historique des relais (UC-33), quelle que soit la route qui la saisit.
-async function logAttendance(appointment, attendance, userId) {
+// l'historique des relais (UC-33), quelle que soit la route qui la saisit,
+// et dans le journal d'activité (sans le motif du rendez-vous) si elle change.
+async function logAttendance(req, appointment, attendance, previous) {
   if (!attendance) return;
   const [task] = await db
     .select({ id: relayTasks.id })
     .from(relayTasks)
     .where(and(eq(relayTasks.appointmentId, appointment.id), eq(relayTasks.appointmentDate, appointment.appointmentDate)));
-  if (task) await logRelayEvent(task.id, attendance, userId);
+  if (!task) return;
+  await logRelayEvent(task.id, attendance, req.user.id);
+  if (attendance !== previous) {
+    await logActivity({
+      familyId: req.familyId,
+      actor: req.user,
+      action: "relay_attendance",
+      member: appointment.memberId,
+      details: { taskId: task.id, attendance, appointmentDate: appointment.appointmentDate },
+    });
+  }
 }
 
 // L'heure saisie dans le formulaire (« AAAA-MM-JJTHH:MM », sans fuseau) est
@@ -181,7 +193,7 @@ router.put(
       const cancelled = updated.status === "cancelled" && existing.status !== "cancelled";
       if (moved || cancelled) await onAppointmentChanged(existing, updated, req.user.id);
       if (updated.attendance && updated.attendance !== existing.attendance) {
-        await logAttendance(updated, updated.attendance, req.user.id);
+        await logAttendance(req, updated, updated.attendance, existing.attendance);
       }
       res.json(updated);
     } catch (error) {
@@ -211,7 +223,7 @@ router.put(
         .set({ attendance: attendance.value })
         .where(eq(appointments.id, existing.id))
         .returning();
-      await logAttendance(existing, attendance.value, req.user.id);
+      await logAttendance(req, existing, attendance.value, existing.attendance);
       res.json(updated);
     } catch (error) {
       console.error(error);

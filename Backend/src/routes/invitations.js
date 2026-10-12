@@ -17,9 +17,10 @@ import {
   setDocumentRole,
 } from "../lib/documentAccess.js";
 import { ADULT_AGE, ACCOUNT_MIN_AGE, MINOR_PARENT_ERROR, UNDER_MIN_AGE_ERROR, ageOn, effectiveRole } from "../lib/family.js";
-import { ARCHIVED_ERROR, afterFicheLinked, restoreArchivedFiche } from "../lib/archive.js";
+import { ARCHIVED_ERROR, afterFicheLinked, logRolesAutoRevoked, restoreArchivedFiche } from "../lib/archive.js";
 import { familyIdFromBody, familyIdFromQuery } from "../lib/familyResolvers.js";
 import { INVALID_ID, parseId } from "../lib/validation.js";
+import { fullName, logActivity } from "../lib/activityLog.js";
 
 const router = Router();
 
@@ -154,11 +155,11 @@ router.post(
         })
         .returning();
 
-      let documentMemberName = null;
+      let documentMember = null;
       if (validatedDocumentMemberId) {
-        const [docMember] = await db.select().from(members).where(eq(members.id, validatedDocumentMemberId));
-        if (docMember) documentMemberName = `${docMember.firstName} ${docMember.lastName}`;
+        [documentMember] = await db.select().from(members).where(eq(members.id, validatedDocumentMemberId));
       }
+      const documentMemberName = fullName(documentMember);
 
       try {
         await sendInvitationEmail({
@@ -177,6 +178,23 @@ router.post(
         await db.delete(pendingInvitations).where(eq(pendingInvitations.id, invitation.id));
         return res.status(502).json({ error: "Le courriel d'invitation n'a pas pu être envoyé. Vérifiez l'adresse et réessayez." });
       }
+
+      // Journal (§6.3) : l'invitation est tracée dès l'ÉMISSION, avec le rôle
+      // d'espace et le rôle de dossier fixés avant l'envoi.
+      await logActivity({
+        familyId: req.familyId,
+        actor: req.user,
+        action: "invitation_sent",
+        member: documentMember ?? linkedFiche,
+        details: {
+          invitationId: invitation.id,
+          email: normalizedEmail,
+          role,
+          linkedMemberName: fullName(linkedFiche),
+          documentRole: validatedDocumentRole,
+          documentMemberName,
+        },
+      });
 
       const { token: _token, ...publicInvitation } = invitation;
       res.status(201).json(publicInvitation);
@@ -262,6 +280,15 @@ router.delete("/", requireAuth, requireVerifiedEmail, async (req, res) => {
     }
 
     await db.delete(pendingInvitations).where(eq(pendingInvitations.id, id));
+    // Même fiche de rattachement qu'à l'envoi (règles de visibilité du journal).
+    const memberId = invitation.documentMemberId ?? invitation.linkedMemberId;
+    await logActivity({
+      familyId: invitation.familyId,
+      actor: req.user,
+      action: "invitation_cancelled",
+      member: memberId,
+      details: { invitationId: invitation.id, email: invitation.email },
+    });
     res.json({ success: true });
   } catch (error) {
     console.error(error);
@@ -395,14 +422,48 @@ router.post("/:token/accept", requireAuth, async (req, res) => {
       role: invitation.role,
       linkedMemberId: linkedFiche?.id ?? null,
     });
+    const familyId = invitation.familyId;
+    await logActivity({
+      familyId,
+      actor: req.user,
+      action: "invitation_accepted",
+      target: invitation.invitedByUserId,
+      details: { invitationId: invitation.id, role: invitation.role },
+    });
+    if (archivedFiche) {
+      await logActivity({ familyId, actor: req.user, action: "member_restored", member: archivedFiche });
+    }
     // Fiche reliée : les rôles posés avant la liaison tombent (le créateur de
     // la fiche n'en garde pas la gestion), statut et lien « Parent » à jour.
-    if (linkedFiche) await afterFicheLinked({ memberId: linkedFiche.id, userId: req.user.id, role: invitation.role });
+    if (linkedFiche) {
+      const removed = await afterFicheLinked({ memberId: linkedFiche.id, userId: req.user.id, role: invitation.role });
+      if (!archivedFiche) {
+        await logActivity({
+          familyId,
+          actor: req.user,
+          action: "account_linked",
+          member: linkedFiche,
+          target: req.user,
+          details: { via: "invitation" },
+        });
+      }
+      await logRolesAutoRevoked({ familyId, actor: req.user, member: linkedFiche, removed });
+    }
     await db.update(pendingInvitations).set({ acceptedAt: new Date() }).where(eq(pendingInvitations.id, invitation.id));
 
     // Le rôle de dossier (Axe 2) fixé avant l'envoi est appliqué maintenant
     // que l'invitation est acceptée (§6.2).
-    if (grantedRole) await setDocumentRole(grantedRole.memberId, req.user.id, grantedRole.role);
+    if (grantedRole) {
+      await setDocumentRole(grantedRole.memberId, req.user.id, grantedRole.role);
+      await logActivity({
+        familyId,
+        actor: invitation.invitedByUserId,
+        action: "document_role_granted",
+        member: grantedRole.memberId,
+        target: req.user,
+        details: { role: grantedRole.role, via: "invitation" },
+      });
+    }
 
     // La possession de l'adresse vient d'être prouvée par la consommation de
     // ce lien unique — on active donc l'adresse si ce n'était pas déjà fait.

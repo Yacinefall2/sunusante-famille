@@ -16,6 +16,7 @@ import {
   readableScope,
 } from "../lib/documentAccess.js";
 import { tooLong } from "../lib/validation.js";
+import { logActivity } from "../lib/activityLog.js";
 
 const router = Router();
 
@@ -138,6 +139,16 @@ router.put(
         })
         .where(eq(documents.id, parseInt(id)))
         .returning();
+      // Journal : la confidentialité change — jamais le titre du document.
+      if (confidentialChange) {
+        await logActivity({
+          familyId: req.familyId,
+          actor: req.user,
+          action: isConfidential ? "document_confidential_on" : "document_confidential_off",
+          member: existing.memberId,
+          details: { documentId: existing.id },
+        });
+      }
       res.json((await presentDocuments(req, [updatedDoc]))[0] ?? updatedDoc);
     } catch (error) {
       console.error(error);
@@ -206,6 +217,15 @@ router.post(
           isConfidential,
         })
         .returning();
+      if (isConfidential) {
+        await logActivity({
+          familyId: req.familyId,
+          actor: req.user,
+          action: "document_confidential_on",
+          member: created.memberId,
+          details: { documentId: created.id, atUpload: true },
+        });
+      }
       res.status(201).json((await presentDocuments(req, [created]))[0]);
     } catch (error) {
       console.error(error);

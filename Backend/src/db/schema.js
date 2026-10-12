@@ -7,6 +7,8 @@ import {
   timestamp,
   boolean,
   integer,
+  jsonb,
+  index,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
@@ -503,3 +505,45 @@ export const emergencyCardViews = pgTable("emergency_card_views", {
     .notNull(),
   viewedAt: timestamp("viewed_at").defaultNow().notNull(),
 });
+
+// ── Journal d'activité (UC-10, §10 « Traçabilité », §6.3) ────────────────────
+// Qui a fait quoi dans l'espace familial : invitations, rôles, fiches,
+// partages, fiche d'urgence, Village. JAMAIS de donnée médicale (ni nom de
+// médicament, ni motif de rendez-vous, ni titre de document) : seulement des
+// faits de gouvernance, rédigés par lib/activityLog.js.
+//
+// Ineffaçable : aucune route ne modifie ni ne supprime une entrée, et un
+// déclencheur PostgreSQL (migration 0015) refuse toute modification. Les
+// entrées ne disparaissent qu'avec la famille (ON DELETE CASCADE).
+//
+// Les noms sont des INSTANTANÉS pris au moment de l'action : un compte
+// supprimé (identifiant remis à NULL par la base) reste nommé, et une fiche
+// supprimée garde son identifiant (member_id volontairement SANS clé
+// étrangère) et son nom.
+export const activityLog = pgTable(
+  "activity_log",
+  {
+    id: serial("id").primaryKey(),
+    familyId: integer("family_id")
+      .references(() => families.id, { onDelete: "cascade" })
+      .notNull(),
+    occurredAt: timestamp("occurred_at", { precision: 3 }).defaultNow().notNull(),
+    // Auteur de l'action (NULL : l'application elle-même, un médecin, un inconnu)
+    actorUserId: integer("actor_user_id").references(() => users.id, { onDelete: "set null" }),
+    actorName: varchar("actor_name", { length: 150 }),
+    // Type d'action : voir ACTIONS dans lib/activityLog.js
+    action: varchar("action", { length: 60 }).notNull(),
+    // Fiche concernée (sert aussi aux règles de visibilité)
+    memberId: integer("member_id"),
+    memberName: varchar("member_name", { length: 210 }),
+    // Compte visé par l'action (rôle attribué, compte retiré…)
+    targetUserId: integer("target_user_id").references(() => users.id, { onDelete: "set null" }),
+    targetName: varchar("target_name", { length: 150 }),
+    // Données non médicales structurées : rôle, durée, adresse invitée, champs publiés…
+    details: jsonb("details"),
+  },
+  (t) => [
+    index("activity_log_family_occurred_idx").on(t.familyId, t.occurredAt.desc(), t.id.desc()),
+    index("activity_log_member_idx").on(t.memberId),
+  ]
+);

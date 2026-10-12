@@ -5,6 +5,7 @@ import { families, familyMemberships, members } from "../db/schema.js";
 import { requireFamilyMembership } from "../middleware/auth.js";
 import { documentFilesOf, removeFiles } from "../lib/documentFiles.js";
 import { parseId } from "../lib/validation.js";
+import { logActivity } from "../lib/activityLog.js";
 
 const router = Router();
 
@@ -61,6 +62,7 @@ router.post("/", async (req, res) => {
       role: "parent",
       isPrimaryAdmin: true,
     });
+    await logActivity({ familyId: created.id, actor: req.user, action: "family_created", details: { familyName: created.name } });
 
     res.status(201).json(created);
   } catch (error) {

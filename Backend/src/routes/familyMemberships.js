@@ -5,7 +5,8 @@ import { familyMemberships, users, members, documentRoles, notifications } from 
 import { requireFamilyMembership } from "../middleware/auth.js";
 import { canWriteMember } from "../lib/documentAccess.js";
 import { ADULT_AGE, ACCOUNT_MIN_AGE, MINOR_PARENT_ERROR, UNDER_MIN_AGE_ERROR, ageOn, effectiveRole, statusForLinkedFiche } from "../lib/family.js";
-import { ARCHIVED_ERROR, afterFicheLinked, afterFicheUnlinked, archiveFicheOfLeavingAccount } from "../lib/archive.js";
+import { ARCHIVED_ERROR, afterFicheLinked, afterFicheUnlinked, archiveFicheOfLeavingAccount, logRolesAutoRevoked } from "../lib/archive.js";
+import { logActivity } from "../lib/activityLog.js";
 import { familyIdFromQuery } from "../lib/familyResolvers.js";
 import { INVALID_ID, parseId } from "../lib/validation.js";
 
@@ -158,11 +159,29 @@ router.put("/", requireFamilyMembership(resolveFamilyIdFromMembershipId, { roles
       .set({ role, linkedMemberId: newLinkedMemberId })
       .where(eq(familyMemberships.id, membershipId))
       .returning();
+    if (role !== existing.role) {
+      await logActivity({
+        familyId: req.familyId,
+        actor: req.user,
+        action: "space_role_changed",
+        target: existing.userId,
+        details: { from: existing.role, to: role },
+      });
+    }
     if (newLinkedMemberId !== existing.linkedMemberId) {
       // Nouvelle fiche reliée : rôles posés avant la liaison retirés, statut
       // à jour ; l'ancienne fiche (adolescent) redevient gérée par les parents.
-      await afterFicheLinked({ memberId: newLinkedMemberId, userId: existing.userId, role });
+      const removed = await afterFicheLinked({ memberId: newLinkedMemberId, userId: existing.userId, role });
       if (existing.linkedMemberId) await afterFicheUnlinked(existing.linkedMemberId);
+      await logActivity({
+        familyId: req.familyId,
+        actor: req.user,
+        action: "account_linked",
+        member: newFiche,
+        target: existing.userId,
+        details: { via: "parent" },
+      });
+      await logRolesAutoRevoked({ familyId: req.familyId, actor: req.user, member: newFiche, removed });
     } else if (newLinkedMemberId) {
       // Le lien « Parent » suit le rôle d'administrateur ; le statut suit le rôle.
       const roleChanged = (role === "parent") !== (existing.role === "parent");
@@ -197,7 +216,7 @@ router.delete("/", requireFamilyMembership(resolveFamilyIdFromMembershipId, { ro
       return res.status(403).json({ error: "L'administrateur familial ne peut pas être retiré de l'espace" });
     }
 
-    await archiveFicheOfLeavingAccount(existing);
+    await archiveFicheOfLeavingAccount(existing, { actor: req.user, reason: "removed" });
     await db.delete(familyMemberships).where(eq(familyMemberships.id, id));
 
     // Ses rôles de dossier (Axe 2) dans cette famille tombent avec lui :
@@ -205,11 +224,22 @@ router.delete("/", requireFamilyMembership(resolveFamilyIdFromMembershipId, { ro
     const familyMemberIds = (
       await db.select({ id: members.id }).from(members).where(eq(members.familyId, req.familyId))
     ).map((m) => m.id);
+    let rolesRemoved = 0;
     if (familyMemberIds.length > 0) {
-      await db
-        .delete(documentRoles)
-        .where(and(eq(documentRoles.userId, existing.userId), inArray(documentRoles.memberId, familyMemberIds)));
+      rolesRemoved = (
+        await db
+          .delete(documentRoles)
+          .where(and(eq(documentRoles.userId, existing.userId), inArray(documentRoles.memberId, familyMemberIds)))
+          .returning({ id: documentRoles.id })
+      ).length;
     }
+    await logActivity({
+      familyId: req.familyId,
+      actor: req.user,
+      action: "account_removed",
+      target: existing.userId,
+      details: { rolesRemoved },
+    });
     // Ses notifications de cette famille aussi (elles décrivent des dossiers
     // auxquels il n'a plus accès).
     await db

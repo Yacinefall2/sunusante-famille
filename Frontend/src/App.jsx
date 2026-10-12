@@ -22,6 +22,7 @@ import MaFichePage from "./pages/MaFiche.jsx";
 import NotificationsPage from "./pages/Notifications.jsx";
 import VillagePage from "./pages/Village.jsx";
 import PartagePage from "./pages/Partage.jsx";
+import JournalPage from "./pages/Journal.jsx";
 import PublicDoctorPage from "./pages/PublicDoctor.jsx";
 import PublicEmergencyPage from "./pages/PublicEmergency.jsx";
 import { useFamily } from "./context/FamilyContext";
@@ -68,6 +69,7 @@ export default function App() {
                   <Route path="/village" element={<VillagePage />} />
                   <Route path="/partage" element={<PartagePage />} />
                   <Route path="/notifications" element={<NotificationsPage />} />
+                  <Route path="/journal" element={<JournalPage />} />
                   <Route path="/compte" element={<ComptePage />} />
                   <Route path="*" element={<Navigate to="/dashboard" replace />} />
                 </Routes>

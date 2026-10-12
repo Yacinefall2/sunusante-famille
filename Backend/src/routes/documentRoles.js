@@ -1,11 +1,12 @@
 import { Router } from "express";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { documentRoles, members, users } from "../db/schema.js";
 import { requireFamilyMembership } from "../middleware/auth.js";
 import { DOCUMENT_ROLES, canManageRoles, membershipOf, setDocumentRole } from "../lib/documentAccess.js";
 import { purgeNotificationsWithoutAccess } from "../lib/archive.js";
 import { INVALID_ID, parseId } from "../lib/validation.js";
+import { logActivity } from "../lib/activityLog.js";
 
 const router = Router();
 
@@ -95,7 +96,21 @@ router.post(
       if (target.role === "dependent") {
         return res.status(400).json({ error: "Un compte adolescent ne peut pas recevoir de rôle sur un dossier" });
       }
+      const [previous] = await db
+        .select({ role: documentRoles.role })
+        .from(documentRoles)
+        .where(and(eq(documentRoles.memberId, memberId), eq(documentRoles.userId, userId)));
       const created = await setDocumentRole(memberId, userId, role);
+      if (previous?.role !== role) {
+        await logActivity({
+          familyId: req.familyId,
+          actor: req.user,
+          action: previous ? "document_role_changed" : "document_role_granted",
+          member: memberId,
+          target: userId,
+          details: previous ? { from: previous.role, to: role } : { role },
+        });
+      }
       res.status(201).json(created);
     } catch (error) {
       console.error(error);
@@ -121,6 +136,14 @@ router.delete(
       }
       await db.delete(documentRoles).where(eq(documentRoles.id, id));
       await purgeNotificationsWithoutAccess(row.memberId, row.userId);
+      await logActivity({
+        familyId: req.familyId,
+        actor: req.user,
+        action: "document_role_revoked",
+        member: row.memberId,
+        target: row.userId,
+        details: { role: row.role },
+      });
       res.json({ success: true });
     } catch (error) {
       console.error(error);

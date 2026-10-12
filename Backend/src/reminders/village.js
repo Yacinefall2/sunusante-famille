@@ -13,6 +13,7 @@ import {
 import { formatDateTime } from "../lib/time.js";
 import { canWrite, withAccess } from "../lib/documentAccess.js";
 import { notify } from "./notify.js";
+import { logActivity } from "../lib/activityLog.js";
 
 // ── Village : le rappel relayé vers un proche non connecté (§4) ──────────────
 // J-3   : « à relayer » au(x) gestionnaire(s) — pas au patient, qui n'a pas
@@ -331,6 +332,14 @@ export async function markRelayNotified(task, user, now = new Date()) {
     .returning();
   if (!closed) return null; // déjà clos par quelqu'un d'autre
   await logRelayEvent(task.id, "notified", user.id, now);
+  await logActivity({
+    familyId: task.familyId,
+    actor: user,
+    action: "relay_notified",
+    member: task.memberId,
+    details: { taskId: task.id, appointmentDate: task.appointmentDate },
+    at: now,
+  });
   await readTaskNotifications(task.id, now);
   const managers = await managersOf(task.memberId, task.familyId);
   if (!managers.some((u) => u.id === user.id)) {
@@ -358,6 +367,14 @@ export async function markRelayNotified(task, user, now = new Date()) {
 // les alertes.
 export async function markRelayUnreachable(task, user, now = new Date()) {
   await logRelayEvent(task.id, "unreachable", user.id, now);
+  await logActivity({
+    familyId: task.familyId,
+    actor: user,
+    action: "relay_unreachable",
+    member: task.memberId,
+    details: { taskId: task.id, appointmentDate: task.appointmentDate },
+    at: now,
+  });
   const [m] = await db.select().from(members).where(eq(members.id, task.memberId));
   const targets = new Map((await managersOf(task.memberId, task.familyId)).map((u) => [u.id, u]));
   const a1 = await primaryAdminOf(task.familyId);

@@ -693,6 +693,11 @@ function ActivityBlock({ activity, memberById }) {
           })}
         </ol>
       )}
+      {/* Fil des soins (documents, prises, rendez-vous) ; la gouvernance de
+          l'espace (invitations, rôles, partages…) est dans le journal. */}
+      <Link to="/journal" className="inline-block mt-4 text-sm font-semibold text-teal-600 hover:underline">
+        Voir tout le journal
+      </Link>
     </div>
   );
 }

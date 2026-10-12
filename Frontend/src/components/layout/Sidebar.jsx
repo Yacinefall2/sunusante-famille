@@ -15,6 +15,7 @@ import {
   Bell,
   TreePine,
   ShieldPlus,
+  ScrollText,
 } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { useEffect, useState } from "react";
@@ -31,6 +32,7 @@ const navItems = [
   { href: "/village", label: "Village", icon: TreePine },
   { href: "/famille", label: "Comptes & invitations", icon: UserCog },
   { href: "/notifications", label: "Notifications", icon: Bell },
+  { href: "/journal", label: "Journal d'activité", icon: ScrollText },
 ];
 
 export function Sidebar() {

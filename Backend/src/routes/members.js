@@ -16,7 +16,8 @@ import {
   statusForLinkedFiche,
 } from "../lib/family.js";
 import { documentFilesOf, removeFiles } from "../lib/documentFiles.js";
-import { ARCHIVED_ERROR, afterFicheLinked } from "../lib/archive.js";
+import { ARCHIVED_ERROR, afterFicheLinked, logRolesAutoRevoked } from "../lib/archive.js";
+import { logActivity } from "../lib/activityLog.js";
 import { familyIdFromBody, familyIdFromQuery } from "../lib/familyResolvers.js";
 import { INVALID_ID, isIsoDate, parseId, tooLong } from "../lib/validation.js";
 import { localDate } from "../lib/time.js";
@@ -324,6 +325,7 @@ router.post(
       } else {
         await setDocumentRole(created.id, req.user.id, "gestionnaire");
       }
+      await logActivity({ familyId: req.familyId, actor: req.user, action: "member_created", member: created, details: { self: isMine } });
 
       res.status(201).json(created);
     } catch (error) {
@@ -382,7 +384,9 @@ router.post(
       await db.update(familyMemberships).set({ linkedMemberId: memberId }).where(eq(familyMemberships.id, req.membership.id));
       // Titulaire désormais : les rôles de dossier posés avant (dont le sien,
       // superflu) tombent ; statut et lien « Parent » mis à jour.
-      await afterFicheLinked({ memberId, userId: req.user.id, role: req.membership.storedRole });
+      const removed = await afterFicheLinked({ memberId, userId: req.user.id, role: req.membership.storedRole });
+      await logActivity({ familyId: req.familyId, actor: req.user, action: "account_linked", member: fiche, target: req.user, details: { via: "claim" } });
+      await logRolesAutoRevoked({ familyId: req.familyId, actor: req.user, member: fiche, removed });
       res.json({ success: true, linkedMemberId: memberId });
     } catch (error) {
       console.error(error);
@@ -419,6 +423,11 @@ router.put("/", requireFamilyMembership(resolveFamilyIdFromMemberId), async (req
       if (refused) return res.status(refused.status).json({ error: refused.error });
     }
     const [updated] = await db.update(members).set(values).where(eq(members.id, memberId)).returning();
+    // Date de naissance d'une fiche reliée : elle fixe les droits du compte.
+    // Le journal la signale sans jamais la reproduire.
+    if (owner && values.dateOfBirth !== existing.dateOfBirth) {
+      await logActivity({ familyId: req.familyId, actor: req.user, action: "member_birthdate_changed", member: updated });
+    }
     res.json(updated);
   } catch (error) {
     console.error(error);
@@ -457,6 +466,13 @@ router.delete(
       const files = await documentFilesOf([id]);
       await db.delete(members).where(eq(members.id, id));
       await removeFiles(files);
+      await logActivity({
+        familyId: req.familyId,
+        actor: req.user,
+        action: "member_deleted",
+        member: fiche,
+        details: { archived: Boolean(fiche.archivedAt) },
+      });
       res.json({ success: true });
     } catch (error) {
       console.error(error);
