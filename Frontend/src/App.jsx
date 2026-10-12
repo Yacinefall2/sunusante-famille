@@ -26,6 +26,7 @@ import JournalPage from "./pages/Journal.jsx";
 import PublicDoctorPage from "./pages/PublicDoctor.jsx";
 import PublicEmergencyPage from "./pages/PublicEmergency.jsx";
 import { useFamily } from "./context/FamilyContext";
+import { SeniorAlerts } from "./components/senior/SeniorAlerts";
 
 // Tant que l'utilisateur n'a pas de fiche à lui dans la famille sélectionnée
 // (il n'est titulaire d'aucun dossier), il doit d'abord la désigner ou la
@@ -55,6 +56,8 @@ export default function App() {
         element={
           <ProtectedRoute>
             <FamilyProvider>
+              {/* Alertes sonores du mode senior (UC-25) : actives sur toutes les pages */}
+              <SeniorAlerts />
               <MyFicheGate>
                 <Routes>
                   <Route path="/" element={<Navigate to="/dashboard" replace />} />

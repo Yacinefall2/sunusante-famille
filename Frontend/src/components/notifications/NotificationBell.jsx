@@ -3,14 +3,32 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Bell, CheckCheck, Loader2, Settings } from "lucide-react";
 import { NotificationItem } from "./NotificationItem";
 import { useNotifications } from "./useNotifications";
+import { useAuth } from "../../context/AuthContext";
+import { cn } from "../../lib/utils";
 
 // Cloche de la barre supérieure : compteur de notifications non lues
-// (rafraîchi toutes les 60 s et à chaque changement de page) et panneau
-// déroulant listant les dernières notifications.
+// (rafraîchi toutes les 60 s — 30 s en mode senior — et à chaque changement
+// de page) et panneau déroulant listant les dernières notifications.
+// Dernière notification « affichage modifié » déjà prise en compte — hors du
+// composant : la cloche est recréée à chaque page.
+let seenDisplayChange = null;
+
 export function NotificationBell() {
   const { pathname } = useLocation();
   const navigate = useNavigate();
-  const { items, unreadCount, loading, reload, markRead, markAllRead } = useNotifications({ pollMs: 60000 });
+  const { seniorMode, refreshUser } = useAuth();
+  const { items, unreadCount, loading, reload, markRead, markAllRead } = useNotifications({ pollMs: seniorMode ? 30000 : 60000 });
+
+  // Un proche a changé l'affichage de ce compte (mode senior, UC-25) : la
+  // notification la plus récente de ce type change → on relit le compte pour
+  // que l'interface s'adapte sans reconnexion.
+  const lastDisplayChange = items.find((n) => n.category === "display_settings" && !n.readAt)?.id ?? null;
+  useEffect(() => {
+    if (lastDisplayChange && lastDisplayChange !== seenDisplayChange) {
+      seenDisplayChange = lastDisplayChange;
+      refreshUser();
+    }
+  }, [lastDisplayChange, refreshUser]);
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef(null);
 
@@ -53,9 +71,12 @@ export function NotificationBell() {
         title="Notifications"
         aria-label={unreadCount > 0 ? `Notifications (${unreadCount} non lues)` : "Notifications"}
         aria-expanded={open}
-        className="relative p-2 rounded-xl hover:bg-gray-50 text-gray-500 transition-colors"
+        className={cn(
+          "relative p-2 rounded-xl hover:bg-gray-50 transition-colors",
+          seniorMode ? "text-gray-800 bg-gray-100" : "text-gray-500"
+        )}
       >
-        <Bell size={20} />
+        <Bell size={seniorMode ? 30 : 20} />
         {unreadCount > 0 && (
           <span className="absolute top-0.5 right-0.5 min-w-[18px] h-[18px] px-1 bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center leading-none">
             {badge}

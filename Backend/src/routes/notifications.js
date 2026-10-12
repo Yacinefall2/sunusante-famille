@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { and, desc, eq, isNull, or, sql } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { familyMemberships, medicationIntakes, notifications } from "../db/schema.js";
+import { familyMemberships, medicationIntakes, notifications, treatmentMedications } from "../db/schema.js";
 import { NOTIFICATION_CATEGORIES, getAllPreferences, setPreference } from "../lib/notificationPreferences.js";
 import { INVALID_ID, parseId } from "../lib/validation.js";
 
@@ -28,12 +28,18 @@ router.get("/", async (req, res) => {
         memberId: notifications.memberId,
         intakeId: notifications.intakeId,
         intakeStatus: medicationIntakes.status,
+        // Médicament de la prise : affiché en grand par l'alerte du mode senior
+        // (« C'est l'heure de votre médicament : Amlodipine 5 mg »).
+        medicationName: treatmentMedications.name,
+        medicationDosage: treatmentMedications.dosage,
+        intakeScheduledAt: medicationIntakes.scheduledAt,
         readAt: notifications.readAt,
         emailStatus: notifications.emailStatus,
         createdAt: notifications.createdAt,
       })
       .from(notifications)
       .leftJoin(medicationIntakes, eq(medicationIntakes.id, notifications.intakeId))
+      .leftJoin(treatmentMedications, eq(treatmentMedications.id, medicationIntakes.medicationId))
       .where(and(eq(notifications.userId, req.user.id), eq(notifications.inApp, true), inMyFamilies(req.user.id)))
       .orderBy(desc(notifications.createdAt), desc(notifications.id))
       .limit(50);

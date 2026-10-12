@@ -10,6 +10,7 @@ import { afterFicheLinked, afterFicheUnlinked, archivedErrorOf, archiveFicheOfLe
 import { logActivity } from "../lib/activityLog.js";
 import { familyIdFromQuery } from "../lib/familyResolvers.js";
 import { INVALID_ID, parseId } from "../lib/validation.js";
+import { SENIOR_MODE_INVALID, setSeniorMode } from "../lib/seniorMode.js";
 
 const router = Router();
 
@@ -33,6 +34,8 @@ router.get(
           userId: users.id,
           name: users.name,
           email: users.email,
+          // Réglage d'affichage (UC-25), modifiable par un parent sur la ligne du compte.
+          seniorMode: users.seniorMode,
           dateOfBirth: members.dateOfBirth,
         })
         .from(familyMemberships)
@@ -200,6 +203,41 @@ router.put("/", requireFamilyMembership(resolveFamilyIdFromMembershipId, { roles
     res.status(500).json({ error: "Erreur serveur" });
   }
 });
+
+// Mode senior d'un autre compte (UC-25) — « configuration initiale faite par
+// un proche » : un parent l'active ou le désactive pour un compte ADULTE de sa
+// famille (l'autre parent compris : c'est un réglage d'affichage, sans enjeu
+// de droits). Jamais pour un adolescent, jamais hors de sa famille. La
+// personne est prévenue et peut toujours le désactiver elle-même.
+router.put(
+  "/:id/senior-mode",
+  requireFamilyMembership(resolveFamilyIdFromMembershipId, { roles: ["parent"] }),
+  async (req, res) => {
+    try {
+      const { seniorMode } = req.body ?? {};
+      if (typeof seniorMode !== "boolean") return res.status(400).json({ error: SENIOR_MODE_INVALID });
+      const id = parseId(req.params.id);
+      const [existing] = await db.select().from(familyMemberships).where(eq(familyMemberships.id, id));
+      if (!existing) return res.status(404).json({ error: "Introuvable" });
+      const [fiche] = existing.linkedMemberId
+        ? await db.select({ dateOfBirth: members.dateOfBirth }).from(members).where(eq(members.id, existing.linkedMemberId))
+        : [];
+      if (effectiveRole(existing.role, fiche?.dateOfBirth) === "dependent") {
+        return res.status(403).json({ error: "Le mode senior se règle pour un compte adulte de la famille" });
+      }
+      const [target] = await db
+        .select({ id: users.id, name: users.name, emailVerified: users.emailVerified })
+        .from(users)
+        .where(eq(users.id, existing.userId));
+      if (!target) return res.status(404).json({ error: "Introuvable" });
+      const result = await setSeniorMode({ actor: req.user, target, on: seniorMode, familyId: req.familyId });
+      res.json({ id: existing.id, userId: target.id, seniorMode: result.seniorMode });
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: "Erreur serveur" });
+    }
+  }
+);
 
 export const REASSIGNMENT_REQUIRED = "REASSIGNMENT_REQUIRED";
 

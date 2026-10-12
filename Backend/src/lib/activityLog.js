@@ -122,6 +122,14 @@ export const ACTIONS = {
       return `${e.actor} a changé le rôle de ${e.target} : ${spaceRole(d.from)} → ${spaceRole(d.to)}`;
     },
   },
+  // Mode senior (UC-25) : simple réglage d'affichage, sans effet sur les droits.
+  senior_mode_changed: {
+    category: "espace",
+    text: (e, d) => {
+      const verb = d.on ? "activé" : "désactivé";
+      return e.target ? `${e.actor} a ${verb} le mode senior pour ${e.target}` : `${e.actor} a ${verb} le mode senior`;
+    },
+  },
   account_linked: {
     category: "espace",
     text: (e, d) => {

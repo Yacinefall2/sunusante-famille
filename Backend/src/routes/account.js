@@ -24,6 +24,7 @@ import { archiveFicheOfLeavingAccount } from "../lib/archive.js";
 import { logActivity } from "../lib/activityLog.js";
 import { setDocumentRole } from "../lib/documentAccess.js";
 import { soleManagedFiches } from "../lib/management.js";
+import { SENIOR_MODE_INVALID, setSeniorMode } from "../lib/seniorMode.js";
 import { sendEmailChangeEmail, sendEmailChangeNotice, sendPasswordChangedAlert } from "../lib/mailer.js";
 import { clearFailures, lockedMinutes, recordFailure, tooManyAttemptsMessage } from "../lib/loginThrottle.js";
 
@@ -93,6 +94,13 @@ router.get("/", async (req, res) => {
       email: user.email,
       createdAt: user.createdAt,
       pendingEmail: pending && pending.expiresAt > new Date() ? pending.newEmail : null,
+      // Affichage (mode senior) : qui l'a réglé en dernier, si c'est un proche.
+      seniorMode: user.seniorMode,
+      seniorModeSetBy:
+        user.seniorModeSetByUserId && user.seniorModeSetByUserId !== user.id
+          ? ((await fullUser(user.seniorModeSetByUserId))?.name ?? null)
+          : null,
+      seniorModeUpdatedAt: user.seniorModeUpdatedAt,
       families: spaces.map((s) => ({
         id: s.membership.familyId,
         name: s.familyName,
@@ -113,6 +121,20 @@ router.put("/profile", async (req, res) => {
     if (!name || name.length > 150) return res.status(400).json({ error: "Nom requis (150 caractères maximum)" });
     await db.update(users).set({ name }).where(eq(users.id, req.user.id));
     res.json({ name });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Affichage : mode senior (UC-25). Réglage du compte, sans mot de passe
+// (aucun enjeu de sécurité ni de droits) ; tracé au journal de ses familles.
+router.put("/display", async (req, res) => {
+  try {
+    const { seniorMode } = req.body ?? {};
+    if (typeof seniorMode !== "boolean") return res.status(400).json({ error: SENIOR_MODE_INVALID });
+    const result = await setSeniorMode({ actor: req.user, target: req.user, on: seniorMode });
+    res.json({ seniorMode: result.seniorMode });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Erreur serveur" });

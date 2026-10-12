@@ -1,4 +1,4 @@
-import { AlertTriangle, Bell, CalendarClock, CheckCircle, PhoneCall, Pill, Syringe } from "lucide-react";
+import { AlertTriangle, Bell, CalendarClock, CheckCircle, PhoneCall, Pill, Syringe, ZoomIn } from "lucide-react";
 import { cn, formatIsoDatesInText, formatTimeAgo } from "../../lib/utils";
 import { IntakeAnswerButtons, IntakeStatusBadge } from "./intakes";
 
@@ -13,6 +13,8 @@ const CATEGORY_STYLES = {
   relay_escalation: { icon: PhoneCall, className: "bg-orange-50 text-orange-600" },
   relay_alert: { icon: AlertTriangle, className: "bg-amber-50 text-amber-600" },
   relay_update: { icon: CheckCircle, className: "bg-emerald-50 text-emerald-600" },
+  // Un proche a changé l'affichage du compte (mode senior, UC-25)
+  display_settings: { icon: ZoomIn, className: "bg-teal-50 text-teal-600" },
 };
 
 // Une notification (cloche et historique). `onOpen` est appelé au clic

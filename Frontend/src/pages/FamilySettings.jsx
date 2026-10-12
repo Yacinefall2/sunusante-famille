@@ -22,6 +22,7 @@ import {
 } from "../lib/roles";
 import toast from "react-hot-toast";
 import { ReminderSettingsPanel } from "../components/village/ReminderSettingsPanel";
+import { Switch } from "../components/ui/Switch";
 
 // Rôles d'un compte dans la famille, et rôles sur une fiche (optionnels,
 // fixés avant l'envoi de l'invitation) : libellés communs dans lib/roles.js.
@@ -43,8 +44,9 @@ export default function FamilySettingsPage() {
   // compte ↔ fiche.
   const { selectedFamily, members: familyMembers, reloadMembers, reloadMembership, isPrimaryAdmin, loadFamilies } =
     useFamily();
-  const { user } = useAuth();
+  const { user, setSeniorMode } = useAuth();
   const navigate = useNavigate();
+  const [seniorSavingId, setSeniorSavingId] = useState(null);
 
   const [memberships, setMemberships] = useState([]);
   const [invitations, setInvitations] = useState([]);
@@ -111,6 +113,38 @@ export default function FamilySettingsPage() {
       toast.error("Impossible de charger les comptes de la famille. Vérifiez votre connexion.");
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Mode senior d'un compte (UC-25) — « configuration initiale faite par un
+  // proche ». Réglage d'affichage seulement : la personne est prévenue et
+  // peut le désactiver elle-même dans « Mon compte ».
+  const toggleSenior = async (m, on) => {
+    setSeniorSavingId(m.id);
+    try {
+      if (m.userId === user?.id) {
+        await setSeniorMode(on);
+      } else {
+        const res = await fetch(`/api/family-memberships/${m.id}/senior-mode`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ seniorMode: on }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || "Impossible de modifier l'affichage de ce compte");
+      }
+      setMemberships((list) => list.map((x) => (x.id === m.id ? { ...x, seniorMode: on } : x)));
+      toast.success(
+        m.userId === user?.id
+          ? on
+            ? "Mode senior activé"
+            : "Mode senior désactivé"
+          : `Mode senior ${on ? "activé" : "désactivé"} pour ${m.name} — la personne en est prévenue`
+      );
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setSeniorSavingId(null);
     }
   };
 
@@ -401,6 +435,25 @@ export default function FamilySettingsPage() {
                       ) : (
                         <p className="text-xs text-gray-400 mt-0.5 italic">N'a pas encore créé sa fiche</p>
                       )}
+                      {/* Mode senior (UC-25) : réglage d'affichage, modifiable par un
+                          parent pour un compte adulte ; visible de tous. */}
+                      {m.role !== "dependent" &&
+                        (isParent ? (
+                          <div className="flex items-center gap-2 mt-2">
+                            <Switch
+                              checked={!!m.seniorMode}
+                              onChange={(on) => toggleSenior(m, on)}
+                              disabled={seniorSavingId === m.id}
+                              label={`Mode senior de ${m.name ?? "ce compte"}`}
+                            />
+                            <span className="text-xs text-gray-600">
+                              Mode senior {m.seniorMode ? "activé" : "désactivé"}
+                              <span className="text-gray-400"> · grands caractères, alertes sonores</span>
+                            </span>
+                          </div>
+                        ) : (
+                          m.seniorMode && <p className="text-xs text-teal-700 mt-0.5">Mode senior activé</p>
+                        ))}
                       {/* Un Parent peut relier un autre compte à sa fiche (pas sa
                           propre ligne : chacun désigne sa fiche lui-même) */}
                       {isParent && !m.linkedMemberId && m.userId !== user?.id && linkableFiches.length > 0 && (

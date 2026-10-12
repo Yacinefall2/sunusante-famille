@@ -1,13 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { ChevronDown, UserCog, HeartPulse, ShieldPlus, BellRing, Users, Check, LogOut, Home, ScrollText } from "lucide-react";
+import { ChevronDown, UserCog, HeartPulse, ShieldPlus, BellRing, Users, Check, LogOut, Home, ScrollText, ZoomIn } from "lucide-react";
+import toast from "react-hot-toast";
+import { Switch } from "../ui/Switch";
+import { cn } from "../../lib/utils";
 import { useAuth } from "../../context/AuthContext";
 import { useFamily } from "../../context/FamilyContext";
 import { familyRoleLabel } from "../../lib/roles";
 
 // Menu du compte connecté, ouvert en cliquant sur l'avatar de la barre du haut.
 export function UserMenu() {
-  const { user, logout } = useAuth();
+  const { user, logout, seniorMode, setSeniorMode } = useAuth();
+  const [savingDisplay, setSavingDisplay] = useState(false);
   const { myRole, isPrimaryAdmin, isParent, myMember, families, selectedFamily, setSelectedFamily } = useFamily();
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
@@ -45,6 +49,19 @@ export function UserMenu() {
     }
   };
 
+  // Interrupteur rapide du mode senior (UC-25) — même réglage que « Mon compte ».
+  const toggleSenior = async (on) => {
+    setSavingDisplay(true);
+    try {
+      await setSeniorMode(on);
+      toast.success(on ? "Mode senior activé : grands caractères et accueil simplifié" : "Mode senior désactivé");
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setSavingDisplay(false);
+    }
+  };
+
   const switchFamily = (family) => {
     setSelectedFamily(family);
     close();
@@ -73,7 +90,12 @@ export function UserMenu() {
         aria-expanded={open}
         className="flex items-center gap-2 px-2 sm:px-3 py-1.5 rounded-xl hover:bg-gray-50 transition-colors"
       >
-        <div className="w-8 h-8 bg-gradient-to-br from-teal-400 to-blue-500 rounded-full flex items-center justify-center text-white text-sm font-bold">
+        <div
+          className={cn(
+            "bg-gradient-to-br from-teal-400 to-blue-500 rounded-full flex items-center justify-center text-white font-bold",
+            seniorMode ? "w-12 h-12 text-lg" : "w-8 h-8 text-sm"
+          )}
+        >
           {initials}
         </div>
         <span className="text-sm font-medium text-gray-700 hidden sm:block">{user?.name}</span>
@@ -111,6 +133,18 @@ export function UserMenu() {
                 </span>
               </Link>
             ))}
+          </div>
+
+          {/* Affichage : mode senior (grands caractères, accueil simplifié, alertes sonores) */}
+          <div className="py-1 border-t border-gray-100">
+            <div className="flex items-center gap-3 px-4 py-2.5">
+              <ZoomIn size={16} className="text-gray-400 flex-shrink-0" />
+              <span className="flex-1 min-w-0 text-sm text-gray-700">
+                <span className="block">Mode senior</span>
+                <span className="block text-xs text-gray-400">Grands caractères, alertes sonores</span>
+              </span>
+              <Switch checked={seniorMode} onChange={toggleSenior} disabled={savingDisplay} label="Mode senior" />
+            </div>
           </div>
 
           {families.length > 1 && (

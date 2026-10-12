@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { AppShell } from "../components/layout/AppShell";
 import { useFamily } from "../context/FamilyContext";
 import { MemberAvatar } from "../components/members/MemberAvatar";
@@ -30,11 +30,19 @@ import { format, isToday, parseISO } from "date-fns";
 import toast from "react-hot-toast";
 import ParentDashboard from "./ParentDashboard";
 import { RoleTransferInbox } from "../components/members/RoleTransferInbox";
+import { useAuth } from "../context/AuthContext";
+import SeniorHome from "./SeniorHome";
 
 // Les Parents (administrateurs) ont un tableau de bord dédié, centré sur
 // toute la famille ; les autres membres gardent le tableau de bord ci-dessous.
 export default function DashboardPage() {
-  const { isParent, selectedFamily, membershipLoaded } = useFamily();
+  const { isParent, selectedFamily, membershipLoaded, families } = useFamily();
+  const { seniorMode } = useAuth();
+  const [searchParams] = useSearchParams();
+  // Mode senior (UC-25) : accueil à grands boutons, sauf quand la personne a
+  // choisi « Plus » (?vue=complete) pour retrouver le tableau de bord habituel.
+  const fullView = searchParams.get("vue") === "complete";
+  if (seniorMode && !fullView && families.length > 0) return <SeniorHome />;
   // Tant que le rôle n'est pas connu, on n'affiche ni l'un ni l'autre :
   // sinon un parent verrait un instant le tableau de bord des membres.
   if (selectedFamily && !membershipLoaded) {
@@ -44,8 +52,27 @@ export default function DashboardPage() {
       </div>
     );
   }
-  if (isParent && selectedFamily) return <ParentDashboard />;
-  return <MemberDashboard />;
+  const dashboard = isParent && selectedFamily ? <ParentDashboard /> : <MemberDashboard />;
+  if (!seniorMode) return dashboard;
+  return (
+    <>
+      <BackToSeniorHome />
+      {dashboard}
+    </>
+  );
+}
+
+// En mode senior, sur le tableau de bord complet : retour à l'accueil simplifié.
+function BackToSeniorHome() {
+  return (
+    <Link
+      to="/dashboard"
+      className="fixed bottom-4 right-4 z-40 inline-flex items-center gap-2 min-h-[3.5rem] px-5 rounded-2xl bg-teal-600 hover:bg-teal-700 text-white text-lg font-bold shadow-xl focus:outline-none focus-visible:ring-4 focus-visible:ring-teal-300"
+    >
+      <Heart size={22} />
+      Accueil simplifié
+    </Link>
+  );
 }
 
 function MemberDashboard() {

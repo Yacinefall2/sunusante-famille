@@ -52,6 +52,90 @@ input[type="checkbox"] {
   accent-color: #0d9488;
 }
 
+/* ── Mode senior (UC-25, M10 Accessibilité) ───────────────────────────────
+   Classe "senior" posée sur <html> quand le compte a activé le mode senior
+   (réglage d'affichage, jamais un rôle). Les tailles Tailwind étant en rem,
+   une base à 20 px agrandit tout d'un quart ; les règles ci-dessous renforcent
+   les contrastes, les zones tactiles (≥ 56 px) et le focus. Sans la classe,
+   rien ne change. */
+html.senior {
+  font-size: 125%; /* 20 px */
+}
+html.senior body {
+  line-height: 1.6;
+}
+/* Petits textes : jamais sous ~15 px */
+html.senior .text-xs {
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+html.senior .text-\[10px\],
+html.senior .text-\[11px\] {
+  font-size: 0.7rem;
+}
+/* Contraste renforcé : les gris clairs foncent */
+html.senior .text-gray-300 {
+  color: #6b7280;
+}
+html.senior .text-gray-400 {
+  color: #4b5563;
+}
+html.senior .text-gray-500 {
+  color: #374151;
+}
+html.senior .text-gray-600 {
+  color: #1f2937;
+}
+html.senior .text-teal-600 {
+  color: #0f766e;
+}
+html.senior .placeholder-gray-400::placeholder,
+html.senior input::placeholder,
+html.senior textarea::placeholder {
+  color: #6b7280;
+}
+/* Bordures visibles */
+html.senior .border-gray-50,
+html.senior .border-gray-100 {
+  border-color: #d1d5db;
+}
+html.senior .border-gray-200 {
+  border-color: #9ca3af;
+}
+html.senior .divide-gray-50 > :not([hidden]) ~ :not([hidden]),
+html.senior .divide-gray-100 > :not([hidden]) ~ :not([hidden]) {
+  border-color: #d1d5db;
+}
+/* Zones tactiles : 56 px minimum (2.8rem à 20 px) */
+html.senior button,
+html.senior select,
+html.senior a[role="button"],
+html.senior a[role="menuitem"],
+html.senior input:not([type="checkbox"]):not([type="radio"]):not([type="file"]) {
+  min-height: 2.8rem;
+}
+html.senior button {
+  min-width: 2.8rem;
+}
+/* Interrupteurs (components/ui/Switch.jsx) : agrandis en bloc */
+html.senior button.senior-switch {
+  min-height: 0;
+  min-width: 0;
+  transform: scale(1.4);
+  margin: 0.4rem 0.6rem;
+}
+html.senior input[type="checkbox"],
+html.senior input[type="radio"] {
+  width: 1.4rem;
+  height: 1.4rem;
+}
+/* Focus très visible */
+html.senior :focus-visible {
+  outline: 4px solid #0d9488 !important;
+  outline-offset: 3px;
+  box-shadow: 0 0 0 7px #fde047 !important;
+}
+
 /* ── Carte d'urgence imprimable (phase F) ─────────────────────────────────
    Rendue hors de #root et masquée à l'écran ; quand <body> porte la classe
    "printing-card", seule la carte est imprimée, au format carte bancaire. */

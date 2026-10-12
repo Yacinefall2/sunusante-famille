@@ -119,6 +119,28 @@ export function AuthProvider({ children }) {
     return data;
   };
 
+  // Mode senior (UC-25) : réglage d'affichage du compte, sans effet sur les
+  // droits. Classe `senior` sur <html> : grands caractères, contrastes et
+  // zones tactiles agrandis (index.css).
+  const seniorMode = !!user?.seniorMode;
+  useEffect(() => {
+    document.documentElement.classList.toggle("senior", seniorMode);
+  }, [seniorMode]);
+
+  // Active ou désactive le mode senior pour soi-même. Renvoie l'état final ;
+  // lève une erreur (message prêt à afficher) en cas d'échec.
+  const setSeniorMode = async (on) => {
+    const res = await fetch("/api/account/display", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ seniorMode: on }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || "Impossible de modifier l'affichage");
+    setUser((u) => (u ? { ...u, seniorMode: !!data.seniorMode } : u));
+    return !!data.seniorMode;
+  };
+
   // La session locale est fermée même si l'appel réseau échoue (hors ligne,
   // serveur indisponible).
   const logout = async () => {
@@ -133,7 +155,18 @@ export function AuthProvider({ children }) {
 
   return (
     <AuthContext.Provider
-      value={{ user, loading, login, register, logout, resendVerification, verifyEmail, refreshUser: loadMe }}
+      value={{
+        user,
+        loading,
+        login,
+        register,
+        logout,
+        resendVerification,
+        verifyEmail,
+        refreshUser: loadMe,
+        seniorMode,
+        setSeniorMode,
+      }}
     >
       {children}
     </AuthContext.Provider>

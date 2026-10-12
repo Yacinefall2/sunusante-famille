@@ -5,7 +5,9 @@ import { Modal } from "../components/ui/Modal";
 import { Button } from "../components/ui/Button";
 import { Input } from "../components/ui/Input";
 import { useAuth } from "../context/AuthContext";
-import { UserRound, Mail, KeyRound, Download, Trash2, Loader2, AlertTriangle, Clock, RotateCw } from "lucide-react";
+import { UserRound, Mail, KeyRound, Download, Trash2, Loader2, AlertTriangle, Clock, RotateCw, ZoomIn } from "lucide-react";
+import { Switch } from "../components/ui/Switch";
+import { SoundAlertsSetup } from "../components/senior/SoundAlertsSetup";
 import { formatDate } from "../lib/utils";
 import { openPrivateLink } from "../lib/session";
 import toast from "react-hot-toast";
@@ -41,7 +43,8 @@ async function send(url, method, body) {
 }
 
 export default function ComptePage() {
-  const { refreshUser } = useAuth();
+  const { refreshUser, seniorMode, setSeniorMode } = useAuth();
+  const [savingDisplay, setSavingDisplay] = useState(false);
   const navigate = useNavigate();
   const [account, setAccount] = useState(null);
   const [name, setName] = useState("");
@@ -86,6 +89,20 @@ export default function ComptePage() {
       toast.error(e.message);
     } finally {
       setSavingName(false);
+    }
+  };
+
+  // Mode senior (UC-25) : réglage d'affichage, sans effet sur les droits.
+  const toggleSenior = async (on) => {
+    setSavingDisplay(true);
+    try {
+      await setSeniorMode(on);
+      toast.success(on ? "Mode senior activé : grands caractères et accueil simplifié" : "Mode senior désactivé");
+      load();
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setSavingDisplay(false);
     }
   };
 
@@ -180,6 +197,36 @@ export default function ComptePage() {
               Enregistrer
             </Button>
           </div>
+        </Section>
+
+        <Section
+          icon={ZoomIn}
+          title="Affichage"
+          hint="Le mode senior agrandit l'affichage : il ne change rien à vos droits ni aux dossiers auxquels vous avez accès."
+        >
+          <div className="flex items-start gap-4">
+            <div className="flex-1 min-w-0">
+              <p className="font-semibold text-gray-800">Mode senior</p>
+              <p className="text-sm text-gray-600">
+                Grands caractères, accueil simplifié à grands boutons et alertes sonores pour les médicaments et les
+                rendez-vous.
+              </p>
+              {account.seniorModeSetBy && (
+                <p className="text-sm text-teal-700 mt-1">
+                  {seniorMode ? "Activé" : "Désactivé"} par {account.seniorModeSetBy}
+                  {account.seniorModeUpdatedAt ? ` le ${formatDate(account.seniorModeUpdatedAt)}` : ""}. Vous pouvez le
+                  changer à tout moment.
+                </p>
+              )}
+            </div>
+            <Switch checked={seniorMode} onChange={toggleSenior} disabled={savingDisplay} label="Mode senior" />
+          </div>
+          {seniorMode && (
+            <div className="mt-4 pt-4 border-t border-gray-100">
+              <p className="font-semibold text-gray-800 mb-2">Alertes sonores</p>
+              <SoundAlertsSetup />
+            </div>
+          )}
         </Section>
 
         <Section icon={Mail} title="Adresse courriel" hint="Pour vous connecter et recevoir les rappels.">

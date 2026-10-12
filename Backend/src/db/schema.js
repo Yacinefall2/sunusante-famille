@@ -203,6 +203,14 @@ export const users = pgTable("users", {
   // Dernier changement de mot de passe : toute session ouverte avant est
   // refusée (requireAuth), y compris un jeton d'accès encore valide.
   passwordChangedAt: timestamp("password_changed_at"),
+  // Mode senior (UC-25, M10) : réglage d'AFFICHAGE du compte (grands
+  // caractères, accueil simplifié, alertes sonores) — jamais un rôle, sans
+  // AUCUN effet sur les droits (ne pas l'utiliser dans lib/documentAccess.js).
+  // Activable par la personne elle-même ou par un parent de sa famille ; on
+  // garde qui l'a changé en dernier, et quand.
+  seniorMode: boolean("senior_mode").default(false).notNull(),
+  seniorModeSetByUserId: integer("senior_mode_set_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  seniorModeUpdatedAt: timestamp("senior_mode_updated_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

@@ -127,6 +127,13 @@
       "when": 1791818629742,
       "tag": "0017_gouvernance_roles",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1791820868181,
+      "tag": "0018_mode_senior",
+      "breakpoints": true
     }
   ]
 }

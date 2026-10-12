@@ -276,7 +276,7 @@ router.post("/login", authIpLimit, async (req, res) => {
     // courriel. C'est requireVerifiedEmail qui bloque ensuite l'accès aux
     // fonctionnalités (familles, dossiers...), pas la connexion elle-même.
     setAuthCookies(res, accessToken, refreshToken);
-    res.json({ id: user.id, name: user.name, email: user.email, emailVerified: user.emailVerified });
+    res.json({ id: user.id, name: user.name, email: user.email, emailVerified: user.emailVerified, seniorMode: user.seniorMode });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Erreur serveur" });
@@ -489,8 +489,21 @@ router.post("/logout", async (req, res) => {
   }
 });
 
+// seniorMode (réglage d'affichage, UC-25) : l'interface s'adapte dès la connexion.
 router.get("/me", requireAuth, async (req, res) => {
-  res.json({ id: req.user.id, name: req.user.name, email: req.user.email, emailVerified: req.user.emailVerified });
+  try {
+    const [row] = await db.select({ seniorMode: users.seniorMode }).from(users).where(eq(users.id, req.user.id));
+    res.json({
+      id: req.user.id,
+      name: req.user.name,
+      email: req.user.email,
+      emailVerified: req.user.emailVerified,
+      seniorMode: !!row?.seniorMode,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
 });
 
 export default router;

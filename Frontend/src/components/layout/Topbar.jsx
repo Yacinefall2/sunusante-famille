@@ -1,6 +1,7 @@
 import { useLocation } from "react-router-dom";
 import { NotificationBell } from "../notifications/NotificationBell";
 import { UserMenu } from "./UserMenu";
+import { useAuth } from "../../context/AuthContext";
 
 const pageTitles = {
   "/dashboard": { title: "Tableau de bord", subtitle: "Vue d'ensemble de la famille" },
@@ -22,6 +23,20 @@ export function Topbar() {
   const { pathname } = useLocation();
   const pageKey = Object.keys(pageTitles).find((k) => pathname.startsWith(k)) ?? "/dashboard";
   const page = pageTitles[pageKey] ?? { title: "SunuSanté Famille", subtitle: "" };
+  const { seniorMode } = useAuth();
+
+  // Mode senior (UC-25) : barre simplifiée — titre seul, grosse cloche, gros avatar.
+  if (seniorMode) {
+    return (
+      <header className="h-16 bg-white border-b-2 border-gray-200 flex items-center justify-between px-4 sm:px-6 sticky top-0 z-30">
+        <h1 className="pl-16 lg:pl-0 text-xl font-bold text-gray-900 truncate">{pageKey === "/dashboard" ? "Accueil" : page.title}</h1>
+        <div className="flex items-center gap-2">
+          <NotificationBell />
+          <UserMenu />
+        </div>
+      </header>
+    );
+  }
 
   return (
     <header className="h-16 bg-white border-b border-gray-100 flex items-center justify-between px-6 sticky top-0 z-30">

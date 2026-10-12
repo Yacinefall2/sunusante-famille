@@ -16,9 +16,14 @@ import {
   TreePine,
   ShieldPlus,
   ScrollText,
+  Home,
+  MoreHorizontal,
+  ChevronUp,
 } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { useEffect, useState } from "react";
+import { useAuth } from "../../context/AuthContext";
+import { useFamily } from "../../context/FamilyContext";
 
 const navItems = [
   { href: "/dashboard", label: "Tableau de bord", icon: LayoutDashboard },
@@ -35,9 +40,43 @@ const navItems = [
   { href: "/journal", label: "Journal d'activité", icon: ScrollText },
 ];
 
+// Menu réduit du mode senior (UC-25) : l'essentiel, en grand ; « Plus »
+// déplie le menu complet.
+const seniorNavItems = (myMember) =>
+  [
+    { href: "/dashboard", label: "Accueil", icon: Home },
+    { href: "/traitements", label: "Mes médicaments", icon: Pill },
+    { href: "/rendez-vous", label: "Mes rendez-vous", icon: Calendar },
+    myMember && { href: `/partage?fiche=${myMember.id}`, label: "Ma fiche d'urgence", icon: ShieldPlus },
+  ].filter(Boolean);
+
+// Menu complet déplié en mode senior : gardé d'une page à l'autre (la barre
+// latérale est recréée à chaque page).
+const FULL_MENU_KEY = "sunusante.menuComplet";
+const readFullMenu = () => {
+  try {
+    return sessionStorage.getItem(FULL_MENU_KEY) === "1";
+  } catch {
+    return false;
+  }
+};
+
 export function Sidebar() {
   const { pathname } = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const { seniorMode } = useAuth();
+  const { myMember } = useFamily();
+  const [fullMenu, setFullMenu] = useState(readFullMenu);
+  const toggleFullMenu = () => {
+    setFullMenu((v) => {
+      try {
+        sessionStorage.setItem(FULL_MENU_KEY, v ? "0" : "1");
+      } catch {
+        // mémoire de la page seulement
+      }
+      return !v;
+    });
+  };
 
   // Menu mobile ouvert : la touche Échap le referme.
   useEffect(() => {
@@ -49,19 +88,25 @@ export function Sidebar() {
 
   const NavLink = ({ item }) => {
     const Icon = item.icon;
-    const active = pathname.startsWith(item.href);
+    const active = pathname.startsWith(item.href.split("?")[0]);
+    const big = seniorMode && item.senior;
     return (
       <Link
         to={item.href}
         onClick={() => setMobileOpen(false)}
         className={cn(
           "flex items-center gap-3 px-4 py-3 rounded-xl font-medium text-sm transition-all duration-200 group",
+          big && "text-lg font-semibold py-4 border-2 border-transparent",
+          big && !active && "border-gray-200",
           active
             ? "bg-teal-600 text-white shadow-md shadow-teal-200"
             : "text-gray-600 hover:bg-teal-50 hover:text-teal-700"
         )}
       >
-        <Icon size={20} className={cn("flex-shrink-0", active ? "text-white" : "text-gray-400 group-hover:text-teal-600")} />
+        <Icon
+          size={big ? 28 : 20}
+          className={cn("flex-shrink-0", active ? "text-white" : big ? "text-teal-700" : "text-gray-400 group-hover:text-teal-600")}
+        />
         <span className="flex-1">{item.label}</span>
         {active && <ChevronRight size={16} className="opacity-70" />}
       </Link>
@@ -116,11 +161,35 @@ export function Sidebar() {
         </div>
 
         {/* Nav */}
-        <nav className="flex-1 px-4 py-4 space-y-1 overflow-y-auto">
-          {navItems.map((item) => (
-            <NavLink key={item.href} item={item} />
-          ))}
-        </nav>
+        {seniorMode ? (
+          <nav className="flex-1 px-4 py-4 space-y-2 overflow-y-auto" aria-label="Menu simplifié">
+            {seniorNavItems(myMember).map((item) => (
+              <NavLink key={item.href} item={{ ...item, senior: true }} />
+            ))}
+            <button
+              type="button"
+              onClick={toggleFullMenu}
+              aria-expanded={fullMenu}
+              className="w-full flex items-center gap-3 px-4 py-4 rounded-xl text-lg font-semibold text-gray-800 border-2 border-gray-200 hover:bg-gray-50"
+            >
+              {fullMenu ? <ChevronUp size={28} className="text-teal-700" /> : <MoreHorizontal size={28} className="text-teal-700" />}
+              <span className="flex-1 text-left">{fullMenu ? "Moins" : "Plus"}</span>
+            </button>
+            {fullMenu && (
+              <div className="pt-2 mt-2 border-t-2 border-gray-200 space-y-1">
+                {navItems.map((item) => (
+                  <NavLink key={item.href} item={item} />
+                ))}
+              </div>
+            )}
+          </nav>
+        ) : (
+          <nav className="flex-1 px-4 py-4 space-y-1 overflow-y-auto">
+            {navItems.map((item) => (
+              <NavLink key={item.href} item={item} />
+            ))}
+          </nav>
+        )}
 
         {/* Footer */}
         <div className="px-6 py-4 border-t border-gray-100">
