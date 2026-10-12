@@ -3,7 +3,7 @@ import { Modal } from "../ui/Modal";
 import { Button } from "../ui/Button";
 import { Badge } from "../ui/Badge";
 import { Input } from "../ui/Input";
-import { Stethoscope, Plus, Loader2, MailCheck, Mail, Clock, User, FileText } from "lucide-react";
+import { Stethoscope, Plus, Loader2, MailCheck, Mail, Clock, User, FileText, Ban } from "lucide-react";
 import { SHARE_DURATIONS, shareContentsLabel, shareStateInfo } from "../../lib/partage";
 import { formatDate, formatDateTime } from "../../lib/utils";
 import toast from "react-hot-toast";
@@ -80,6 +80,24 @@ export function DoctorShareSection({ member, canManage }) {
     setCreated(null);
     setShowForm(true);
     loadDocuments();
+  };
+
+  // Révocation : coupe l'accès du médecin immédiatement, même déjà ouvert.
+  const [revokingId, setRevokingId] = useState(null);
+  const revoke = async (share) => {
+    const who = share.doctorEmail ? ` envoyé à ${share.doctorEmail}` : "";
+    if (!confirm(`Révoquer le lien${who} ? Le médecin n'aura plus accès au dossier, même s'il l'a déjà ouvert.`)) return;
+    setRevokingId(share.id);
+    try {
+      const res = await fetch(`/api/doctor-shares/${share.id}/revoke`, { method: "POST" });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "Révocation impossible");
+      toast.success("Lien révoqué : le médecin n'a plus accès au dossier");
+      await load();
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setRevokingId(null);
+    }
   };
 
   const closeForm = () => {
@@ -191,6 +209,17 @@ export function DoctorShareSection({ member, canManage }) {
                       {s.revokedAt && <span>Révoqué le {formatDateTime(s.revokedAt)}</span>}
                     </div>
                   </div>
+                  {(s.state === "pending" || s.state === "opened") && (
+                    <Button
+                      variant="ghost"
+                      className="text-red-600 hover:bg-red-50 flex-shrink-0"
+                      onClick={() => revoke(s)}
+                      loading={revokingId === s.id}
+                    >
+                      <Ban size={15} />
+                      Révoquer
+                    </Button>
+                  )}
                 </div>
               );
             })}

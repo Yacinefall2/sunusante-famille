@@ -169,10 +169,18 @@ describe("Lien médecin — ouverture à usage unique", () => {
     expect(titles.some((x) => x.includes("Ouverture refusée"))).toBe(true);
   });
 
-  it("plus de révocation depuis l'application", async () => {
+  it("révocation : le médecin perd l'accès immédiatement, le titulaire est prévenu", async () => {
     const { body } = await createShare(f.medoune, { memberId: f.fMedoune.id });
-    expect((await as(f.medoune).post(`/api/doctor-shares/${body.id}/revoke`)).status).toBe(404);
-    expect((await request.agent(app).get(`/api/public/doctor/${sentToken()}`)).status).toBe(200);
+    const medecin = request.agent(app);
+    const token = sentToken();
+    expect((await medecin.get(`/api/public/doctor/${token}`)).status).toBe(200);
+    expect((await as(f.toutou).post(`/api/doctor-shares/${body.id}/revoke`)).status).toBe(403);
+    expect((await as(f.medoune).post(`/api/doctor-shares/${body.id}/revoke`)).body.state).toBe("revoked");
+    const after = await medecin.get(`/api/public/doctor/${token}`);
+    expect(after.status).toBe(410);
+    expect(after.body.reason).toBe("revoked");
+    const titles = (await notifsOf(f.medoune, "doctor_share")).map((n) => n.title);
+    expect(titles.some((x) => x.includes("révoqué"))).toBe(true);
   });
 
   it("expiration et lien inconnu", async () => {

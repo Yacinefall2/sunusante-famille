@@ -16,7 +16,7 @@ export const NOTIFICATION_CATEGORIES = {
   relay_alert: { label: "Alertes du Village (proche injoignable)", inApp: true, email: true },
   relay_update: { label: "Suivi du Village (relais effectué, présence au rendez-vous)", inApp: true, email: false },
   // Partage (phase F) : le titulaire est toujours informé de ce qui sort de son dossier.
-  doctor_share: { label: "Partages avec un médecin (lien créé, ouvert, refusé ou révoqué)", inApp: true, email: true },
+  doctor_share: { label: "Partages avec un médecin (lien envoyé, ouvert, refusé ou révoqué)", inApp: true, email: true },
   emergency_view: { label: "Consultations de ma fiche d'urgence", inApp: true, email: true },
 };
 

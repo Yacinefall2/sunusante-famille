@@ -3,7 +3,7 @@ import { desc, eq, inArray } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { doctorShares, documents, members, users } from "../db/schema.js";
 import { requireFamilyMembership } from "../middleware/auth.js";
-import { familyIdFromMemberId } from "../lib/familyResolvers.js";
+import { familyIdFromMemberId, familyIdFromResource } from "../lib/familyResolvers.js";
 import { canSeeDocument, canWriteMember, isHolder } from "../lib/documentAccess.js";
 import { DOCTOR_SHARE_DURATIONS, frontendUrl, hashToken, newToken, recipientsFor, shareState } from "../lib/sharing.js";
 import { formatDateTime } from "../lib/time.js";
@@ -151,5 +151,35 @@ router.post("/", requireFamilyMembership((req) => familyIdFromMemberId(req.body.
     res.status(500).json({ error: "Erreur serveur" });
   }
 });
+
+// Révocation : coupe l'accès du médecin immédiatement, même si le lien a déjà
+// été ouvert (§10 : partage temporaire et révocable).
+router.post(
+  "/:id/revoke",
+  requireFamilyMembership((req) => familyIdFromResource(doctorShares, req.params.id)),
+  async (req, res) => {
+    try {
+      const [share] = await db.select().from(doctorShares).where(eq(doctorShares.id, parseInt(req.params.id)));
+      if (!share) return res.status(404).json({ error: "Partage introuvable" });
+      if (!(await canManageShares(req, share.memberId))) return res.status(403).json({ error: "Accès refusé" });
+      if (share.revokedAt) return res.json(present(share));
+      const [revoked] = await db
+        .update(doctorShares)
+        .set({ revokedAt: new Date(), sessionHash: null })
+        .where(eq(doctorShares.id, share.id))
+        .returning();
+      const [member] = await db.select().from(members).where(eq(members.id, share.memberId));
+      await notifyShareEvent(share, member, {
+        key: "revoked",
+        title: `Lien médecin révoqué pour ${member.firstName}`,
+        body: `${req.user.name} a révoqué le lien envoyé le ${formatDateTime(share.createdAt)}${share.doctorEmail ? ` à ${share.doctorEmail}` : ""}. Le médecin n'a plus accès au dossier.`,
+      });
+      res.json(present(revoked));
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: "Erreur serveur" });
+    }
+  }
+);
 
 export default router;

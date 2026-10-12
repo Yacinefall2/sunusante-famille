@@ -65,7 +65,7 @@ personne et à l'administrateur familial. Fuseau de référence : `APP_TIMEZONE`
 
 Page « Partage & urgence » (`/partage`) :
 
-- **Lien médecin** (2 h, 24 h ou 7 jours) : envoyé par courriel à l'adresse
+- **Lien médecin** (2 h, 24 h ou 7 jours, révocable à tout moment) : envoyé par courriel à l'adresse
   du médecin saisie à la création, avec un bouton d'accès ; il n'est jamais
   affiché à la famille. Si le courriel ne part pas, le lien est supprimé. À
   usage unique : la première ouverture le réserve à l'appareil du médecin
