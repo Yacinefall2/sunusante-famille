@@ -227,6 +227,21 @@ export const familyMemberships = pgTable("family_memberships", {
 ]);
 
 // ── Refresh tokens (permet la révocation au logout + la rotation) ────────────
+// ── Jetons de réinitialisation du mot de passe ───────────────────────────────
+// Lien « Mot de passe oublié » : à usage unique, valable 1 heure ; seule
+// l'empreinte du jeton est conservée. Une nouvelle demande annule les
+// précédentes.
+export const passwordResetTokens = pgTable("password_reset_tokens", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id")
+    .references(() => users.id, { onDelete: "cascade" })
+    .notNull(),
+  tokenHash: varchar("token_hash", { length: 64 }).notNull().unique(),
+  expiresAt: timestamp("expires_at").notNull(),
+  consumedAt: timestamp("consumed_at"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
 export const refreshTokens = pgTable("refresh_tokens", {
   id: serial("id").primaryKey(),
   userId: integer("user_id")

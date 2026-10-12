@@ -117,6 +117,26 @@ export async function sendVerificationEmail({ to, name, token }) {
   });
 }
 
+// Courriel « Mot de passe oublié » : lien de réinitialisation valable 1 heure.
+export function buildPasswordResetEmail({ name, token }) {
+  return {
+    subject: "Réinitialisez votre mot de passe SunuSanté Famille",
+    html: accessButtonTemplate({
+      heading: `Bonjour ${escapeHtml(name)}`,
+      bodyHtml: `<p>Vous avez demandé à changer le mot de passe de votre compte SunuSanté Famille.
+        Cliquez sur le bouton ci-dessous pour en choisir un nouveau.</p>`,
+      link: `${FRONTEND_URL}/reinitialiser-mot-de-passe/${token}`,
+      buttonLabel: "Choisir un nouveau mot de passe",
+      validityLabel: "Ce lien expire dans 1 heure et ne sert qu'une fois.",
+      footer: "Si vous n'êtes pas à l'origine de cette demande, ignorez ce courriel : votre mot de passe reste inchangé.",
+    }),
+  };
+}
+
+export async function sendPasswordResetEmail({ to, ...details }) {
+  await transporter.sendMail({ from: FROM, to, ...buildPasswordResetEmail(details) });
+}
+
 // Courriel au médecin avec qui un dossier est partagé : le lien n'est transmis
 // que par ce canal, jamais affiché à la famille.
 export function buildDoctorShareEmail({ link, memberName, senderName, expiresAtLabel }) {

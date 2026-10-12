@@ -71,6 +71,13 @@
       "when": 1791797096076,
       "tag": "0009_partage_medecin_courriel",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1791800027876,
+      "tag": "0010_mot_de_passe_oublie",
+      "breakpoints": true
     }
   ]
 }

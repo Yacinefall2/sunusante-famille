@@ -52,6 +52,11 @@ export default function LoginPage() {
             onChange={(e) => setPassword(e.target.value)}
             placeholder="••••••••"
           />
+          <div className="-mt-2 text-right">
+            <Link to="/mot-de-passe-oublie" className="text-xs font-semibold text-teal-600 hover:underline">
+              Mot de passe oublié ?
+            </Link>
+          </div>
           <Button type="submit" loading={loading} className="w-full">
             Se connecter
           </Button>

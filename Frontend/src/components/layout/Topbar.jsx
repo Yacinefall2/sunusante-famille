@@ -13,6 +13,7 @@ const pageTitles = {
   "/documents": { title: "Documents médicaux", subtitle: "Ordonnances, résultats et bilans" },
   "/famille": { title: "Comptes & invitations", subtitle: "Comptes de la famille, rôles et invitations" },
   "/village": { title: "Village", subtitle: "Proches non connectés et rappels relayés" },
+  "/partage": { title: "Partage & urgence", subtitle: "Lien médecin et fiche d'urgence" },
   "/notifications": { title: "Notifications", subtitle: "Rappels et préférences" },
 };
 

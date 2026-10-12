@@ -39,6 +39,14 @@ courriel non remis après 3 tentatives est signalé dans l'application à la
 personne et à l'administrateur familial. Fuseau de référence : `APP_TIMEZONE`
 (Africa/Dakar par défaut). Journal : `docker compose logs -f worker`.
 
+### Comptes et connexion
+
+- **Mot de passe oublié** (`/mot-de-passe-oublie`) : un lien valable 1 heure,
+  à usage unique, est envoyé par courriel ; une nouvelle demande annule la
+  précédente. Changer son mot de passe ferme toutes les sessions ouvertes.
+- **Limite des tentatives** : après 5 échecs de connexion en 15 minutes sur une
+  même adresse, la connexion est refusée jusqu'à la fin de ce délai.
+
 ### Partage médecin et fiche d'urgence
 
 Page « Partage & urgence » (`/partage`) :
