@@ -24,10 +24,17 @@ import emergencyRouter from "./routes/emergency.js";
 import publicRouter from "./routes/public.js";
 import accountRouter from "./routes/account.js";
 import { requireAuth, requireVerifiedEmail } from "./middleware/auth.js";
+import { convertLegacyEmergencyTokens } from "./lib/sharing.js";
 
 const app = express();
 
 app.disable("x-powered-by");
+// Derrière nginx (conteneur frontend) : un seul proxy de confiance. req.ip
+// est alors l'adresse du visiteur lue dans X-Forwarded-For (posé par nginx),
+// et non celle de nginx — indispensable aux limites par adresse IP. Sans
+// proxy devant (npm run dev), un client pourrait choisir cet en-tête : l'API
+// ne doit donc jamais être exposée directement sur Internet.
+app.set("trust proxy", 1);
 // En-têtes de sécurité (anti-clickjacking, nosniff, CSP stricte : l'API ne
 // sert que du JSON et des fichiers). Les fichiers téléversés posent leur
 // propre politique (sendStoredFile), d'où contentSecurityPolicy laissé à
@@ -38,6 +45,7 @@ app.use(
     crossOriginResourcePolicy: { policy: "same-origin" },
   })
 );
+// Seule origine autorisée : celle de l'application (FRONTEND_URL).
 app.use(cors({ origin: process.env.FRONTEND_URL || "http://localhost:5173", credentials: true }));
 // Requêtes qui modifient des données : refusées si elles viennent d'une autre
 // origine que l'application (protection CSRF en plus des cookies
@@ -60,6 +68,14 @@ app.use((req, res, next) => {
 });
 app.use(express.json({ limit: "100kb" }));
 app.use(cookieParser());
+
+// Réponses de l'API : jamais mises en cache (navigateur, proxy, ordinateur
+// partagé) — elles contiennent des données de santé. Les fichiers servis
+// posent leur propre politique (sendStoredFile), tout aussi stricte.
+app.use("/api", (req, res, next) => {
+  res.set("Cache-Control", "no-store");
+  next();
+});
 
 // Fichiers téléversés : contrôle d'accès au dossier, comme les données médicales.
 app.use("/uploads", requireAuth, requireVerifiedEmail, uploadsRouter);
@@ -93,6 +109,16 @@ app.use("/api/doctor-shares", requireAuth, requireVerifiedEmail, doctorSharesRou
 app.use("/api/emergency", requireAuth, requireVerifiedEmail, emergencyRouter);
 
 app.get("/api/health", (req, res) => res.json({ status: "ok" }));
+
+// Anciennes fiches d'urgence dont le jeton est encore en clair (avant la
+// migration 0013) : chiffrées au démarrage, en arrière-plan. Elles le sont
+// aussi à leur première utilisation (lib/sharing.js upgradeEmergencyCard).
+// Pas pendant les tests, qui vident la base à leur rythme.
+if (!process.env.VITEST) {
+  convertLegacyEmergencyTokens()
+    .then((n) => n > 0 && console.log(`🔐 ${n} jeton(s) de fiche d'urgence chiffré(s)`))
+    .catch((error) => console.error("Conversion des jetons de fiche d'urgence impossible :", error));
+}
 
 // Erreurs non rattrapées (JSON mal formé, corps trop gros...) : réponse JSON
 // sobre, jamais de trace technique renvoyée au navigateur.

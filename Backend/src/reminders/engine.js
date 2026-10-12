@@ -1,4 +1,4 @@
-import { and, eq, gt, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { db } from "../db/index.js";
 import {
   appointments,
@@ -13,43 +13,68 @@ import {
   vaccinations,
 } from "../db/schema.js";
 import { DELIVERY_FAILURE } from "../lib/notificationPreferences.js";
+import { withAccess } from "../lib/documentAccess.js";
 import { notify } from "./notify.js";
-import { villageTick } from "./village.js";
+import { parentsOf, villageTick } from "./village.js";
 import { sendNotificationEmail } from "../lib/mailer.js";
 import { APP_TIMEZONE, addDays, formatDate, formatDateTime, localDate, zonedTime } from "../lib/time.js";
 
 // ── Moteur de rappels et de notifications (acteur système S1, UC-54 à 56) ────
 // runReminderTick() est appelé chaque minute par le service « worker ». Chaque
 // étape est idempotente (clé de déduplication en base) : relancer un passage,
-// ou en rater un, ne crée jamais de doublon ni de rappel perdu.
+// ou en rater un, ne crée jamais de doublon ni de rappel perdu. Les fiches
+// archivées (lib/archive.js) ne reçoivent plus aucun rappel.
 
 const HOUR = 60 * 60 * 1000;
 const MINUTE = 60 * 1000;
 export const INTAKE_CATCH_UP = 2 * HOUR; // prise rattrapée si le moteur était arrêté depuis moins de 2 h
 export const INTAKE_FOLLOW_UP = 30 * MINUTE; // relance unique 30 min après le rappel sans réponse
 export const INTAKE_MISSED_AFTER = 12 * HOUR; // sans réponse au bout de 12 h : « sans réponse »
+// Moteur arrêté plus longtemps : les prises des dernières 24 h qui n'ont pas
+// pu être rappelées sont enregistrées directement « sans réponse » (missed).
+export const INTAKE_HISTORY_CATCH_UP = 24 * HOUR;
 export const EMAIL_MAX_ATTEMPTS = 3;
 
 const memberName = (m) => `${m.firstName} ${m.lastName}`;
+const userCols = { id: users.id, name: users.name, email: users.email, emailVerified: users.emailVerified };
 
 // Destinataires d'un rappel pour une fiche : son titulaire (compte relié) et
-// ses gestionnaires. Avec holderFirst, seulement le titulaire s'il existe
-// (rappels de prise : c'est lui qui prend le médicament, adolescent compris).
-async function recipientsFor(memberId, { holderFirst = false } = {}) {
-  const holders = await db
-    .select({ id: users.id, email: users.email, emailVerified: users.emailVerified })
-    .from(familyMemberships)
-    .innerJoin(users, eq(users.id, familyMemberships.userId))
-    .where(eq(familyMemberships.linkedMemberId, memberId));
+// ses gestionnaires — seulement ceux qui ont toujours un accès lisible au
+// dossier. Avec holderFirst, seulement le titulaire s'il existe (rappels de
+// prise : c'est lui qui prend le médicament, adolescent compris). Sans
+// titulaire ni gestionnaire, ce sont les parents du foyer qui sont prévenus
+// (comme au Village). Une fiche archivée n'a aucun destinataire.
+export async function recipientsFor(memberId, { holderFirst = false } = {}) {
+  const [fiche] = await db
+    .select({ familyId: members.familyId, archivedAt: members.archivedAt })
+    .from(members)
+    .where(eq(members.id, memberId));
+  if (!fiche || fiche.archivedAt) return [];
+  const holders = await withAccess(
+    await db
+      .select(userCols)
+      .from(familyMemberships)
+      .innerJoin(users, eq(users.id, familyMemberships.userId))
+      .where(eq(familyMemberships.linkedMemberId, memberId)),
+    memberId
+  );
   if (holderFirst && holders.length > 0) return holders;
-  const managers = await db
-    .select({ id: users.id, email: users.email, emailVerified: users.emailVerified })
-    .from(documentRoles)
-    .innerJoin(users, eq(users.id, documentRoles.userId))
-    .where(and(eq(documentRoles.memberId, memberId), eq(documentRoles.role, "gestionnaire")));
+  const managers = await withAccess(
+    await db
+      .select(userCols)
+      .from(documentRoles)
+      .innerJoin(users, eq(users.id, documentRoles.userId))
+      .where(and(eq(documentRoles.memberId, memberId), eq(documentRoles.role, "gestionnaire"))),
+    memberId
+  );
   const all = new Map([...holders, ...managers].map((u) => [u.id, u]));
+  if (all.size === 0) return parentsOf(fiche.familyId);
   return [...all.values()];
 }
+
+// Fiche suivie par le Village (non connectée, sans titulaire) : ses rendez-vous
+// passent par les rappels relayés (village.js), pas par les rappels classiques.
+const relayedByVillage = sql`(${members.status} = 'non_connecte' and not exists (select 1 from ${familyMemberships} where ${familyMemberships.linkedMemberId} = ${members.id}))`;
 
 // ── Rendez-vous : J-3 puis J-1 (UC-54) ───────────────────────────────────────
 async function appointmentReminders(now) {
@@ -60,8 +85,9 @@ async function appointmentReminders(now) {
     .where(
       and(
         ne(appointments.status, "cancelled"),
+        isNull(members.archivedAt),
         // Proche non connecté : rappels pris en charge par le Village (village.js)
-        ne(members.status, "non_connecte"),
+        sql`not ${relayedByVillage}`,
         gt(appointments.appointmentDate, now),
         lte(appointments.appointmentDate, new Date(now.getTime() + 72 * HOUR))
       )
@@ -103,6 +129,7 @@ async function vaccineReminders(now) {
     .innerJoin(members, eq(members.id, vaccinations.memberId))
     .where(
       and(
+        isNull(members.archivedAt),
         isNull(vaccinations.boosterDoneVaccinationId),
         sql`${vaccinations.nextDoseDate} >= ${today}`,
         sql`${vaccinations.nextDoseDate} <= ${addDays(today, 7)}`
@@ -136,6 +163,7 @@ async function lateVaccineReminders(now) {
     .innerJoin(members, eq(members.id, vaccinations.memberId))
     .where(
       and(
+        isNull(members.archivedAt),
         isNull(vaccinations.boosterDoneVaccinationId),
         sql`${vaccinations.nextDoseDate} <= ${addDays(today, -VACCINE_LATE_AFTER_DAYS)}`,
         sql`${vaccinations.nextDoseDate} > ${addDays(today, -60)}`
@@ -186,8 +214,18 @@ async function intakeNotification(intake, med, m, now, kind) {
   }
 }
 
+// Une prise n'est plus à rappeler si son traitement a été arrêté, si son
+// heure a été retirée du médicament, ou si la fiche a été archivée.
+const intakeStillPlanned = () =>
+  and(
+    eq(treatments.isActive, true),
+    isNull(members.archivedAt),
+    sql`to_char((${medicationIntakes.scheduledAt} at time zone 'UTC') at time zone ${APP_TIMEZONE}, 'HH24:MI') = any(${treatmentMedications.intakeTimes})`
+  );
+
 async function medicationReminders(now) {
   const today = localDate(now);
+  const yesterday = addDays(today, -1);
   const rows = await db
     .select({ med: treatmentMedications, t: treatments, m: members })
     .from(treatmentMedications)
@@ -196,21 +234,50 @@ async function medicationReminders(now) {
     .where(
       and(
         eq(treatments.isActive, true),
+        isNull(members.archivedAt),
         sql`cardinality(${treatmentMedications.intakeTimes}) > 0`,
         or(isNull(treatments.startDate), sql`${treatments.startDate} <= ${today}`),
-        or(isNull(treatments.endDate), sql`${treatments.endDate} >= ${today}`)
+        or(isNull(treatments.endDate), sql`${treatments.endDate} >= ${yesterday}`)
       )
     );
 
-  for (const { med, m } of rows) {
-    for (const time of med.intakeTimes) {
-      const scheduledAt = zonedTime(today, time);
-      if (scheduledAt > now || now.getTime() - scheduledAt.getTime() > INTAKE_CATCH_UP) continue;
-      await db
-        .insert(medicationIntakes)
-        .values({ medicationId: med.id, memberId: m.id, scheduledAt, createdAt: now })
-        .onConflictDoNothing({ target: [medicationIntakes.medicationId, medicationIntakes.scheduledAt] });
+  // Prises d'hier et d'aujourd'hui (la fenêtre de rattrapage peut franchir
+  // minuit : moteur arrêté de 23 h à 0 h 30, la prise de 23 h 30 est
+  // rattrapée). Prise de moins de 2 h : créée et rappelée. Plus ancienne
+  // (moteur arrêté longtemps) : enregistrée « sans réponse », sans rappel —
+  // seulement si le médicament existait déjà à cette heure-là.
+  for (const { med, t, m } of rows) {
+    for (const day of [yesterday, today]) {
+      if (t.startDate && day < t.startDate) continue;
+      if (t.endDate && day > t.endDate) continue;
+      for (const time of med.intakeTimes) {
+        const scheduledAt = zonedTime(day, time);
+        const age = now.getTime() - scheduledAt.getTime();
+        if (age < 0 || age > INTAKE_HISTORY_CATCH_UP) continue;
+        let status = "pending";
+        if (age > INTAKE_CATCH_UP) {
+          if (scheduledAt < med.createdAt || scheduledAt < t.createdAt) continue;
+          status = "missed";
+        }
+        await db
+          .insert(medicationIntakes)
+          .values({ medicationId: med.id, memberId: m.id, scheduledAt, status, createdAt: now })
+          .onConflictDoNothing({ target: [medicationIntakes.medicationId, medicationIntakes.scheduledAt] });
+      }
     }
+  }
+
+  // Prises jamais rappelées dont le traitement a été arrêté ou l'heure
+  // retirée : elles ne sont plus prévues, on les efface.
+  const obsolete = await db
+    .select({ id: medicationIntakes.id })
+    .from(medicationIntakes)
+    .innerJoin(treatmentMedications, eq(treatmentMedications.id, medicationIntakes.medicationId))
+    .innerJoin(treatments, eq(treatments.id, treatmentMedications.treatmentId))
+    .innerJoin(members, eq(members.id, medicationIntakes.memberId))
+    .where(and(eq(medicationIntakes.status, "pending"), isNull(medicationIntakes.remindedAt), sql`not (${intakeStillPlanned()})`));
+  if (obsolete.length > 0) {
+    await db.delete(medicationIntakes).where(inArray(medicationIntakes.id, obsolete.map((r) => r.id)));
   }
 
   // Rappel à l'heure pour chaque prise créée et pas encore rappelée.
@@ -218,24 +285,28 @@ async function medicationReminders(now) {
     .select({ i: medicationIntakes, med: treatmentMedications, m: members })
     .from(medicationIntakes)
     .innerJoin(treatmentMedications, eq(treatmentMedications.id, medicationIntakes.medicationId))
+    .innerJoin(treatments, eq(treatments.id, treatmentMedications.treatmentId))
     .innerJoin(members, eq(members.id, medicationIntakes.memberId))
-    .where(and(eq(medicationIntakes.status, "pending"), isNull(medicationIntakes.remindedAt)));
+    .where(and(eq(medicationIntakes.status, "pending"), isNull(medicationIntakes.remindedAt), intakeStillPlanned()));
   for (const { i, med, m } of toRemind) {
     await intakeNotification(i, med, m, now, "rappel");
     await db.update(medicationIntakes).set({ remindedAt: now }).where(eq(medicationIntakes.id, i.id));
   }
 
-  // Une seule relance, 30 min après le rappel resté sans réponse.
+  // Une seule relance, 30 min après le rappel resté sans réponse — jamais
+  // pour un traitement arrêté entre-temps ou une heure retirée.
   const toFollowUp = await db
     .select({ i: medicationIntakes, med: treatmentMedications, m: members })
     .from(medicationIntakes)
     .innerJoin(treatmentMedications, eq(treatmentMedications.id, medicationIntakes.medicationId))
+    .innerJoin(treatments, eq(treatments.id, treatmentMedications.treatmentId))
     .innerJoin(members, eq(members.id, medicationIntakes.memberId))
     .where(
       and(
         eq(medicationIntakes.status, "pending"),
         isNull(medicationIntakes.followUpAt),
-        lte(medicationIntakes.remindedAt, new Date(now.getTime() - INTAKE_FOLLOW_UP))
+        lte(medicationIntakes.remindedAt, new Date(now.getTime() - INTAKE_FOLLOW_UP)),
+        intakeStillPlanned()
       )
     );
   for (const { i, med, m } of toFollowUp) {
@@ -255,6 +326,10 @@ async function medicationReminders(now) {
 }
 
 // ── Courriels : envoi, nouvelles tentatives, échec jamais silencieux (UC-66, UC-67) ──
+// La personne concernée reçoit le détail (titre du rappel, motif de l'échec).
+// L'Administrateur familial A1, s'il s'agit d'un autre compte, reçoit un
+// message NEUTRE : le titre d'un rappel (rendez-vous, médicament…) relève du
+// dossier médical de l'autre, il ne lui est jamais montré (§10).
 export async function markEmailFailed(notification, reason, now = new Date()) {
   await db
     .update(notifications)
@@ -262,29 +337,38 @@ export async function markEmailFailed(notification, reason, now = new Date()) {
     .where(eq(notifications.id, notification.id));
 
   const [recipient] = await db.select().from(users).where(eq(users.id, notification.userId));
-  const targets = [recipient];
+  await notify({
+    user: recipient,
+    category: DELIVERY_FAILURE,
+    dedupeKey: `fail:${notification.id}:u${recipient.id}`,
+    title: "Un courriel n'a pas pu vous être remis",
+    body: `« ${notification.title} » — ${reason}. Vérifiez votre adresse courriel.`,
+    link: "/dashboard",
+    familyId: notification.familyId,
+    memberId: notification.memberId,
+    now,
+  });
+
   // L'Administrateur familial (A1) est prévenu aussi (§7.3).
   if (notification.familyId) {
     const [a1] = await db
-      .select({ id: users.id, email: users.email, emailVerified: users.emailVerified })
+      .select(userCols)
       .from(familyMemberships)
       .innerJoin(users, eq(users.id, familyMemberships.userId))
       .where(and(eq(familyMemberships.familyId, notification.familyId), eq(familyMemberships.isPrimaryAdmin, true)));
-    if (a1 && a1.id !== recipient.id) targets.push(a1);
-  }
-  for (const user of targets) {
-    const own = user.id === recipient.id;
-    await notify({
-      user,
-      category: DELIVERY_FAILURE,
-      dedupeKey: `fail:${notification.id}:u${user.id}`,
-      title: own ? "Un courriel n'a pas pu vous être remis" : `Un courriel n'a pas pu être remis à ${recipient.email}`,
-      body: `« ${notification.title} » — ${reason}. ${own ? "Vérifiez votre adresse courriel." : "Vérifiez l'adresse de ce compte."}`,
-      link: "/dashboard",
-      familyId: notification.familyId,
-      memberId: notification.memberId,
-      now,
-    });
+    if (a1 && a1.id !== recipient.id) {
+      await notify({
+        user: a1,
+        category: DELIVERY_FAILURE,
+        dedupeKey: `fail:${notification.id}:u${a1.id}`,
+        title: `Un courriel n'a pas pu être remis à ${recipient.name}`,
+        body: `Vérifiez l'adresse courriel de ce compte (${recipient.email}).`,
+        link: "/dashboard",
+        familyId: notification.familyId,
+        memberId: null,
+        now,
+      });
+    }
   }
 }
 
@@ -351,5 +435,3 @@ export async function markIntakeNotificationsRead(intakeId, now = new Date()) {
     .set({ readAt: now })
     .where(and(eq(notifications.intakeId, intakeId), isNull(notifications.readAt)));
 }
-
-

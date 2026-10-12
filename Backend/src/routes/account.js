@@ -20,7 +20,9 @@ import { signAccessToken, signRefreshToken, REFRESH_TOKEN_TTL_MS } from "../lib/
 import { clearAuthCookies, hashToken, setAuthCookies } from "../lib/session.js";
 import { ADULT_AGE, ageOn } from "../lib/family.js";
 import { documentFilesOf, removeFiles } from "../lib/documentFiles.js";
+import { archiveFicheOfLeavingAccount } from "../lib/archive.js";
 import { sendEmailChangeEmail, sendEmailChangeNotice, sendPasswordChangedAlert } from "../lib/mailer.js";
+import { clearFailures, lockedMinutes, recordFailure, tooManyAttemptsMessage } from "../lib/loginThrottle.js";
 
 // « Mon compte » : profil, mot de passe, adresse courriel, export des
 // données et suppression du compte. Chaque action sensible redemande le mot
@@ -36,13 +38,23 @@ async function fullUser(id) {
   return user;
 }
 
+// Vérifie le mot de passe actuel, avec la même limite de tentatives que la
+// connexion (lib/loginThrottle.js) : une session volée ne doit pas servir à
+// deviner le mot de passe, puis à changer l'adresse du compte.
 async function checkPassword(req, res) {
   const user = await fullUser(req.user.id);
+  const minutes = lockedMinutes(user.email, req.ip);
+  if (minutes > 0) {
+    res.status(429).json({ error: tooManyAttemptsMessage(minutes) });
+    return null;
+  }
   const ok = typeof req.body.password === "string" && (await comparePassword(req.body.password, user.passwordHash));
   if (!ok) {
+    recordFailure(user.email, req.ip);
     res.status(403).json({ error: "Mot de passe actuel incorrect" });
     return null;
   }
+  clearFailures(user.email, req.ip);
   return user;
 }
 
@@ -219,8 +231,7 @@ router.get("/export", async (req, res) => {
 // Suppression du compte. L'administrateur d'un espace qui compte d'autres
 // comptes doit d'abord les retirer ou supprimer l'espace ; seul compte d'un
 // espace, il supprime l'espace avec lui. Un adulte peut aussi faire effacer
-// sa fiche médicale (sinon elle reste à la famille, comme celle d'un proche
-// sans compte).
+// sa fiche médicale ; sinon elle reste à la famille, archivée (lib/archive.js).
 router.delete("/", async (req, res) => {
   try {
     const user = await checkPassword(req, res);
@@ -246,6 +257,14 @@ router.delete("/", async (req, res) => {
         const [fiche] = await db.select().from(members).where(eq(members.id, membership.linkedMemberId));
         if (fiche && (ageOn(fiche.dateOfBirth) ?? ADULT_AGE) >= ADULT_AGE) memberIdsToDelete.push(fiche.id);
       }
+    }
+
+    // Fiches qui restent dans une famille : archivées (gelées, plus lisibles
+    // par personne), comme lorsqu'un compte est retiré de l'espace.
+    for (const { membership } of spaces) {
+      if (familiesToDelete.includes(membership.familyId)) continue;
+      if (memberIdsToDelete.includes(membership.linkedMemberId)) continue;
+      await archiveFicheOfLeavingAccount(membership);
     }
 
     const files = await documentFilesOf(memberIdsToDelete);

@@ -62,6 +62,8 @@ const DOCTOR = "dr.ndiaye@clinique.sn";
 const createShare = (user, body) => as(user).post("/api/doctor-shares").send({ doctorEmail: DOCTOR, ...body });
 // Jeton du dernier lien envoyé par courriel.
 const sentToken = () => vi.mocked(sendDoctorShareEmail).mock.lastCall[0].link.split("/medecin/")[1];
+// Clic du médecin sur « Ouvrir le dossier » (consomme le lien, lie l'appareil).
+const openShare = (client, token) => client.post(`/api/public/doctor/${token}/open`);
 
 describe("Lien médecin — création", () => {
   it("titulaire, parent et gestionnaire peuvent créer ; pas l'adolescente ni un autre adulte", async () => {
@@ -132,12 +134,14 @@ describe("Lien médecin — création", () => {
     expect(await notifsOf(f.cousin, "doctor_share")).toHaveLength(1);
   });
 
-  it("un document confidentiel d'un autre ne peut pas être partagé", async () => {
+  it("un document confidentiel ne peut être partagé que par son titulaire (pas même par A1)", async () => {
     const [doc] = await db
       .insert(documents)
       .values({ memberId: f.fMedoune.id, title: "Secret", documentType: "autre", isConfidential: true })
       .returning();
     expect((await createShare(f.maman, { memberId: f.fMedoune.id, documentIds: [doc.id] })).status).toBe(400);
+    // A1 voit le document confidentiel, mais ne peut pas l'envoyer à un médecin.
+    expect((await createShare(f.papa, { memberId: f.fMedoune.id, documentIds: [doc.id] })).status).toBe(403);
     expect((await createShare(f.medoune, { memberId: f.fMedoune.id, documentIds: [doc.id] })).status).toBe(201);
   });
 });
@@ -151,6 +155,18 @@ describe("Lien médecin — ouverture à usage unique", () => {
     const token = sentToken();
 
     const medecin = request.agent(app);
+    // Un robot de messagerie qui charge la page ne consomme pas le lien et ne
+    // reçoit aucune donnée médicale.
+    const robot = await request(app).get(`/api/public/doctor/${token}/status`);
+    expect(robot.status).toBe(200);
+    expect(robot.body).toMatchObject({ state: "pending", hasSession: false, memberFirstName: "Medoune" });
+    expect(JSON.stringify(robot.body)).not.toContain("O+");
+    const notOpened = await request(app).get(`/api/public/doctor/${token}`);
+    expect(notOpened.status).toBe(403);
+    expect(notOpened.body.reason).toBe("not_opened");
+    expect((await db.select().from(doctorShares))[0].consumedAt).toBeNull();
+
+    expect((await openShare(medecin, token)).status).toBe(200);
     const first = await medecin.get(`/api/public/doctor/${token}`);
     expect(first.status).toBe(200);
     expect(first.body.essentials).toMatchObject({ bloodType: "O+", allergies: "Pénicilline" });
@@ -158,12 +174,16 @@ describe("Lien médecin — ouverture à usage unique", () => {
     expect(first.body).not.toHaveProperty("vaccinations"); // non coché
     expect(JSON.stringify(first.body)).not.toContain("Note privée");
 
-    // Même appareil : relire fonctionne.
+    // Même appareil : relire fonctionne, la page sait qu'elle a la session.
     expect((await medecin.get(`/api/public/doctor/${token}`)).status).toBe(200);
-    // Autre appareil : refusé.
-    const other = await request(app).get(`/api/public/doctor/${token}`);
+    expect((await medecin.get(`/api/public/doctor/${token}/status`)).body).toMatchObject({ state: "opened", hasSession: true });
+    expect((await openShare(medecin, token)).status).toBe(200);
+    // Autre appareil : refusé (état, ouverture et lecture).
+    expect((await request(app).get(`/api/public/doctor/${token}/status`)).body.reason).toBe("already_opened");
+    const other = await openShare(request(app), token);
     expect(other.status).toBe(410);
     expect(other.body.reason).toBe("already_opened");
+    expect((await request(app).get(`/api/public/doctor/${token}`)).body.reason).toBe("already_opened");
     const titles = (await notifsOf(f.medoune, "doctor_share")).map((n) => n.title);
     expect(titles.some((x) => x.includes("a été ouvert"))).toBe(true);
     expect(titles.some((x) => x.includes("Ouverture refusée"))).toBe(true);
@@ -173,6 +193,7 @@ describe("Lien médecin — ouverture à usage unique", () => {
     const { body } = await createShare(f.medoune, { memberId: f.fMedoune.id });
     const medecin = request.agent(app);
     const token = sentToken();
+    expect((await openShare(medecin, token)).status).toBe(200);
     expect((await medecin.get(`/api/public/doctor/${token}`)).status).toBe(200);
     expect((await as(f.toutou).post(`/api/doctor-shares/${body.id}/revoke`)).status).toBe(403);
     expect((await as(f.medoune).post(`/api/doctor-shares/${body.id}/revoke`)).body.state).toBe("revoked");
@@ -186,7 +207,10 @@ describe("Lien médecin — ouverture à usage unique", () => {
   it("expiration et lien inconnu", async () => {
     await createShare(f.medoune, { memberId: f.fMedoune.id });
     await db.update(doctorShares).set({ expiresAt: new Date(Date.now() - 1000) });
+    expect((await request(app).get(`/api/public/doctor/${sentToken()}/status`)).body.reason).toBe("expired");
+    expect((await openShare(request(app), sentToken())).body.reason).toBe("expired");
     expect((await request(app).get(`/api/public/doctor/${sentToken()}`)).body.reason).toBe("expired");
+    expect((await request(app).get(`/api/public/doctor/inconnu/status`)).status).toBe(404);
     expect((await request(app).get(`/api/public/doctor/inconnu`)).status).toBe(404);
   });
 

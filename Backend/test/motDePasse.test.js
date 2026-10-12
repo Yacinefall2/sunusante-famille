@@ -79,9 +79,11 @@ describe("Mot de passe oublié", () => {
     expect((await reset("inconnu", "Nouveau-mdp-456")).status).toBe(404);
   });
 
-  it("une minute minimum entre deux demandes", async () => {
+  it("une minute minimum entre deux demandes, sans le révéler (même réponse qu'une adresse inconnue)", async () => {
     await forgot(EMAIL);
-    expect((await forgot(EMAIL)).status).toBe(429);
+    const second = await forgot(EMAIL);
+    expect(second.status).toBe(200);
+    expect(second.body).toEqual((await forgot("inconnu@test.local")).body);
     expect(sendPasswordResetEmail).toHaveBeenCalledTimes(1);
   });
 

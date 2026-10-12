@@ -1,10 +1,12 @@
 import { Router } from "express";
-import { and, desc, eq, gte, inArray } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { appointments, members, relayEvents, relayTasks, users } from "../db/schema.js";
 import { requireFamilyMembership } from "../middleware/auth.js";
 import { ACCESS, getFamilyAccess } from "../lib/documentAccess.js";
-import { markRelayNotified, markRelayUnreachable } from "../reminders/village.js";
+import { isTaskStale, markRelayNotified, markRelayUnreachable } from "../reminders/village.js";
+import { familyIdFromQuery } from "../lib/familyResolvers.js";
+import { INVALID_ID, parseId } from "../lib/validation.js";
 
 // Onglet Village (UC-28 à 42). Le gestionnaire (accès complet) voit tout :
 // téléphone, motif, historique. Le relais ne voit que les rappels escaladés
@@ -13,13 +15,13 @@ const router = Router();
 
 const HISTORY_DAYS = 60;
 
-router.get("/", requireFamilyMembership((req) => parseInt(req.query.familyId) || null), async (req, res) => {
+router.get("/", requireFamilyMembership(familyIdFromQuery), async (req, res) => {
   try {
     const access = await getFamilyAccess(req);
     const relatives = await db
       .select()
       .from(members)
-      .where(and(eq(members.familyId, req.familyId), eq(members.status, "non_connecte")))
+      .where(and(eq(members.familyId, req.familyId), eq(members.status, "non_connecte"), isNull(members.archivedAt)))
       .orderBy(members.id);
     const visible = relatives.filter((m) => [ACCESS.FULL, ACCESS.RELAY].includes(access.get(m.id)));
     if (visible.length === 0) return res.json([]);
@@ -81,14 +83,19 @@ router.get("/", requireFamilyMembership((req) => parseInt(req.query.familyId) ||
 });
 
 // Charge la tâche et vérifie que le compte peut agir dessus : gestionnaire
-// (accès complet à la fiche) ou relais d'une tâche escaladée.
+// (accès complet à la fiche) ou relais d'une tâche escaladée. Une tâche
+// périmée (rendez-vous passé, annulé ou déplacé) n'accepte plus de réponse.
 function withTask(action) {
   return [
     async (req, res, next) => {
       try {
-        const [task] = await db.select().from(relayTasks).where(eq(relayTasks.id, parseInt(req.params.id)));
+        const id = parseId(req.params.id);
+        if (!id) return res.status(400).json({ error: INVALID_ID });
+        const [task] = await db.select().from(relayTasks).where(eq(relayTasks.id, id));
         if (!task) return res.status(404).json({ error: "Rappel introuvable" });
+        const [appointment] = await db.select().from(appointments).where(eq(appointments.id, task.appointmentId));
         req.task = task;
+        req.appointment = appointment ?? null;
         next();
       } catch (error) {
         console.error(error);
@@ -102,6 +109,9 @@ function withTask(action) {
         const isManager = level === ACCESS.FULL;
         const isRelay = level === ACCESS.RELAY && !!req.task.escalatedAt;
         if (!isManager && !isRelay) return res.status(403).json({ error: "Vous ne pouvez pas agir sur ce rappel" });
+        if (!req.task.notifiedAt && isTaskStale(req.task, req.appointment)) {
+          return res.status(409).json({ error: "Ce rappel n'est plus d'actualité : le rendez-vous est passé, annulé ou déplacé" });
+        }
         await action(req, res);
       } catch (error) {
         console.error(error);

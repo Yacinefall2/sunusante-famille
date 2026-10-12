@@ -5,12 +5,13 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      # Obligatoire (fichier .env) : pas de mot de passe par défaut connu de tous.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?La variable POSTGRES_PASSWORD est requise — voir .env.example}
       POSTGRES_DB: ${POSTGRES_DB:-santefamille}
     volumes:
       - db_data:/var/lib/postgresql/data
-    # Accessible depuis cette machine seulement (outils de débogage) : jamais
-    # depuis le réseau, où le mot de passe par défaut serait une porte ouverte.
+    # Accessible depuis cette machine seulement (outils de débogage), jamais
+    # depuis le réseau.
     ports:
       - "127.0.0.1:${DB_HOST_PORT:-5432}:5432"
     healthcheck:
@@ -44,7 +45,7 @@ services:
     restart: unless-stopped
     environment:
       PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@santefamille.com}
-      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:?La variable PGADMIN_PASSWORD est requise — voir .env.example}
     depends_on:
       db:
         condition: service_healthy
@@ -62,19 +63,35 @@ services:
       - "127.0.0.1:${MAILHOG_SMTP_PORT:-1025}:1025" # serveur SMTP (utilisé par le backend)
       - "127.0.0.1:${MAILHOG_UI_PORT:-8025}:8025" # interface web pour consulter les emails "envoyés"
 
+  # Le backend tourne sous l'utilisateur « node » (non root) : ce service
+  # d'une seconde, lancé avant lui, rend le volume des fichiers téléversés
+  # inscriptible par cet utilisateur (utile pour un volume créé par une
+  # version précédente, quand le backend tournait en root).
+  uploads-permissions:
+    build: ./Backend
+    container_name: santefamille-uploads-permissions
+    user: root
+    entrypoint: ["chown", "-R", "node:node", "/app/uploads"]
+    restart: "no"
+    volumes:
+      - uploads_data:/app/uploads
+
   backend:
     build: ./Backend
     container_name: santefamille-backend
     restart: unless-stopped
     environment: &backend-env
       PORT: 4000
+      # production par défaut (image Docker). Impose des secrets JWT forts et
+      # COOKIE_SECURE=true (voir DOCUMENTATION.md, « Sécurité en production »).
+      NODE_ENV: ${NODE_ENV:-production}
       APP_TIMEZONE: ${APP_TIMEZONE:-Africa/Dakar}
       MAIL_WEBHOOK_SECRET: ${MAIL_WEBHOOK_SECRET:-}
-      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-santefamille}
-      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:8080}
+      EMERGENCY_TOKEN_KEY: ${EMERGENCY_TOKEN_KEY:-}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?La variable POSTGRES_PASSWORD est requise — voir .env.example}@db:5432/${POSTGRES_DB:-santefamille}
       JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?La variable JWT_ACCESS_SECRET est requise — voir .env.example}
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?La variable JWT_REFRESH_SECRET est requise — voir .env.example}
-      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
       SMTP_HOST: ${SMTP_HOST:-mailhog}
       SMTP_PORT: ${SMTP_PORT:-1025}
       SMTP_SECURE: ${SMTP_SECURE:-false}
@@ -85,6 +102,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      uploads-permissions:
+        condition: service_completed_successfully
     # Le navigateur passe par le frontend (/api) : l'API n'est ouverte
     # directement que sur cette machine.
     ports:

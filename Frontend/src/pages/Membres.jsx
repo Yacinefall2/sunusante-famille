@@ -6,7 +6,8 @@ import { Badge } from "../components/ui/Badge";
 import { MemberAvatar } from "../components/members/MemberAvatar";
 import { MemberFormModal } from "../components/members/MemberFormModal";
 import { Link } from "react-router-dom";
-import { Plus, Loader2, Users, Info, ChevronDown, UserX, UserCircle, AlertCircle } from "lucide-react";
+import { Plus, Loader2, Users, Info, ChevronDown, UserX, UserCircle, AlertCircle, Archive, Trash2 } from "lucide-react";
+import toast from "react-hot-toast";
 import {
   accountRoleLabel,
   familyRoleBadgeVariant,
@@ -32,7 +33,32 @@ export default function MembresPage() {
     myMember,
     canWriteMember,
     membersLoading: loading,
+    reloadMembers,
+    archivedMembers,
   } = useFamily();
+  // Les fiches archivées sont tenues à part par le contexte (FamilyContext).
+  const activeMembers = members;
+  const [deletingId, setDeletingId] = useState(null);
+
+  const deleteArchived = async (m) => {
+    if (
+      !confirm(
+        `Supprimer définitivement la fiche archivée de ${m.firstName} ${m.lastName} ? Toutes ses données médicales seront effacées, et la personne ne les retrouvera pas si elle revient.`
+      )
+    )
+      return;
+    setDeletingId(m.id);
+    try {
+      const res = await fetch(`/api/members?id=${m.id}`, { method: "DELETE" });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "Suppression impossible");
+      toast.success("Fiche archivée supprimée");
+      await reloadMembers();
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setDeletingId(null);
+    }
+  };
   const [household, setHousehold] = useState(null);
   const [showInfo, setShowInfo] = useState(false);
   const [showForm, setShowForm] = useState(false);
@@ -56,7 +82,7 @@ export default function MembresPage() {
     loadHousehold();
   }, [loadHousehold, members]);
 
-  const membersCount = household?.membersCount ?? members.length;
+  const membersCount = household?.membersCount ?? activeMembers.length;
   const accountsCount = household?.accountsCount ?? members.filter((m) => m.account).length;
   const withoutFiche = household?.accountsWithoutFiche ?? [];
 
@@ -116,7 +142,7 @@ export default function MembresPage() {
                 village sans smartphone…).
               </li>
               <li>
-                <strong>Compte</strong> : un accès à l'application (email + mot de passe), avec un rôle dans la
+                <strong>Compte</strong> : un accès à l'application (adresse courriel + mot de passe), avec un rôle dans la
                 famille.
               </li>
               <li>
@@ -131,7 +157,7 @@ export default function MembresPage() {
           <div className="flex justify-center py-20">
             <Loader2 className="animate-spin text-teal-600" size={36} />
           </div>
-        ) : members.length === 0 ? (
+        ) : activeMembers.length === 0 ? (
           <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-16 text-center">
             <div className="w-20 h-20 bg-teal-50 rounded-2xl flex items-center justify-center mx-auto mb-4">
               <Users size={36} className="text-teal-400" />
@@ -147,7 +173,7 @@ export default function MembresPage() {
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {members.map((m) => {
+            {activeMembers.map((m) => {
               return (
                 <div key={m.id} className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 flex flex-col gap-3">
                   <div className="flex items-start justify-between gap-2">
@@ -215,6 +241,48 @@ export default function MembresPage() {
                 </div>
               );
             })}
+          </div>
+        )}
+
+        {/* Fiches archivées : la personne a quitté la famille ; sa fiche est gelée */}
+        {archivedMembers.length > 0 && (
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+            <div className="px-6 py-4 border-b border-gray-100">
+              <div className="flex items-center gap-2">
+                <Archive size={16} className="text-gray-500" />
+                <h3 className="font-bold text-gray-800 text-sm">Fiches archivées</h3>
+              </div>
+              <p className="text-xs text-gray-500 mt-1">
+                Ces personnes ont quitté la famille. Leur dossier médical est gelé : personne ne peut le consulter. Elles
+                le retrouveront si elles reviennent dans la famille.
+              </p>
+            </div>
+            <div className="divide-y divide-gray-50">
+              {archivedMembers.map((m) => (
+                <div key={m.id} className="px-6 py-4 flex items-center gap-4 flex-wrap">
+                  <div className="w-10 h-10 rounded-full bg-gray-200 flex items-center justify-center text-gray-500 flex-shrink-0">
+                    <Archive size={16} />
+                  </div>
+                  <div className="flex-1 min-w-[160px]">
+                    <p className="font-semibold text-gray-700 text-sm">
+                      {m.firstName} {m.lastName}
+                    </p>
+                    <p className="text-xs text-gray-400 italic">Fiche archivée</p>
+                  </div>
+                  {isPrimaryAdmin && (
+                    <Button
+                      variant="ghost"
+                      className="text-red-600 hover:bg-red-50"
+                      onClick={() => deleteArchived(m)}
+                      loading={deletingId === m.id}
+                    >
+                      <Trash2 size={15} />
+                      Supprimer définitivement
+                    </Button>
+                  )}
+                </div>
+              ))}
+            </div>
           </div>
         )}
 

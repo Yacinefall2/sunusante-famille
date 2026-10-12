@@ -55,6 +55,13 @@ export const members = pgTable("members", {
   // (grand_parent), le frère ou la sœur (oncle_tante) ; l'enfant dont c'est
   // l'enfant (petit_enfant)… Optionnel.
   kinshipRelatedMemberId: integer("kinship_related_member_id").references(() => members.id, { onDelete: "set null" }),
+  // Fiche archivée (gelée) : le compte adulte qui en était le titulaire a
+  // quitté la famille (retiré de l'espace ou compte supprimé). Plus aucun
+  // accès pour personne, plus de rappels ; seul A1 peut la supprimer. Elle
+  // est rendue à son ancien titulaire s'il rejoint de nouveau la famille
+  // (lib/archive.js).
+  archivedAt: timestamp("archived_at"),
+  archivedUserId: integer("archived_user_id").references(() => users.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -229,7 +236,6 @@ export const familyMemberships = pgTable("family_memberships", {
   uniqueIndex("family_memberships_linked_member_uq").on(t.linkedMemberId).where(sql`${t.linkedMemberId} is not null`),
 ]);
 
-// ── Refresh tokens (permet la révocation au logout + la rotation) ────────────
 // ── Jetons de réinitialisation du mot de passe ───────────────────────────────
 // Lien « Mot de passe oublié » : à usage unique, valable 1 heure ; seule
 // l'empreinte du jeton est conservée. Une nouvelle demande annule les
@@ -261,6 +267,7 @@ export const emailChangeTokens = pgTable("email_change_tokens", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
+// ── Refresh tokens (permet la révocation au logout + la rotation) ────────────
 export const refreshTokens = pgTable("refresh_tokens", {
   id: serial("id").primaryKey(),
   userId: integer("user_id")
@@ -336,6 +343,8 @@ export const notifications = pgTable(
     familyId: integer("family_id").references(() => families.id, { onDelete: "cascade" }),
     memberId: integer("member_id").references(() => members.id, { onDelete: "cascade" }),
     // appointment_reminder | medication_intake | vaccine_reminder | delivery_failure
+    // | relay_to_relay | relay_escalation | relay_alert | relay_update (Village)
+    // | doctor_share | emergency_view (partage) — voir lib/notificationPreferences.js
     category: varchar("category", { length: 40 }).notNull(),
     dedupeKey: varchar("dedupe_key", { length: 200 }).notNull(),
     title: varchar("title", { length: 255 }).notNull(),
@@ -401,14 +410,16 @@ export const relayTasks = pgTable(
     // « Prévenu » : clôt la tâche pour tout le monde (gestionnaire ou relais)
     notifiedAt: timestamp("notified_at"),
     notifiedByUserId: integer("notified_by_user_id").references(() => users.id, { onDelete: "set null" }),
-    // J+1 : demande au gestionnaire si le proche s'est rendu au rendez-vous
+    // 12 h après le rendez-vous (ATTENDANCE_PROMPT_AFTER) : demande au
+    // gestionnaire si le proche s'y est rendu
     attendancePromptAt: timestamp("attendance_prompt_at"),
   },
   (t) => [uniqueIndex("relay_tasks_appointment_date_uq").on(t.appointmentId, t.appointmentDate)]
 );
 
 // Historique horodaté des relais (UC-36, §10 « Traçabilité »).
-// type : to_relay | follow_up | escalated | notified | unreachable | attended | missed
+// type : to_relay | follow_up | escalated | no_relay | notified | unreachable |
+//        attended | missed | cancelled | moved (rendez-vous annulé ou déplacé)
 export const relayEvents = pgTable("relay_events", {
   id: serial("id").primaryKey(),
   taskId: integer("task_id")
@@ -442,7 +453,8 @@ export const doctorShares = pgTable("doctor_shares", {
   // jamais affiché à la famille. Vide pour les liens créés avant ce choix.
   doctorEmail: varchar("doctor_email", { length: 255 }),
   expiresAt: timestamp("expires_at").notNull(),
-  // Plus de révocation depuis l'application ; conservé pour les anciens liens.
+  // Révocation depuis l'application (routes/doctorShares.js) : le lien cesse
+  // de fonctionner immédiatement, même déjà ouvert.
   revokedAt: timestamp("revoked_at"),
   consumedAt: timestamp("consumed_at"),
   sessionHash: varchar("session_hash", { length: 64 }),
@@ -455,13 +467,21 @@ export const doctorShares = pgTable("doctor_shares", {
 // d'un proche sans compte) n'a pas coché chaque information et activé la
 // fiche. Le jeton est imprimé dans le QR code : le régénérer invalide
 // l'ancienne carte.
+//
+// Le jeton n'est plus stocké en clair : son empreinte SHA-256 (token_hash)
+// sert à retrouver la fiche depuis le QR code, et une copie chiffrée
+// (token_encrypted, AES-256-GCM, voir lib/sharing.js) permet au titulaire de
+// réafficher son QR code. La colonne token ne contient plus que d'anciens
+// jetons en attente de conversion (faite par l'application), puis NULL.
 export const emergencyCards = pgTable("emergency_cards", {
   id: serial("id").primaryKey(),
   memberId: integer("member_id")
     .references(() => members.id, { onDelete: "cascade" })
     .notNull()
     .unique(),
-  token: varchar("token", { length: 64 }).notNull().unique(),
+  token: varchar("token", { length: 64 }).unique(),
+  tokenHash: varchar("token_hash", { length: 64 }).notNull().unique(),
+  tokenEncrypted: text("token_encrypted"),
   active: boolean("active").default(false).notNull(),
   showAge: boolean("show_age").default(false).notNull(),
   showBloodType: boolean("show_blood_type").default(false).notNull(),

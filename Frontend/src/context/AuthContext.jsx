@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useState, useCallback } from "react";
+import { SESSION_EXPIRED_EVENT, isSessionStale, markSessionFresh, refreshSession } from "../lib/session";
 
 const AuthContext = createContext(null);
 
@@ -8,12 +9,20 @@ export function AuthProvider({ children }) {
 
   const loadMe = useCallback(async () => {
     try {
-      const res = await fetch("/api/auth/me");
+      // L'intercepteur global est désactivé ici : en cas de 401 (access
+      // token expiré pendant une veille), on tente explicitement un
+      // renouvellement puis on réessaie avant de conclure « déconnecté ».
+      let res = await fetch("/api/auth/me", { skipAuthRefresh: true });
+      if (res.status === 401 && (await refreshSession()) === "ok") {
+        res = await fetch("/api/auth/me", { skipAuthRefresh: true });
+      }
       if (res.ok) {
         setUser(await res.json());
       } else {
         setUser(null);
       }
+    } catch {
+      setUser(null);
     } finally {
       setLoading(false);
     }
@@ -23,15 +32,35 @@ export function AuthProvider({ children }) {
     loadMe();
   }, [loadMe]);
 
+  // Session impossible à renouveler (signalée par l'intercepteur fetch) :
+  // l'utilisateur repasse en « déconnecté » et sera renvoyé vers la connexion.
+  useEffect(() => {
+    const onExpired = () => setUser(null);
+    window.addEventListener(SESSION_EXPIRED_EVENT, onExpired);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, onExpired);
+  }, []);
+
   // Renouvelle l'access token (15 min) toutes les 10 minutes, tant qu'une
   // session est active, pour garder l'utilisateur connecté sans qu'il s'en
   // rende compte (le refresh token, lui, dure 30 jours).
   useEffect(() => {
     if (!user) return;
     const interval = setInterval(() => {
-      fetch("/api/auth/refresh", { method: "POST" }).catch(() => {});
+      refreshSession();
     }, 10 * 60 * 1000);
-    return () => clearInterval(interval);
+    // Après une mise en veille ou une coupure réseau, les minuteries ont pu
+    // être suspendues : on renouvelle dès le retour sur l'onglet ou le retour
+    // de la connexion si le dernier renouvellement date de plus de 10 min.
+    const refreshIfStale = () => {
+      if (document.visibilityState === "visible" && isSessionStale()) refreshSession();
+    };
+    document.addEventListener("visibilitychange", refreshIfStale);
+    window.addEventListener("online", refreshIfStale);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", refreshIfStale);
+      window.removeEventListener("online", refreshIfStale);
+    };
   }, [user]);
 
   const login = async (email, password) => {
@@ -45,6 +74,7 @@ export function AuthProvider({ children }) {
       throw new Error(err.error || "Échec de la connexion");
     }
     const data = await res.json();
+    markSessionFresh();
     setUser(data);
     return data;
   };
@@ -84,13 +114,21 @@ export function AuthProvider({ children }) {
       throw new Error(err.error || "Lien de vérification invalide");
     }
     const data = await res.json();
+    markSessionFresh();
     setUser(data);
     return data;
   };
 
+  // La session locale est fermée même si l'appel réseau échoue (hors ligne,
+  // serveur indisponible).
   const logout = async () => {
-    await fetch("/api/auth/logout", { method: "POST" });
-    setUser(null);
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+    } catch {
+      // ignoré : l'interface repasse « déconnectée » quoi qu'il arrive
+    } finally {
+      setUser(null);
+    }
   };
 
   return (

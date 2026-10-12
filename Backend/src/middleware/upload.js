@@ -40,19 +40,53 @@ const storage = multer.diskStorage({
   filename: (req, file, cb) => cb(null, `${crypto.randomUUID()}${ALLOWED_TYPES[file.mimetype]}`),
 });
 
-function fileFilter(req, file, cb) {
-  if (ALLOWED_TYPES[file.mimetype]) {
-    cb(null, true);
-  } else {
-    cb(new Error("Type de fichier non autorisé (PDF, image ou document Word uniquement)"));
+// Erreur de téléversement avec son code HTTP, renvoyée telle quelle en JSON.
+export class UploadRefused extends Error {
+  constructor(status, message) {
+    super(message);
+    this.status = status;
   }
 }
 
-const upload = multer({
-  storage,
-  fileFilter,
-  limits: { fileSize: 15 * 1024 * 1024 }, // 15 Mo max par fichier
-});
+// Contrôle du type, puis contrôle d'accès éventuel (option `authorize` de
+// uploadSingle) AVANT que le fichier ne soit écrit sur le disque. Multer lit
+// le formulaire dans l'ordre d'envoi : les champs placés avant le fichier
+// (memberId...) sont déjà dans req.body à ce moment-là.
+function fileFilterWith(authorize) {
+  return (req, file, cb) => {
+    if (!ALLOWED_TYPES[file.mimetype]) {
+      return cb(new UploadRefused(400, "Type de fichier non autorisé (PDF, image ou document Word uniquement)"));
+    }
+    if (!authorize) return cb(null, true);
+    Promise.resolve(authorize(req, file))
+      .then((refusal) => (refusal ? cb(new UploadRefused(refusal.status, refusal.error)) : cb(null, true)))
+      .catch((error) => cb(Object.assign(error, { serverError: true })));
+  };
+}
+
+export const MAX_FILE_SIZE = 15 * 1024 * 1024; // 15 Mo max par fichier
+
+// Bornes du formulaire multipart : un seul fichier, quelques champs courts.
+// Sans elles, une requête pourrait envoyer des milliers de champs ou des
+// champs énormes (gardés en mémoire) pour épuiser le serveur.
+const LIMITS = {
+  fileSize: MAX_FILE_SIZE,
+  files: 1,
+  fields: 20,
+  fieldNameSize: 100,
+  fieldSize: 64 * 1024, // 64 Ko par champ (titre, description...)
+  parts: 25,
+};
+
+const LIMIT_MESSAGES = {
+  LIMIT_FILE_SIZE: "Le fichier dépasse la taille maximale de 15 Mo",
+  LIMIT_FILE_COUNT: "Un seul fichier par document",
+  LIMIT_UNEXPECTED_FILE: "Un seul fichier par document",
+  LIMIT_FIELD_COUNT: "Formulaire invalide : trop de champs",
+  LIMIT_PART_COUNT: "Formulaire invalide : trop de champs",
+  LIMIT_FIELD_KEY: "Formulaire invalide : nom de champ trop long",
+  LIMIT_FIELD_VALUE: "Un champ du formulaire est trop long",
+};
 
 function matchesSignature(file) {
   const head = Buffer.alloc(16);
@@ -68,17 +102,27 @@ function matchesSignature(file) {
 // Téléversement d'un fichier (champ `field`) : erreurs renvoyées en JSON,
 // contenu vérifié, et fichier effacé si la requête n'aboutit pas (refus
 // d'accès, données manquantes...) pour ne pas laisser d'orphelins sur le disque.
-export function uploadSingle(field) {
-  const handler = upload.single(field);
+// Option `authorize(req, file)` : contrôle (accès, quota) fait avant
+// l'écriture du fichier ; renvoie { status, error } pour refuser, ou rien.
+export function uploadSingle(field, { authorize } = {}) {
+  const handler = multer({ storage, fileFilter: fileFilterWith(authorize), limits: LIMITS }).single(field);
   return (req, res, next) => {
     res.on("finish", () => {
       if (req.file && res.statusCode >= 300) fs.unlink(req.file.path, () => {});
     });
     handler(req, res, (err) => {
       if (err) {
-        const message =
-          err.code === "LIMIT_FILE_SIZE" ? "Le fichier dépasse la taille maximale de 15 Mo" : err.message || "Fichier refusé";
-        return res.status(400).json({ error: message });
+        if (err instanceof UploadRefused) return res.status(err.status).json({ error: err.message });
+        if (err instanceof multer.MulterError) {
+          const status = err.code === "LIMIT_FILE_SIZE" ? 413 : 400;
+          return res.status(status).json({ error: LIMIT_MESSAGES[err.code] ?? "Formulaire de téléversement invalide" });
+        }
+        if (err.serverError) {
+          console.error(err);
+          return res.status(500).json({ error: "Erreur serveur" });
+        }
+        // Formulaire tronqué ou mal formé (erreur du lecteur multipart).
+        return res.status(400).json({ error: "Formulaire de téléversement invalide" });
       }
       if (req.file && !matchesSignature(req.file)) {
         return res.status(400).json({ error: "Le contenu du fichier ne correspond pas à son type (PDF, image ou document Word)" });

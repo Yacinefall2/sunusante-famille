@@ -4,7 +4,19 @@ import { ACCESS_TOKEN_TTL_MS, REFRESH_TOKEN_TTL_MS } from "./jwt.js";
 // Cookies de session (jetons d'accès et de rafraîchissement), communs aux
 // routes d'authentification et de gestion du compte. SameSite=Strict : jamais
 // envoyés par une requête venue d'un autre site, même voisin.
-const COOKIE_SECURE = process.env.COOKIE_SECURE === "true";
+export const COOKIE_SECURE = process.env.COOKIE_SECURE === "true";
+
+// En production, les cookies de session doivent voyager uniquement en HTTPS
+// (attribut Secure) : sinon un réseau Wi-Fi public suffit à voler une session
+// et donc l'accès à des dossiers médicaux. Le serveur refuse de démarrer.
+// En local sur http://localhost, COOKIE_SECURE=true fonctionne aussi : les
+// navigateurs considèrent localhost comme une origine sûre.
+if (process.env.NODE_ENV === "production" && !COOKIE_SECURE) {
+  throw new Error(
+    "COOKIE_SECURE doit valoir \"true\" en production (NODE_ENV=production) : servez l'application en HTTPS. " +
+      "Pour un essai local en HTTP sur une autre adresse que localhost, définissez NODE_ENV=development."
+  );
+}
 
 export function setAuthCookies(res, accessToken, refreshToken) {
   res.cookie("access_token", accessToken, {

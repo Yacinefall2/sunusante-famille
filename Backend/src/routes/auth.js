@@ -5,7 +5,15 @@ import { users, refreshTokens, emailVerificationTokens, passwordResetTokens, ema
 import { hashPassword, comparePassword } from "../lib/password.js";
 import { generateToken } from "../lib/token.js";
 import { sendAccountExistsEmail, sendPasswordChangedAlert, sendPasswordResetEmail, sendVerificationEmail } from "../lib/mailer.js";
-import { clearFailures, lockedMinutes, recordFailure } from "../lib/loginThrottle.js";
+import {
+  clearEmail,
+  clearFailures,
+  lockedMinutes,
+  normalizeEmail,
+  recordFailure,
+  tooManyAttemptsMessage,
+} from "../lib/loginThrottle.js";
+import { WindowCounter, ipRateLimit } from "../lib/rateLimit.js";
 import {
   signAccessToken,
   signRefreshToken,
@@ -19,12 +27,40 @@ import { clearAuthCookies, hashToken, setAuthCookies } from "../lib/session.js";
 const router = Router();
 
 const VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000; // 24 heures
-const RESEND_MIN_INTERVAL_MS = 60 * 1000; // délai minimal entre deux renvois (UC-62)
+const RESEND_MIN_INTERVAL_MS = 60 * 1000; // délai minimal entre deux envois à une même adresse (UC-62)
 const PASSWORD_RESET_TTL_MS = 60 * 60 * 1000; // 1 heure
 const MIN_PASSWORD_LENGTH = 8;
+const MAX_NAME_LENGTH = 150;
 // Un jeton de rafraîchissement remplacé il y a peu peut légitimement revenir
 // (deux onglets qui renouvellent en même temps) ; au-delà, c'est suspect.
 const REUSE_GRACE_MS = 60 * 1000;
+
+// Limite par adresse IP des routes qui envoient un courriel ou vérifient un
+// secret (mot de passe, lien reçu) : freine les robots (inscriptions en masse,
+// essais de mots de passe, envois de courriels vers des tiers). Large, car un
+// opérateur mobile peut faire sortir beaucoup d'abonnés par la même adresse IP.
+export const AUTH_IP_LIMIT = 100;
+export const AUTH_IP_WINDOW_MS = 15 * 60 * 1000;
+const authIpLimit = ipRateLimit({
+  windowMs: AUTH_IP_WINDOW_MS,
+  max: AUTH_IP_LIMIT,
+  message: "Trop de requêtes depuis votre connexion. Réessayez dans quelques minutes.",
+});
+
+// Courriel « vous avez déjà un compte » : au plus un par minute et par
+// adresse (pas de table pour s'en souvenir : compteur en mémoire, borné).
+const accountExistsNotices = new WindowCounter({ windowMs: RESEND_MIN_INTERVAL_MS, max: 1 });
+
+// Empreinte bcrypt d'un mot de passe aléatoire : comparée quand le compte
+// n'existe pas, pour que la réponse prenne le même temps qu'avec un compte
+// existant (sinon la durée révélerait quelles adresses sont inscrites).
+let dummyHashPromise;
+const dummyHash = () => (dummyHashPromise ??= hashPassword(generateToken()));
+
+// Date arrondie à la seconde inférieure : les jetons d'accès émis avant (champ
+// iat, en secondes) sont refusés par requireAuth, ceux émis juste après
+// restent valables.
+const secondFloor = () => new Date(Math.floor(Date.now() / 1000) * 1000);
 
 // Crée un nouveau jeton de vérification pour un utilisateur et envoie le
 // courriel — utilisé à la fois par /register et par /resend-verification.
@@ -39,27 +75,76 @@ async function issueVerificationEmail(user) {
   await sendVerificationEmail({ to: user.email, name: user.name, token });
 }
 
+// Un courriel de vérification est-il parti vers ce compte il y a moins d'une minute ?
+async function verificationSentRecently(userId) {
+  const [recent] = await db
+    .select({ createdAt: emailVerificationTokens.createdAt })
+    .from(emailVerificationTokens)
+    .where(and(eq(emailVerificationTokens.userId, userId), isNull(emailVerificationTokens.consumedAt)))
+    .orderBy(desc(emailVerificationTokens.createdAt))
+    .limit(1);
+  return Boolean(recent && Date.now() - new Date(recent.createdAt).getTime() < RESEND_MIN_INTERVAL_MS);
+}
+
+// Ferme toutes les sessions ouvertes d'un compte.
+async function revokeSessions(userId, at = new Date()) {
+  await db
+    .update(refreshTokens)
+    .set({ revokedAt: at })
+    .where(and(eq(refreshTokens.userId, userId), isNull(refreshTokens.revokedAt)));
+}
+
 // Inscription — le compte naît NON vérifié (§6.1) : il n'a accès à rien tant
 // que le lien reçu par courriel n'a pas été suivi. Aucune session n'est
 // ouverte ici ; le frontend affiche l'écran d'attente à la place.
-router.post("/register", async (req, res) => {
+router.post("/register", authIpLimit, async (req, res) => {
   try {
-    const { name, email, password } = req.body;
-    if (!name?.trim() || !email?.trim() || !password || password.length < 8) {
+    const { name, password } = req.body;
+    const normalizedEmail = normalizeEmail(req.body.email);
+    if (typeof name !== "string" || !name.trim() || !normalizedEmail || typeof password !== "string" || password.length < MIN_PASSWORD_LENGTH) {
       return res.status(400).json({ error: "Nom, email et mot de passe (8 caractères min.) requis" });
     }
-
-    const normalizedEmail = email.toLowerCase().trim();
-    // Adresse déjà inscrite : même réponse qu'une inscription réussie, pour ne
-    // pas révéler qui a un compte ; la personne est prévenue par courriel.
-    const [existing] = await db.select().from(users).where(eq(users.email, normalizedEmail));
-    if (existing) {
-      if (existing.emailVerified) await sendAccountExistsEmail({ to: existing.email, name: existing.name });
-      else await issueVerificationEmail(existing);
-      return res.status(201).json({ status: "pending_verification", email: existing.email });
+    if (name.trim().length > MAX_NAME_LENGTH) {
+      return res.status(400).json({ error: `Le nom ne doit pas dépasser ${MAX_NAME_LENGTH} caractères` });
     }
 
+    // Toujours calculée, même si l'adresse existe : la durée de la réponse ne
+    // trahit pas les comptes existants.
     const passwordHash = await hashPassword(password);
+    // Réponse identique dans tous les cas, pour ne pas révéler qui a un compte.
+    const response = { status: "pending_verification", email: normalizedEmail };
+
+    const [existing] = await db.select().from(users).where(eq(users.email, normalizedEmail));
+    if (existing?.emailVerified) {
+      // Adresse déjà inscrite et vérifiée : la personne est prévenue par
+      // courriel (au plus une fois par minute), son compte ne change pas.
+      if (!accountExistsNotices.blockedMs(normalizedEmail)) {
+        accountExistsNotices.add(normalizedEmail);
+        await sendAccountExistsEmail({ to: existing.email, name: existing.name });
+      }
+      return res.status(201).json(response);
+    }
+    if (existing) {
+      // Adresse inscrite mais jamais vérifiée : quelqu'un a pu l'inscrire à la
+      // place de sa propriétaire (pré-détournement de compte). La nouvelle
+      // inscription REMPLACE nom et mot de passe, et les liens de
+      // vérification et sessions précédents sont annulés : seule la dernière
+      // personne inscrite — celle qui reçoit le courriel — contrôle le compte.
+      // Même délai minimal entre deux envois que /resend-verification.
+      if (await verificationSentRecently(existing.id)) return res.status(201).json(response);
+      const now = secondFloor();
+      const [updated] = await db
+        .update(users)
+        .set({ name: name.trim(), passwordHash, passwordChangedAt: now })
+        .where(and(eq(users.id, existing.id), eq(users.emailVerified, false)))
+        .returning();
+      if (!updated) return res.status(201).json(response); // vérifiée entre-temps
+      await db.delete(emailVerificationTokens).where(eq(emailVerificationTokens.userId, existing.id));
+      await revokeSessions(existing.id, now);
+      await issueVerificationEmail(updated);
+      return res.status(201).json(response);
+    }
+
     const [user] = await db
       .insert(users)
       .values({ name: name.trim(), email: normalizedEmail, passwordHash })
@@ -67,7 +152,7 @@ router.post("/register", async (req, res) => {
 
     await issueVerificationEmail(user);
 
-    res.status(201).json({ status: "pending_verification", email: user.email });
+    res.status(201).json(response);
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Erreur serveur" });
@@ -76,30 +161,19 @@ router.post("/register", async (req, res) => {
 
 // Renvoyer le courriel de vérification — seule action possible depuis
 // l'écran "compte en attente de vérification" (UC-62).
-router.post("/resend-verification", async (req, res) => {
+router.post("/resend-verification", authIpLimit, async (req, res) => {
   try {
-    const { email } = req.body;
-    if (!email?.trim()) return res.status(400).json({ error: "Email requis" });
+    const normalizedEmail = normalizeEmail(req.body.email);
+    if (!normalizedEmail) return res.status(400).json({ error: "Adresse courriel invalide" });
 
-    const normalizedEmail = email.toLowerCase().trim();
     const [user] = await db.select().from(users).where(eq(users.email, normalizedEmail));
-    // Réponse volontairement identique que le compte existe ou non, pour ne
-    // pas révéler quelles adresses sont enregistrées.
-    if (!user) return res.json({ success: true });
-
-    // Déjà vérifiée : rien à envoyer, même réponse (aucune information révélée).
-    if (user.emailVerified) return res.json({ success: true });
+    // Réponse volontairement identique dans tous les cas (compte inconnu, déjà
+    // vérifié, ou demande trop rapprochée de la précédente : rien n'est
+    // envoyé), pour ne pas révéler quelles adresses sont enregistrées.
+    if (!user || user.emailVerified) return res.json({ success: true });
 
     // Délai minimal entre deux envois — évite le spam accidentel du bouton.
-    const [recent] = await db
-      .select()
-      .from(emailVerificationTokens)
-      .where(and(eq(emailVerificationTokens.userId, user.id), isNull(emailVerificationTokens.consumedAt)))
-      .orderBy(desc(emailVerificationTokens.createdAt))
-      .limit(1);
-    if (recent && Date.now() - new Date(recent.createdAt).getTime() < RESEND_MIN_INTERVAL_MS) {
-      return res.status(429).json({ error: "Merci de patienter une minute avant de redemander un courriel" });
-    }
+    if (await verificationSentRecently(user.id)) return res.json({ success: true });
 
     await issueVerificationEmail(user);
     res.json({ success: true });
@@ -113,7 +187,7 @@ router.post("/resend-verification", async (req, res) => {
 // requise, puisque c'est précisément ce qui va en créer une). Marque
 // l'adresse vérifiée, active le compte, consomme le lien, puis connecte
 // automatiquement la personne (§6.1 étape 4).
-router.post("/verify-email/:token", async (req, res) => {
+router.post("/verify-email/:token", authIpLimit, async (req, res) => {
   try {
     const { token } = req.params;
     const [verification] = await db
@@ -127,14 +201,26 @@ router.post("/verify-email/:token", async (req, res) => {
       return res.status(410).json({ error: "Ce lien a expiré, demandez-en un nouveau" });
     }
 
+    // Consommation conditionnelle : deux clics simultanés, un seul passe.
+    const [claimed] = await db
+      .update(emailVerificationTokens)
+      .set({ consumedAt: new Date() })
+      .where(and(eq(emailVerificationTokens.id, verification.id), isNull(emailVerificationTokens.consumedAt)))
+      .returning();
+    if (!claimed) return res.status(409).json({ error: "Ce lien a déjà été utilisé" });
+
     const [user] = await db.select().from(users).where(eq(users.id, verification.userId));
     if (!user) return res.status(404).json({ error: "Compte introuvable" });
 
-    await db.update(users).set({ emailVerified: true }).where(eq(users.id, user.id));
+    // Sessions ouvertes avant la vérification (connexion permise sans adresse
+    // vérifiée) : fermées. Seule la session ouverte par ce lien subsiste.
+    const now = secondFloor();
+    const wasVerified = user.emailVerified;
     await db
-      .update(emailVerificationTokens)
-      .set({ consumedAt: new Date() })
-      .where(eq(emailVerificationTokens.id, verification.id));
+      .update(users)
+      .set(wasVerified ? { emailVerified: true } : { emailVerified: true, passwordChangedAt: now })
+      .where(eq(users.id, user.id));
+    if (!wasVerified) await revokeSessions(user.id, now);
 
     const accessToken = signAccessToken(user);
     const refreshToken = signRefreshToken(user);
@@ -152,31 +238,30 @@ router.post("/verify-email/:token", async (req, res) => {
   }
 });
 
-router.post("/login", async (req, res) => {
+router.post("/login", authIpLimit, async (req, res) => {
   try {
-    const { email, password } = req.body;
-    if (!email?.trim() || !password) {
+    const { password } = req.body;
+    if (typeof req.body.email !== "string" || !req.body.email.trim() || typeof password !== "string" || !password) {
       return res.status(400).json({ error: "Email et mot de passe requis" });
     }
+    const normalizedEmail = normalizeEmail(req.body.email);
+    if (!normalizedEmail) return res.status(400).json({ error: "Adresse courriel invalide" });
 
-    const normalizedEmail = email.toLowerCase().trim();
-    // Trop d'échecs récents sur cette adresse : refus, même avec le bon mot
-    // de passe, jusqu'à la fin de la fenêtre (protection contre l'essai de
-    // mots de passe en série).
-    const minutes = lockedMinutes(normalizedEmail);
-    if (minutes > 0) {
-      return res.status(429).json({
-        error: `Trop de tentatives. Réessayez dans ${minutes} minute${minutes > 1 ? "s" : ""}, ou utilisez « Mot de passe oublié ».`,
-      });
-    }
+    // Trop d'échecs récents (cette adresse, ou cette connexion) : refus, même
+    // avec le bon mot de passe, jusqu'à la fin du blocage (protection contre
+    // l'essai de mots de passe en série — voir lib/loginThrottle.js).
+    const minutes = lockedMinutes(normalizedEmail, req.ip);
+    if (minutes > 0) return res.status(429).json({ error: tooManyAttemptsMessage(minutes) });
 
     const [user] = await db.select().from(users).where(eq(users.email, normalizedEmail));
-    const valid = user ? await comparePassword(password, user.passwordHash) : false;
-    if (!valid) {
-      recordFailure(normalizedEmail);
+    // Compte inconnu : comparaison quand même, avec une empreinte factice, pour
+    // une durée de réponse identique.
+    const valid = await comparePassword(password, user ? user.passwordHash : await dummyHash());
+    if (!user || !valid) {
+      recordFailure(normalizedEmail, req.ip);
       return res.status(401).json({ error: "Identifiants invalides" });
     }
-    clearFailures(normalizedEmail);
+    clearFailures(normalizedEmail, req.ip);
 
     const accessToken = signAccessToken(user);
     const refreshToken = signRefreshToken(user);
@@ -199,16 +284,18 @@ router.post("/login", async (req, res) => {
 });
 
 // Mot de passe oublié : envoie un lien de réinitialisation. Réponse
-// identique que le compte existe ou non, pour ne pas révéler quelles
-// adresses sont enregistrées.
-router.post("/forgot-password", async (req, res) => {
+// identique que le compte existe ou non — et même quand une demande trop
+// rapprochée est ignorée —, pour ne pas révéler quelles adresses sont
+// enregistrées.
+router.post("/forgot-password", authIpLimit, async (req, res) => {
   try {
-    const normalizedEmail = String(req.body.email ?? "").toLowerCase().trim();
-    if (!normalizedEmail) return res.status(400).json({ error: "Email requis" });
+    const normalizedEmail = normalizeEmail(req.body.email);
+    if (!normalizedEmail) return res.status(400).json({ error: "Adresse courriel invalide" });
 
     const [user] = await db.select().from(users).where(eq(users.email, normalizedEmail));
     if (!user) return res.json({ success: true });
 
+    // Délai minimal entre deux envois : la demande est ignorée en silence.
     const [recent] = await db
       .select()
       .from(passwordResetTokens)
@@ -216,7 +303,7 @@ router.post("/forgot-password", async (req, res) => {
       .orderBy(desc(passwordResetTokens.createdAt))
       .limit(1);
     if (recent && Date.now() - new Date(recent.createdAt).getTime() < RESEND_MIN_INTERVAL_MS) {
-      return res.status(429).json({ error: "Merci de patienter une minute avant de redemander un courriel" });
+      return res.json({ success: true });
     }
 
     // Une nouvelle demande annule les liens encore valides.
@@ -243,7 +330,7 @@ router.post("/forgot-password", async (req, res) => {
 // Nouveau mot de passe via le lien reçu par courriel. Toutes les sessions
 // ouvertes sont fermées ; la personne se reconnecte avec le nouveau mot de
 // passe. Le lien prouvant l'accès à la boîte, l'adresse est tenue pour vérifiée.
-router.post("/reset-password/:token", async (req, res) => {
+router.post("/reset-password/:token", authIpLimit, async (req, res) => {
   try {
     const password = req.body.password;
     if (typeof password !== "string" || password.length < MIN_PASSWORD_LENGTH) {
@@ -273,11 +360,8 @@ router.post("/reset-password/:token", async (req, res) => {
       .set({ passwordHash, emailVerified: true, passwordChangedAt: now })
       .where(eq(users.id, reset.userId))
       .returning();
-    await db
-      .update(refreshTokens)
-      .set({ revokedAt: now })
-      .where(and(eq(refreshTokens.userId, reset.userId), isNull(refreshTokens.revokedAt)));
-    clearFailures(user.email);
+    await revokeSessions(reset.userId, now);
+    clearEmail(user.email);
     await sendPasswordChangedAlert(user);
 
     res.json({ success: true });
@@ -289,7 +373,7 @@ router.post("/reset-password/:token", async (req, res) => {
 
 // Confirmation d'une nouvelle adresse (lien envoyé à celle-ci depuis « Mon
 // compte »). Public : le lien suffit, comme pour la vérification initiale.
-router.post("/confirm-email-change/:token", async (req, res) => {
+router.post("/confirm-email-change/:token", authIpLimit, async (req, res) => {
   try {
     const [change] = await db
       .select()
@@ -302,20 +386,28 @@ router.post("/confirm-email-change/:token", async (req, res) => {
     const [taken] = await db.select({ id: users.id }).from(users).where(eq(users.email, change.newEmail));
     if (taken) return res.status(409).json({ error: "Un compte existe déjà avec cette adresse" });
 
+    const now = new Date();
     const [claimed] = await db
       .update(emailChangeTokens)
-      .set({ consumedAt: new Date() })
+      .set({ consumedAt: now })
       .where(and(eq(emailChangeTokens.id, change.id), isNull(emailChangeTokens.consumedAt)))
       .returning();
     if (!claimed) return res.status(409).json({ error: "Ce lien a déjà été utilisé" });
 
     await db.update(users).set({ email: change.newEmail, emailVerified: true }).where(eq(users.id, change.userId));
+    // Un lien « Mot de passe oublié » envoyé à l'ANCIENNE adresse ne doit plus
+    // permettre de reprendre le compte : les demandes en attente sont annulées.
+    await db
+      .update(passwordResetTokens)
+      .set({ consumedAt: now })
+      .where(and(eq(passwordResetTokens.userId, change.userId), isNull(passwordResetTokens.consumedAt)));
     res.json({ email: change.newEmail });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Erreur serveur" });
   }
 });
+
 
 // Renouvelle l'access token à partir du refresh token (rotation : l'ancien
 // refresh token est révoqué et remplacé par un nouveau à chaque appel).

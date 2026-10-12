@@ -28,6 +28,7 @@ import {
   getAppointmentStatus,
   getAttendance,
   attendanceLabel,
+  clickableCardProps,
 } from "../lib/utils";
 import toast from "react-hot-toast";
 
@@ -84,7 +85,16 @@ export default function RendezVousPage() {
     setLoading(true);
     try {
       const res = await fetch(`/api/appointments?familyId=${selectedFamily.id}`);
-      setAppointments(await res.json());
+      const data = await res.json().catch(() => null);
+      if (res.ok && Array.isArray(data)) {
+        setAppointments(data);
+      } else {
+        setAppointments([]);
+        toast.error(data?.error || "Erreur lors du chargement des rendez-vous");
+      }
+    } catch {
+      setAppointments([]);
+      toast.error("Erreur lors du chargement des rendez-vous");
     } finally {
       setLoading(false);
     }
@@ -390,7 +400,8 @@ export default function RendezVousPage() {
                   <div
                     key={appt.id}
                     onClick={() => setViewing(appt)}
-                    className="bg-white rounded-2xl shadow-sm border border-amber-100 p-5 hover:shadow-md transition-all duration-200 cursor-pointer"
+                    {...clickableCardProps(() => setViewing(appt))}
+                    className="bg-white rounded-2xl shadow-sm border border-amber-100 p-5 hover:shadow-md transition-all duration-200 cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
                     title="Cliquez pour voir les détails"
                   >
                     <div className="flex flex-col sm:flex-row sm:items-start gap-4">
@@ -426,7 +437,8 @@ export default function RendezVousPage() {
                 <div
                   key={appt.id}
                   onClick={() => setViewing(appt)}
-                  className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 hover:shadow-md transition-all duration-200 cursor-pointer"
+                  {...clickableCardProps(() => setViewing(appt))}
+                  className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 hover:shadow-md transition-all duration-200 cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
                   title="Cliquez pour voir les détails"
                 >
                   <div className="flex flex-col sm:flex-row sm:items-start gap-4">
@@ -450,12 +462,12 @@ export default function RendezVousPage() {
                         </div>
                         <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
                           {canManage(appt) && (
-                            <button onClick={() => openEdit(appt)} className="p-2 rounded-xl hover:bg-gray-100 text-gray-400 hover:text-teal-600 transition-colors">
+                            <button type="button" onClick={() => openEdit(appt)} title="Modifier" aria-label="Modifier le rendez-vous" className="p-2 rounded-xl hover:bg-gray-100 text-gray-400 hover:text-teal-600 transition-colors">
                               <Pencil size={15} />
                             </button>
                           )}
                           {canManage(appt) && (
-                            <button onClick={() => deleteApptFromCard(appt.id)} className="p-2 rounded-xl hover:bg-red-50 text-gray-400 hover:text-red-500 transition-colors">
+                            <button type="button" onClick={() => deleteApptFromCard(appt.id)} title="Supprimer" aria-label="Supprimer le rendez-vous" className="p-2 rounded-xl hover:bg-red-50 text-gray-400 hover:text-red-500 transition-colors">
                               <Trash2 size={15} />
                             </button>
                           )}

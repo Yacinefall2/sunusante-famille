@@ -13,6 +13,7 @@ Guide complet pour comprendre, faire évoluer et dépanner le projet.
 │  (Nginx)    │  ◄───────────────    │             │  ◄───────────  │              │
 └─────────────┘        JSON          └─────────────┘                └──────────────┘
    port 8080               port 4000                                    port 5432
+ (FRONTEND_PORT)         (BACKEND_PORT)                              (DB_HOST_PORT)
 ```
 
 - **Frontend** : application React (Vite) — une "single page app" (SPA). Toute la
@@ -33,14 +34,14 @@ Guide complet pour comprendre, faire évoluer et dépanner le projet.
 ```
 .
 ├── docker-compose.yml       # orchestration des 3 services
-├── .env.example              # variables PostgreSQL / CORS pour Docker
+├── .env.example              # variables d'environnement pour Docker (à copier en .env)
 ├── README.md                  # démarrage rapide
 ├── DOCUMENTATION.md           # ce fichier
 │
 ├── Backend/
 │   ├── server.js               # point d'entrée : démarre Express sur PORT
 │   ├── drizzle.config.js       # config Drizzle (chemin du schéma, connexion DB)
-│   ├── docker-entrypoint.sh    # applique le schéma DB puis lance le serveur
+│   ├── docker-entrypoint.sh    # applique les migrations (src/db/migrate.js) puis lance le serveur
 │   ├── Dockerfile
 │   ├── .env.example
 │   └── src/
@@ -100,11 +101,11 @@ Exemple : ajouter un champ `phoneNumber` aux membres.
      phoneNumber: varchar("phone_number", { length: 30 }),
    });
    ```
-2. **Appliquer le changement à la base de données** :
-   - En local : `cd Backend && npm run db:push`
-   - En Docker : `docker compose restart backend` (l'entrypoint réapplique le schéma
-     automatiquement à chaque démarrage), ou directement :
-     `docker compose exec backend npx drizzle-kit push --force`
+2. **Générer puis appliquer la migration** (voir §5.1) :
+   - `cd Backend && npm run db:generate -- --name ajout_telephone_membre` : crée un
+     fichier SQL dans `Backend/drizzle/`, à relire puis à versionner avec git ;
+   - en local : `npm run db:migrate` ; en Docker : `docker compose up --build backend`
+     (l'entrypoint applique les migrations à chaque démarrage).
 3. **Mettre à jour la route** concernée (`Backend/src/routes/members.js`) pour lire/écrire
    le nouveau champ dans les blocs `POST` et `PUT` (`values({...})` et `set({...})`).
 4. **Mettre à jour le frontend** : ajouter le champ dans `defaultForm`, dans le formulaire
@@ -123,7 +124,8 @@ Exemple : ajouter une table `allergies` séparée des membres.
    import allergiesRouter from "./routes/allergies.js";
    app.use("/api/allergies", allergiesRouter);
    ```
-4. **Appliquer le schéma** : `npm run db:push` (ou redémarrer le conteneur backend en Docker).
+4. **Générer et appliquer la migration** : `npm run db:generate -- --name <description>`,
+   puis `npm run db:migrate` (ou reconstruire le conteneur backend en Docker).
 5. Côté frontend, créer la page ou le composant correspondant (voir section 4).
 
 ### 3.3 Ajouter un nouvel endpoint sur une ressource existante
@@ -150,13 +152,43 @@ Pensez à importer `ilike` (ou l'opérateur voulu) depuis `drizzle-orm`.
   supprimer un membre supprime automatiquement ses rendez-vous, traitements, etc.
   supprimer une famille supprime tous ses membres (et donc toutes leurs données).
 
-### 3.5 Variables d'environnement backend (`Backend/.env`)
+### 3.5 Variables d'environnement
 
-| Variable       | Description                                   | Exemple                                                    |
-|----------------|------------------------------------------------|--------------------------------------------------------------|
-| `PORT`         | Port d'écoute du serveur Express               | `4000`                                                        |
-| `DATABASE_URL` | Chaîne de connexion PostgreSQL                 | `postgresql://postgres:postgres@127.0.0.1:5432/santefamille` |
-| `CORS_ORIGIN`  | Origine autorisée à appeler l'API (hors Docker)| `http://localhost:5173`                                      |
+En Docker, toutes se règlent dans le fichier `.env` à la racine (modèle :
+`.env.example`) ; hors Docker, le backend lit `Backend/.env` (modèle :
+`Backend/.env.example`). « Obligatoire » : docker compose (ou le serveur)
+refuse de démarrer sans elle.
+
+| Variable | Rôle | Défaut / exemple |
+|---|---|---|
+| `POSTGRES_USER` | Utilisateur PostgreSQL (Docker) | `postgres` |
+| `POSTGRES_PASSWORD` | Mot de passe PostgreSQL (Docker) — **obligatoire** | — |
+| `POSTGRES_DB` | Nom de la base (Docker) | `santefamille` |
+| `PGADMIN_EMAIL` | Identifiant pgAdmin (profil `dev`) | `admin@santefamille.com` |
+| `PGADMIN_PASSWORD` | Mot de passe pgAdmin — **obligatoire** (même sans le profil `dev`) | — |
+| `DATABASE_URL` | Connexion PostgreSQL (hors Docker ; construite automatiquement en Docker) | `postgresql://postgres:…@127.0.0.1:5432/santefamille` |
+| `PORT` | Port d'écoute d'Express (dans le conteneur : 4000) | `4000` |
+| `NODE_ENV` | `production` (défaut de l'image Docker) : secrets faibles ou `COOKIE_SECURE` ≠ `true` empêchent le démarrage ; `development` : simple avertissement | `production` (Docker) |
+| `JWT_ACCESS_SECRET` | Signature des sessions (15 min) — **obligatoire**, ≥ 32 caractères | chaîne aléatoire |
+| `JWT_REFRESH_SECRET` | Signature des renouvellements (30 j) — **obligatoire**, ≥ 32 caractères, différent du précédent | chaîne aléatoire |
+| `COOKIE_SECURE` | Cookies envoyés en HTTPS uniquement — `true` obligatoire en production | `true` (Docker) |
+| `EMERGENCY_TOKEN_KEY` | Clé de chiffrement des jetons de fiche d'urgence (facultative ; dérivée de `JWT_ACCESS_SECRET` à défaut) | chaîne aléatoire |
+| `FRONTEND_URL` | Adresse publique de l'application : liens des courriels, seule origine autorisée (CORS, contrôle d'origine) | `http://localhost:8080` |
+| `APP_TIMEZONE` | Fuseau des rappels (« aujourd'hui », heures de prise) | `Africa/Dakar` |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_SECURE` | Serveur d'envoi des courriels | `mailhog` / `1025` / `false` |
+| `SMTP_USER` / `SMTP_PASS` | Identifiants SMTP (vides pour MailHog) | — |
+| `SMTP_FROM` | Expéditeur des courriels | `SunuSanté Famille <no-reply@santefamille.local>` |
+| `MAIL_WEBHOOK_SECRET` | Secret des rebonds de courriel : en-tête `X-Webhook-Secret` sur `POST /api/webhooks/mail` (préférable), ou adresse `/api/webhooks/mail/<secret>` ; vide = désactivé | — |
+| `FRONTEND_PORT` | Port hôte du frontend | `8080` |
+| `BACKEND_PORT` | Port hôte de l'API (127.0.0.1 seulement) | `4000` |
+| `DB_HOST_PORT` | Port hôte de PostgreSQL (127.0.0.1 seulement) | `5432` |
+| `PGADMIN_PORT` | Port hôte de pgAdmin (profil `dev`) | `5050` |
+| `MAILHOG_SMTP_PORT` / `MAILHOG_UI_PORT` | Ports hôte de MailHog (profil `dev`) | `1025` / `8025` |
+| `TEST_DATABASE_URL` | Base des tests automatisés (nom finissant par `_test`) | `postgresql://postgres:postgres@127.0.0.1:15432/santefamille_test` |
+
+Les outils de développement (pgAdmin, MailHog) ne démarrent qu'avec le profil
+`dev` : `docker compose --profile dev up`. La base de test, avec le profil
+`test` : `docker compose --profile test up -d db-test`.
 
 ---
 
@@ -234,16 +266,20 @@ Toute modification de structure (nouvelle table, nouveau champ, changement de ty
 se fait **uniquement** dans `Backend/src/db/schema.js`. Ne jamais modifier la base de
 données directement en SQL — cela désynchroniserait le schéma Drizzle de la réalité.
 
-Après modification :
-- En local : `cd Backend && npm run db:push`
-- En Docker : redémarrer le conteneur backend (`docker compose restart backend`), ou
-  `docker compose exec backend npx drizzle-kit push --force`
+Après modification, le changement passe par une **migration versionnée** :
 
-`db:push` compare le schéma déclaré au schéma réel de la base et applique la différence
-directement (pratique en développement). Pour un vrai projet en production avec plusieurs
-environnements, on utiliserait plutôt `npm run db:generate` (génère un fichier de migration
-SQL versionné dans `Backend/drizzle/`) suivi d'une exécution de migration — voir la
-documentation officielle de Drizzle si ce besoin se présente.
+1. `cd Backend && npm run db:generate -- --name <description>` : drizzle-kit compare
+   le schéma au dernier état enregistré (`Backend/drizzle/meta/`) et écrit un fichier
+   SQL dans `Backend/drizzle/`. Le relire (et le compléter si des données doivent
+   être converties), puis le versionner avec git.
+2. Appliquer : en local `npm run db:migrate` ; en Docker, reconstruire et redémarrer
+   le backend (`docker compose up --build backend`) — `docker-entrypoint.sh` lance
+   `node src/db/migrate.js` à chaque démarrage, qui n'applique que les migrations
+   manquantes (et s'arrête en erreur plutôt que de démarrer sur un schéma incohérent).
+
+`drizzle-kit push` n'est plus utilisé : il modifiait la base sans trace et pouvait
+supprimer des colonnes avant que leurs données soient converties. drizzle-kit est une
+dépendance de développement : il n'est pas installé dans l'image Docker.
 
 ### 5.2 Se connecter directement à la base (debug)
 
@@ -302,10 +338,14 @@ ici pour garder une image de production simple et légère.
 | `docker compose up` échoue sur le service `backend`         | Vérifier que `db` est bien "healthy" (`docker compose ps`) ; consulter `docker compose logs backend` |
 | Le frontend affiche une erreur réseau sur les appels `/api`  | Vérifier que le service `backend` tourne et que `Frontend/nginx.conf` pointe bien vers `backend:4000` |
 | Modifications du code non visibles après `docker compose up` | Ajouter `--build` pour forcer la reconstruction de l'image concernée                             |
-| `drizzle-kit push` demande une confirmation et bloque         | Utiliser le flag `--force` (déjà inclus dans `docker-entrypoint.sh`) ; en local : `npx drizzle-kit push --force` |
-| Erreur CORS en développement local (hors Docker)               | Vérifier que `CORS_ORIGIN` dans `Backend/.env` correspond bien à l'URL du frontend (`http://localhost:5173`) |
+| Le backend s'arrête au démarrage : « Échec des migrations »   | Lire `docker compose logs backend` : une migration de `Backend/drizzle/` n'a pas pu s'appliquer ; corriger puis relancer |
+| Le backend s'arrête : « Secrets JWT trop faibles » ou « COOKIE_SECURE doit valoir "true" » | `NODE_ENV=production` (défaut Docker) : secrets d'au moins 32 caractères, différents, et `COOKIE_SECURE=true` dans `.env` (voir §9) |
+| `docker compose up` : « La variable … est requise »         | Remplir dans `.env` les variables obligatoires (`POSTGRES_PASSWORD`, `PGADMIN_PASSWORD`, secrets JWT) |
+| Erreur CORS en développement local (hors Docker)               | Vérifier que `FRONTEND_URL` dans `Backend/.env` correspond bien à l'URL du frontend (`http://localhost:5173`) |
+| « Origine refusée » (403) sur toute modification                | L'adresse utilisée dans le navigateur ne correspond ni à `FRONTEND_URL` ni à l'hôte reçu par l'API : aligner `FRONTEND_URL` (et `FRONTEND_PORT`) |
+| Erreur 429 « Trop de requêtes » / « Trop de tentatives »         | Limites par adresse IP et par compte (en mémoire) : attendre 15 minutes, ou redémarrer le backend en développement |
 | Les données disparaissent après un `docker compose down`        | Normal si vous avez utilisé `-v` (supprime le volume). Sans `-v`, les données PostgreSQL persistent |
-| Port déjà utilisé (`5432`, `4000` ou `8080`)                       | Un autre service tourne déjà sur ce port ; modifier le mapping de port dans `docker-compose.yml` (ex. `"5433:5432"`) |
+| Port déjà utilisé (`5432`, `4000` ou `8080`)                       | Un autre service tourne déjà sur ce port ; changer `DB_HOST_PORT`, `BACKEND_PORT` ou `FRONTEND_PORT` dans `.env` (et aligner `FRONTEND_URL`) |
 
 ---
 
@@ -318,10 +358,58 @@ aux comptes autorisés) et tests d'API (Vitest + Supertest).
 
 Pistes restantes :
 
-- **Mise en ligne** : hébergement avec HTTPS (`COOKIE_SECURE=true`), `FRONTEND_URL`
-  réglé sur l'adresse publique, sauvegardes régulières de PostgreSQL et du volume
+- **Mise en ligne** : voir §9 ; sauvegardes régulières de PostgreSQL et du volume
   `uploads_data`.
-- **Limite des tentatives** : les compteurs sont en mémoire (un seul serveur,
-  remis à zéro au redémarrage). Avec plusieurs instances, les stocker en base ou
-  dans Redis.
+- **Limites de tentatives et de requêtes** : les compteurs sont en mémoire (un seul
+  serveur, remis à zéro au redémarrage). Avec plusieurs instances, les stocker en base
+  ou dans Redis.
 - **Tests de l'interface** : `vitest` + `@testing-library/react` côté frontend.
+
+---
+
+## 9. Sécurité en production
+
+L'application manipule des **données de santé** : les règles ci-dessous ne sont pas
+optionnelles pour une mise en ligne.
+
+1. **HTTPS obligatoire.** Servir l'application uniquement en HTTPS (certificat Let's
+   Encrypt via un reverse proxy — Caddy, Traefik, Nginx — placé devant le conteneur
+   `frontend`, ou hébergeur qui le fournit). Rediriger tout le HTTP vers HTTPS.
+2. **`COOKIE_SECURE=true`.** Les cookies de session ne voyagent alors qu'en HTTPS. Avec
+   `NODE_ENV=production` (défaut de l'image Docker), le backend **refuse de démarrer**
+   sinon. En local, `true` fonctionne aussi sur `http://localhost` (Chrome, Edge,
+   Firefox) ; pour un essai en HTTP sur une autre adresse (IP du réseau local, Safari),
+   utiliser `NODE_ENV=development` et `COOKIE_SECURE=false` — jamais en production.
+3. **Secrets forts.** `JWT_ACCESS_SECRET` et `JWT_REFRESH_SECRET` : au moins 32
+   caractères aléatoires, différents l'un de l'autre, jamais la valeur d'exemple (le
+   backend refuse de démarrer en production sinon). Générer :
+   `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"`.
+   Définir aussi `EMERGENCY_TOKEN_KEY` (même méthode) : sans elle, la clé de
+   chiffrement des jetons de fiche d'urgence est dérivée de `JWT_ACCESS_SECRET`, et
+   changer ce dernier empêcherait de réafficher les QR codes (ceux déjà imprimés
+   restent valables ; il suffit de les régénérer). Mots de passe PostgreSQL et pgAdmin
+   longs et uniques. Ne jamais versionner le fichier `.env`.
+4. **HSTS.** Une fois le HTTPS en place et vérifié, activer l'en-tête
+   `Strict-Transport-Security` (ligne prête, en commentaire, dans
+   `Frontend/security-headers.conf`, ou à poser par le reverse proxy). Ne pas
+   l'activer avant : le navigateur refuserait ensuite le site en HTTP pendant un an.
+5. **`FRONTEND_URL`** = adresse publique exacte (`https://…`) : elle sert aux liens des
+   courriels et c'est la seule origine autorisée à appeler l'API.
+6. **API jamais exposée directement.** Le backend fait confiance à un seul proxy
+   (`trust proxy` = 1 : l'en-tête `X-Forwarded-For` posé par Nginx) pour connaître
+   l'adresse IP des visiteurs (limites par IP). Laisser le port 4000 lié à
+   `127.0.0.1` comme dans `docker-compose.yml`. Si un reverse proxy HTTPS est ajouté
+   devant Nginx, il y a deux proxys : adapter `app.set("trust proxy", …)` dans
+   `Backend/src/app.js`.
+7. **Rebonds de courriel.** Si `MAIL_WEBHOOK_SECRET` est défini, le transmettre de
+   préférence dans l'en-tête `X-Webhook-Secret` (`POST /api/webhooks/mail`) plutôt
+   que dans l'adresse, qui finit dans les journaux d'accès.
+
+Déjà en place : conteneur backend non root, dépendances de production seulement dans
+l'image, réponses de l'API en `Cache-Control: no-store`, limites par adresse IP sur les
+routes d'authentification et publiques (100 requêtes par quart d'heure), limite des
+tentatives de mot de passe (par adresse, par IP, blocage de 15 minutes non
+prolongeable), jetons stockés sous forme d'empreinte (et chiffrés pour la fiche
+d'urgence), lien médecin ouvert seulement par un clic (pas par les robots des
+messageries), objet des courriels de rappel sans donnée de santé, quota de 500 Mo de
+fichiers par famille.

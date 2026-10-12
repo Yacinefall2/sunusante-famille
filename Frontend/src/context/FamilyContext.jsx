@@ -14,11 +14,15 @@ export function FamilyProvider({ children }) {
     try {
       setLoading(true);
       const res = await fetch("/api/families");
-      const data = await res.json();
-      setFamilies(data);
-      if (data.length > 0 && !selectedFamily) {
-        setSelectedFamily(data[0]);
-      }
+      const data = await res.json().catch(() => null);
+      const list = res.ok && Array.isArray(data) ? data : [];
+      setFamilies(list);
+      // Garde la famille sélectionnée si elle existe toujours ; sinon (aucune
+      // sélection, ou famille supprimée) bascule sur la première, ou aucune.
+      setSelectedFamily((prev) => (prev && list.some((f) => f.id === prev.id) ? prev : list[0] ?? null));
+      return list;
+    } catch {
+      return [];
     } finally {
       setLoading(false);
     }
@@ -61,23 +65,30 @@ export function FamilyProvider({ children }) {
   // Toutes les fiches de la famille, chacune avec le niveau d'accès de
   // l'utilisateur courant ("full" | "read" | "relay" | null) calculé par le
   // serveur. Les champs médicaux sont absents des fiches non lisibles.
+  // Les fiches archivées (titulaire parti, dossier gelé) sont tenues à part :
+  // aucune page ne doit les traiter comme des fiches ordinaires.
   const [members, setMembers] = useState([]);
+  const [archivedMembers, setArchivedMembers] = useState([]);
   const [membersLoading, setMembersLoading] = useState(false);
 
   const reloadMembers = useCallback(async () => {
     if (!selectedFamily) {
       setMembers([]);
+      setArchivedMembers([]);
       return [];
     }
     setMembersLoading(true);
     try {
       const res = await fetch(`/api/members?familyId=${selectedFamily.id}`);
       const data = await res.json();
-      const list = Array.isArray(data) ? data : [];
+      const all = Array.isArray(data) ? data : [];
+      const list = all.filter((m) => !m.archived);
       setMembers(list);
+      setArchivedMembers(all.filter((m) => m.archived));
       return list;
     } catch {
       setMembers([]);
+      setArchivedMembers([]);
       return [];
     } finally {
       setMembersLoading(false);
@@ -141,6 +152,7 @@ export function FamilyProvider({ children }) {
         canWrite,
         members,
         membersLoading,
+        archivedMembers,
         reloadMembers,
         myMember,
         accessFor,

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { AppShell } from "../components/layout/AppShell";
 import { useFamily } from "../context/FamilyContext";
 import { useAuth } from "../context/AuthContext";
@@ -6,7 +7,7 @@ import { Button } from "../components/ui/Button";
 import { Input, Select } from "../components/ui/Input";
 import { Badge } from "../components/ui/Badge";
 import { Modal } from "../components/ui/Modal";
-import { UserCog, Mail, Trash2, Loader2, Clock, Shield, Plus, Link2 } from "lucide-react";
+import { UserCog, Mail, Trash2, Loader2, Clock, Shield, Plus, Link2, AlertTriangle } from "lucide-react";
 import { formatDateTime } from "../lib/utils";
 import {
   AGE_ACCESS_HELP,
@@ -37,8 +38,10 @@ export default function FamilySettingsPage() {
   // Les fiches de la famille (avec l'accès de l'utilisateur sur chacune)
   // viennent du contexte ; on les recharge après tout changement de liaison
   // compte ↔ fiche.
-  const { selectedFamily, members: familyMembers, reloadMembers, reloadMembership } = useFamily();
+  const { selectedFamily, members: familyMembers, reloadMembers, reloadMembership, isPrimaryAdmin, loadFamilies } =
+    useFamily();
   const { user } = useAuth();
+  const navigate = useNavigate();
 
   const [memberships, setMemberships] = useState([]);
   const [invitations, setInvitations] = useState([]);
@@ -83,18 +86,24 @@ export default function FamilySettingsPage() {
     setLoading(true);
     try {
       const membershipsRes = await fetch(`/api/family-memberships?familyId=${selectedFamily.id}`);
-      const membershipsData = await membershipsRes.json();
-      setMemberships(membershipsData);
+      const membershipsData = await membershipsRes.json().catch(() => null);
+      const membershipList = membershipsRes.ok && Array.isArray(membershipsData) ? membershipsData : [];
+      if (!membershipsRes.ok) toast.error(membershipsData?.error || "Impossible de charger les comptes de la famille");
+      setMemberships(membershipList);
 
       // Seul un Parent voit les invitations en attente — on vérifie le rôle
       // directement sur la réponse fraîche (pas sur l'état, pas encore à jour).
-      const mine = membershipsData.find((m) => m.userId === user?.id);
+      const mine = membershipList.find((m) => m.userId === user?.id);
       if (mine?.role === "parent") {
         const invitationsRes = await fetch(`/api/invitations?familyId=${selectedFamily.id}`);
-        setInvitations(await invitationsRes.json());
+        const invitationsData = await invitationsRes.json().catch(() => null);
+        if (!invitationsRes.ok) toast.error(invitationsData?.error || "Impossible de charger les invitations");
+        setInvitations(invitationsRes.ok && Array.isArray(invitationsData) ? invitationsData : []);
       } else {
         setInvitations([]);
       }
+    } catch {
+      toast.error("Impossible de charger les comptes de la famille. Vérifiez votre connexion.");
     } finally {
       setLoading(false);
     }
@@ -102,7 +111,7 @@ export default function FamilySettingsPage() {
 
   const sendInvite = async () => {
     if (!inviteEmail.trim()) {
-      toast.error("Email requis");
+      toast.error("Adresse courriel requise");
       return;
     }
     if ((inviteDocumentMemberId && !inviteDocumentRole) || (!inviteDocumentMemberId && inviteDocumentRole)) {
@@ -128,7 +137,7 @@ export default function FamilySettingsPage() {
         toast.error(data.error || "Échec de l'invitation");
         return;
       }
-      toast.success("Invitation envoyée par email !");
+      toast.success("Invitation envoyée par courriel !");
       setShowInvite(false);
       setInviteEmail("");
       setInviteRole("member");
@@ -217,11 +226,60 @@ export default function FamilySettingsPage() {
     }
   };
 
+  const [cancellingId, setCancellingId] = useState(null);
+
   const cancelInvitation = async (id) => {
     if (!confirm("Annuler cette invitation ?")) return;
-    await fetch(`/api/invitations?id=${id}`, { method: "DELETE" });
-    toast.success("Invitation annulée");
-    load();
+    setCancellingId(id);
+    try {
+      const res = await fetch(`/api/invitations?id=${id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        toast.error(err.error || "Échec de l'annulation de l'invitation");
+        return;
+      }
+      toast.success("Invitation annulée");
+      load();
+    } catch {
+      toast.error("Échec de l'annulation de l'invitation. Vérifiez votre connexion.");
+    } finally {
+      setCancellingId(null);
+    }
+  };
+
+  // Suppression de l'espace familial — réservée à l'administrateur familial,
+  // avec double confirmation : ouverture d'une fenêtre puis saisie du nom.
+  const [showDeleteFamily, setShowDeleteFamily] = useState(false);
+  const [deleteFamilyName, setDeleteFamilyName] = useState("");
+  const [deletingFamily, setDeletingFamily] = useState(false);
+  const deleteFamilyConfirmed =
+    !!selectedFamily && deleteFamilyName.trim().toLowerCase() === selectedFamily.name.trim().toLowerCase();
+
+  const closeDeleteFamily = () => {
+    setShowDeleteFamily(false);
+    setDeleteFamilyName("");
+  };
+
+  const deleteFamily = async () => {
+    if (!deleteFamilyConfirmed) return;
+    setDeletingFamily(true);
+    try {
+      const id = selectedFamily.id;
+      const res = await fetch(`/api/families?id=${id}&familyId=${id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        toast.error(err.error || "Échec de la suppression de l'espace familial");
+        return;
+      }
+      toast.success("Espace familial supprimé");
+      closeDeleteFamily();
+      await loadFamilies();
+      navigate("/dashboard");
+    } catch {
+      toast.error("Échec de la suppression de l'espace familial. Vérifiez votre connexion.");
+    } finally {
+      setDeletingFamily(false);
+    }
   };
 
   const memberName = (id) => {
@@ -316,8 +374,9 @@ export default function FamilySettingsPage() {
                       )}
                     </div>
 
-                    {/* Le rôle d'un autre Parent n'est pas modifiable (refusé par le serveur) : simple badge. */}
-                    {isParent && !(m.role === "parent" && m.userId !== user?.id) ? (
+                    {/* Le rôle d'un autre Parent, comme celui de l'administrateur
+                        familial, n'est pas modifiable (refusé par le serveur) : simple badge. */}
+                    {isParent && !m.isPrimaryAdmin && !(m.role === "parent" && m.userId !== user?.id) ? (
                       <Select
                         value={roleSelectValue(m.role)}
                         onChange={(e) => handleRoleSelect(m, e.target.value)}
@@ -345,6 +404,7 @@ export default function FamilySettingsPage() {
                               ? "L'administrateur familial ne peut pas être retiré"
                               : "Retirer l'accès"
                         }
+                        aria-label={`Retirer l'accès de ${m.name ?? "ce compte"}`}
                         className="p-2 rounded-xl hover:bg-red-50 text-gray-400 hover:text-red-500 transition-colors disabled:opacity-30 disabled:hover:bg-transparent"
                       >
                         {removingId === m.id ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />}
@@ -385,10 +445,14 @@ export default function FamilySettingsPage() {
                       <Badge variant={familyRoleBadgeVariant(inv.role)}>{familyRoleLabel(inv.role)}</Badge>
                       {isParent && (
                         <button
+                          type="button"
                           onClick={() => cancelInvitation(inv.id)}
-                          className="p-2 rounded-xl hover:bg-red-50 text-gray-400 hover:text-red-500 transition-colors"
+                          disabled={cancellingId === inv.id}
+                          title="Annuler l'invitation"
+                          aria-label={`Annuler l'invitation de ${inv.email}`}
+                          className="p-2 rounded-xl hover:bg-red-50 text-gray-400 hover:text-red-500 transition-colors disabled:opacity-30"
                         >
-                          <Trash2 size={15} />
+                          {cancellingId === inv.id ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />}
                         </button>
                       )}
                     </div>
@@ -396,16 +460,71 @@ export default function FamilySettingsPage() {
                 </div>
               </div>
             )}
+
+            {/* Zone sensible — suppression de l'espace, réservée à l'administrateur familial */}
+            {isPrimaryAdmin && (
+              <div className="bg-white rounded-2xl shadow-sm border border-red-100 overflow-hidden">
+                <div className="px-6 py-4 border-b border-red-100 flex items-center gap-2">
+                  <AlertTriangle size={16} className="text-red-500" />
+                  <h3 className="font-bold text-gray-800 text-sm">Zone sensible</h3>
+                </div>
+                <div className="px-6 py-4 flex flex-col sm:flex-row sm:items-center gap-4">
+                  <p className="flex-1 text-sm text-gray-600">
+                    Supprimer l&apos;espace familial efface définitivement toutes ses fiches, leurs données médicales
+                    et leurs documents, et retire l&apos;accès de tous les comptes de la famille.
+                  </p>
+                  <Button variant="danger" onClick={() => setShowDeleteFamily(true)}>
+                    <Trash2 size={15} />
+                    Supprimer l&apos;espace familial
+                  </Button>
+                </div>
+              </div>
+            )}
           </>
         )}
       </div>
 
+      <Modal open={showDeleteFamily} onClose={closeDeleteFamily} title="Supprimer l'espace familial">
+        <div className="space-y-4">
+          <div className="flex items-start gap-3 bg-red-50 border border-red-200 rounded-xl p-4 text-sm text-red-800">
+            <AlertTriangle size={18} className="flex-shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <p className="font-semibold">Cette action est définitive.</p>
+              <p>
+                L&apos;espace <strong>{selectedFamily.name}</strong>, toutes ses fiches, toutes les données médicales et
+                tous les documents seront supprimés. Les autres comptes perdront l&apos;accès à cette famille.
+              </p>
+            </div>
+          </div>
+          <Input
+            label={`Tapez le nom de la famille (« ${selectedFamily.name} ») pour confirmer`}
+            value={deleteFamilyName}
+            onChange={(e) => setDeleteFamilyName(e.target.value)}
+            autoComplete="off"
+          />
+          <div className="flex gap-3 pt-2">
+            <Button variant="ghost" onClick={closeDeleteFamily} className="flex-1">
+              Annuler
+            </Button>
+            <Button
+              variant="danger"
+              onClick={deleteFamily}
+              loading={deletingFamily}
+              disabled={!deleteFamilyConfirmed}
+              className="flex-1"
+            >
+              Supprimer définitivement
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
       <Modal open={showInvite} onClose={() => setShowInvite(false)} title="Inviter quelqu'un">
         <div className="space-y-4">
           <Input
-            label="Email *"
+            label="Adresse courriel *"
             type="email"
-            placeholder="exemple@email.com"
+            placeholder="nom@exemple.com"
             value={inviteEmail}
             onChange={(e) => setInviteEmail(e.target.value)}
           />
@@ -481,7 +600,7 @@ export default function FamilySettingsPage() {
           </div>
 
           <p className="text-xs text-gray-400 bg-gray-50 rounded-xl px-3 py-2">
-            💡 Un email d&apos;invitation est toujours envoyé, avec un lien sécurisé valide 30 jours — même si
+            💡 Un courriel d&apos;invitation est toujours envoyé, avec un lien sécurisé valide 30 jours — même si
             cette personne a déjà un compte SunuSanté Famille.
           </p>
           <div className="flex gap-3 pt-2">

@@ -222,7 +222,7 @@ export default function AcceptInvitationPage() {
               placeholder="Marie Dupont"
             />
           )}
-          <Input label="Email" value={invitation.email} disabled />
+          <Input label="Adresse courriel" value={invitation.email} disabled />
           <Input
             label="Mot de passe"
             type="password"

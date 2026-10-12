@@ -1,4 +1,4 @@
-import { and, eq, gt, isNull, like, lte, ne } from "drizzle-orm";
+import { and, eq, gt, isNull, like, lte, ne, sql } from "drizzle-orm";
 import { db } from "../db/index.js";
 import {
   appointments,
@@ -11,31 +11,55 @@ import {
   users,
 } from "../db/schema.js";
 import { formatDateTime } from "../lib/time.js";
+import { canWrite, withAccess } from "../lib/documentAccess.js";
 import { notify } from "./notify.js";
 
 // ── Village : le rappel relayé vers un proche non connecté (§4) ──────────────
-// J-3  : « à relayer » au(x) gestionnaire(s) — pas au patient, qui n'a pas
-//        d'accès (§4.2).
-// J-1  : si personne n'a marqué « Prévenu » : relance au(x) gestionnaire(s),
-// +3 h : puis escalade vers tous les relais ; le premier « Prévenu » clôt.
-// J+1  : demande au(x) gestionnaire(s) si le proche s'est rendu au rendez-vous.
+// J-3   : « à relayer » au(x) gestionnaire(s) — pas au patient, qui n'a pas
+//         d'accès (§4.2).
+// J-1   : si personne n'a marqué « Prévenu » : relance au(x) gestionnaire(s)
+//         (jamais dans le même passage que la création de la tâche : au moins
+//         RELAY_FOLLOW_UP_MIN_DELAY après),
+// +3 h  : puis escalade vers tous les relais ; le premier « Prévenu » clôt.
+//         Sans relais désigné, les gestionnaires en sont avertis.
+// +12 h : une fois le rendez-vous passé de ATTENDANCE_PROMPT_AFTER, demande
+//         au(x) gestionnaire(s) si le proche s'y est rendu.
 // Le relais ne reçoit que la date, l'heure et le lieu (§4.4, §7.3).
+// Seules les fiches « non connecté », non archivées et SANS titulaire (aucun
+// compte relié) sont concernées : dès qu'un compte est relié, ce sont les
+// rappels classiques qui s'appliquent.
 
 const HOUR = 60 * 60 * 1000;
 export const ESCALATION_DELAY = 3 * HOUR;
 export const ATTENDANCE_PROMPT_AFTER = 12 * HOUR;
+export const RELAY_FOLLOW_UP_MIN_DELAY = 1 * HOUR;
 
 const memberName = (m) => `${m.firstName} ${m.lastName}`;
 const userCols = { id: users.id, name: users.name, email: users.email, emailVerified: users.emailVerified };
 
+// Fiche relayée : non connectée, non archivée, sans compte relié.
+const relayedFiche = () =>
+  and(
+    eq(members.status, "non_connecte"),
+    isNull(members.archivedAt),
+    sql`not exists (select 1 from ${familyMemberships} where ${familyMemberships.linkedMemberId} = ${members.id})`
+  );
+
+// Gestionnaires d'une fiche ayant toujours l'accès complet (un compte devenu
+// adolescent, par exemple, n'en fait plus partie).
 export async function managersOf(memberId, familyId) {
-  const managers = await db
+  const designated = await db
     .select(userCols)
     .from(documentRoles)
     .innerJoin(users, eq(users.id, documentRoles.userId))
     .where(and(eq(documentRoles.memberId, memberId), eq(documentRoles.role, "gestionnaire")));
+  const managers = await withAccess(designated, memberId, canWrite);
   if (managers.length > 0) return managers;
   // Sans gestionnaire désigné, les administrateurs du foyer prennent le relais.
+  return parentsOf(familyId);
+}
+
+export async function parentsOf(familyId) {
   return db
     .select(userCols)
     .from(familyMemberships)
@@ -44,11 +68,12 @@ export async function managersOf(memberId, familyId) {
 }
 
 export async function relaysOf(memberId) {
-  return db
+  const relays = await db
     .select(userCols)
     .from(documentRoles)
     .innerJoin(users, eq(users.id, documentRoles.userId))
     .where(and(eq(documentRoles.memberId, memberId), eq(documentRoles.role, "relais")));
+  return withAccess(relays, memberId, (level) => level !== null);
 }
 
 async function primaryAdminOf(familyId) {
@@ -78,7 +103,7 @@ export async function villageTick(now) {
     .innerJoin(members, eq(members.id, appointments.memberId))
     .where(
       and(
-        eq(members.status, "non_connecte"),
+        relayedFiche(),
         ne(appointments.status, "cancelled"),
         gt(appointments.appointmentDate, now),
         lte(appointments.appointmentDate, new Date(now.getTime() + 72 * HOUR))
@@ -107,7 +132,8 @@ export async function villageTick(now) {
     );
   }
 
-  // Tâches ouvertes (non « Prévenu ») d'un rendez-vous encore à venir et non annulé.
+  // Tâches ouvertes (non « Prévenu ») d'un rendez-vous encore à venir et non
+  // annulé, d'une fiche toujours relayée (toujours sans titulaire).
   const open = await db
     .select({ t: relayTasks, a: appointments, m: members })
     .from(relayTasks)
@@ -115,6 +141,7 @@ export async function villageTick(now) {
     .innerJoin(members, eq(members.id, relayTasks.memberId))
     .where(
       and(
+        relayedFiche(),
         isNull(relayTasks.notifiedAt),
         gt(relayTasks.appointmentDate, now),
         ne(appointments.status, "cancelled"),
@@ -125,8 +152,10 @@ export async function villageTick(now) {
   for (const { t, a, m } of open) {
     const remaining = t.appointmentDate.getTime() - now.getTime();
 
-    // 2. J-1 : relance aux gestionnaires.
+    // 2. J-1 : relance aux gestionnaires — jamais dans la foulée de la
+    // création de la tâche (rendez-vous pris moins de 24 h à l'avance).
     if (!t.followUpAt && remaining <= 24 * HOUR) {
+      if (now.getTime() - t.createdAt.getTime() < RELAY_FOLLOW_UP_MIN_DELAY) continue;
       await db.update(relayTasks).set({ followUpAt: now }).where(eq(relayTasks.id, t.id));
       await logRelayEvent(t.id, "follow_up", null, now);
       await notifyMany(
@@ -149,10 +178,30 @@ export async function villageTick(now) {
     const followUpAge = t.followUpAt ? now.getTime() - t.followUpAt.getTime() : 0;
     if (t.followUpAt && !t.escalatedAt && (followUpAge >= ESCALATION_DELAY || remaining <= 2 * HOUR)) {
       await db.update(relayTasks).set({ escalatedAt: now }).where(eq(relayTasks.id, t.id));
+      const relays = await relaysOf(m.id);
+      if (relays.length === 0) {
+        // Personne vers qui escalader : les gestionnaires doivent le savoir
+        // (sinon le rappel s'éteindrait en silence).
+        await logRelayEvent(t.id, "no_relay", null, now);
+        await notifyMany(
+          await managersOf(m.id, m.familyId),
+          {
+            category: "relay_alert",
+            title: `Aucun relais désigné pour prévenir ${memberName(m)}`,
+            body: [whereLine(a), "Il faut encore le prévenir : appelez-le ou désignez un relais."].join(" · "),
+            link: "/village",
+            familyId: m.familyId,
+            memberId: m.id,
+            now,
+          },
+          `relay:${t.id}:no_relay`
+        );
+        continue;
+      }
       await logRelayEvent(t.id, "escalated", null, now);
       // Cloisonnement : date, heure et lieu seulement — objet neutre (§4.4, §7.3).
       await notifyMany(
-        await relaysOf(m.id),
+        relays,
         {
           category: "relay_escalation",
           title: "Un rappel à relayer",
@@ -167,7 +216,7 @@ export async function villageTick(now) {
     }
   }
 
-  // 4. J+1 : présence au rendez-vous, demandée une fois aux gestionnaires.
+  // 4. Rendez-vous passé de 12 h : présence demandée une fois aux gestionnaires.
   const past = await db
     .select({ t: relayTasks, a: appointments, m: members })
     .from(relayTasks)
@@ -175,6 +224,7 @@ export async function villageTick(now) {
     .innerJoin(members, eq(members.id, relayTasks.memberId))
     .where(
       and(
+        relayedFiche(),
         isNull(relayTasks.attendancePromptAt),
         isNull(appointments.attendance),
         ne(appointments.status, "cancelled"),
@@ -201,11 +251,74 @@ export async function villageTick(now) {
 }
 
 // Les notifications « à relayer » d'une tâche close sont marquées lues pour tous.
-async function readTaskNotifications(taskId, now) {
+export async function readTaskNotifications(taskId, now = new Date()) {
   await db
     .update(notifications)
     .set({ readAt: now })
     .where(and(isNull(notifications.readAt), like(notifications.dedupeKey, `relay:${taskId}:%`)));
+}
+
+// Tâche périmée : rendez-vous passé, annulé ou déplacé depuis sa création.
+// On ne peut plus y répondre « Prévenu » ni « Pas joignable ».
+export function isTaskStale(task, appointment, now = new Date()) {
+  return (
+    !appointment ||
+    task.appointmentDate.getTime() <= now.getTime() ||
+    appointment.status === "cancelled" ||
+    appointment.appointmentDate.getTime() !== task.appointmentDate.getTime()
+  );
+}
+
+// Rendez-vous d'un proche annulé, déplacé ou supprimé (routes/appointments.js) :
+// la tâche Village de l'ancienne date est close (événement « cancelled » ou
+// « moved »), ses notifications « à relayer » sont marquées lues, et les
+// gestionnaires — ainsi que les relais déjà sollicités et la personne qui a
+// prévenu le proche — sont informés. Message neutre (date, heure, lieu),
+// comme tout ce qui part vers un relais (§4.4). `after` : le rendez-vous
+// modifié, ou null s'il est supprimé.
+export async function onAppointmentChanged(before, after, actorUserId = null, now = new Date()) {
+  const cancelled = !after || after.status === "cancelled";
+  const tasks = await db
+    .select()
+    .from(relayTasks)
+    .where(
+      and(
+        eq(relayTasks.appointmentId, before.id),
+        eq(relayTasks.appointmentDate, before.appointmentDate),
+        gt(relayTasks.appointmentDate, now)
+      )
+    );
+  for (const t of tasks) {
+    const [m] = await db.select().from(members).where(eq(members.id, t.memberId));
+    if (!m || m.archivedAt) continue;
+    await logRelayEvent(t.id, cancelled ? "cancelled" : "moved", actorUserId, now);
+    await readTaskNotifications(t.id, now);
+
+    const targets = new Map((await managersOf(m.id, m.familyId)).map((u) => [u.id, u]));
+    if (t.escalatedAt) for (const u of await relaysOf(m.id)) targets.set(u.id, u);
+    if (t.notifiedByUserId && !targets.has(t.notifiedByUserId)) {
+      const [by] = await db.select(userCols).from(users).where(eq(users.id, t.notifiedByUserId));
+      if (by && (await withAccess([by], m.id, (level) => level !== null)).length) targets.set(by.id, by);
+    }
+    if (actorUserId) targets.delete(actorUserId);
+
+    const was = whereLine(before);
+    await notifyMany(
+      [...targets.values()],
+      {
+        category: "relay_update",
+        title: cancelled ? `Rendez-vous de ${memberName(m)} annulé` : `Rendez-vous de ${memberName(m)} déplacé`,
+        body: cancelled
+          ? [`Rendez-vous annulé : ${was}`, t.notifiedAt ? "Pensez à le prévenir de l'annulation." : null].filter(Boolean).join(" · ")
+          : [`Ancienne date : ${formatDateTime(before.appointmentDate)}`, `Nouvelle date : ${whereLine(after)}`].join(" · "),
+        link: "/village",
+        familyId: m.familyId,
+        memberId: m.id,
+        now,
+      },
+      `relaychange:${t.id}:${cancelled ? "cancelled" : `moved:${after.appointmentDate.toISOString()}`}`
+    );
+  }
 }
 
 // « Prévenu » : clôt la tâche pour tout le monde. Si c'est un relais qui a
@@ -240,7 +353,9 @@ export async function markRelayNotified(task, user, now = new Date()) {
 }
 
 // « Pas joignable » (UC-42) : la tâche reste ouverte ; gestionnaires et A1
-// sont alertés tout de suite.
+// sont alertés tout de suite. Une seule alerte par personne, par tâche et par
+// heure : marquer « Pas joignable » plusieurs fois de suite ne multiplie pas
+// les alertes.
 export async function markRelayUnreachable(task, user, now = new Date()) {
   await logRelayEvent(task.id, "unreachable", user.id, now);
   const [m] = await db.select().from(members).where(eq(members.id, task.memberId));
@@ -248,6 +363,7 @@ export async function markRelayUnreachable(task, user, now = new Date()) {
   const a1 = await primaryAdminOf(task.familyId);
   if (a1) targets.set(a1.id, a1);
   targets.delete(user.id);
+  const hour = Math.floor(now.getTime() / HOUR);
   await notifyMany(
     [...targets.values()],
     {
@@ -259,7 +375,6 @@ export async function markRelayUnreachable(task, user, now = new Date()) {
       memberId: task.memberId,
       now,
     },
-    `relay:${task.id}:unreachable:${user.id}:${now.getTime()}`
+    `relay:${task.id}:unreachable:${user.id}:h${hour}`
   );
 }
-

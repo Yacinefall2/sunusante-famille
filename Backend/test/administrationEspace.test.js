@@ -116,17 +116,39 @@ describe("Invitations", () => {
 
   it("accepte l'invitation d'un compte sans espace", async () => {
     const family = await createFamily();
+    const a1 = await createUser("A1");
+    await addMembership(a1, family, "parent", { isPrimaryAdmin: true });
     const user = await createUser("Fatou");
     await db.insert(pendingInvitations).values({
       familyId: family.id,
       email: user.email,
       role: "adult",
       token: hashToken("jeton-invitation-ok"),
+      invitedByUserId: a1.id,
       expiresAt: new Date(Date.now() + 60_000),
     });
 
     const res = await as(user).post("/api/invitations/jeton-invitation-ok/accept");
     expect(res.status).toBe(200);
+  });
+
+  it("refuse une invitation dont l'auteur n'administre plus l'espace", async () => {
+    const family = await createFamily();
+    const ancien = await createUser("Ancien parent");
+    await addMembership(ancien, family, "adult");
+    const user = await createUser("Fatou");
+    await db.insert(pendingInvitations).values({
+      familyId: family.id,
+      email: user.email,
+      role: "adult",
+      token: hashToken("jeton-invitation-perimee"),
+      invitedByUserId: ancien.id,
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+
+    const res = await as(user).post("/api/invitations/jeton-invitation-perimee/accept");
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/n'administre plus cet espace/);
   });
 });
 

@@ -1,13 +1,17 @@
 import { eq } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { members } from "../db/schema.js";
+import { parseId } from "./validation.js";
+
+// Les identifiants mal formés (texte, nombre trop grand pour la base…) ne
+// résolvent aucune famille : la requête est refusée en 400 par
+// requireFamilyMembership, sans jamais atteindre PostgreSQL.
 
 // Résout la familyId à partir d'un memberId (utilisé pour les créations,
 // où seul le memberId est fourni dans le corps de la requête).
 export async function familyIdFromMemberId(memberId) {
-  if (!memberId) return null;
-  const parsed = parseInt(memberId);
-  if (isNaN(parsed)) return null;
+  const parsed = parseId(memberId);
+  if (!parsed) return null;
   const [member] = await db.select({ familyId: members.familyId }).from(members).where(eq(members.id, parsed));
   return member?.familyId ?? null;
 }
@@ -17,9 +21,8 @@ export async function familyIdFromMemberId(memberId) {
 // memberId — utile pour les routes PUT/DELETE qui ne reçoivent qu'un id de
 // ressource, sans familyId ni memberId explicite.
 export async function familyIdFromResource(table, resourceId) {
-  if (!resourceId) return null;
-  const parsed = parseInt(resourceId);
-  if (isNaN(parsed)) return null;
+  const parsed = parseId(resourceId);
+  if (!parsed) return null;
   const [row] = await db.select({ memberId: table.memberId }).from(table).where(eq(table.id, parsed));
   if (!row) return null;
   return familyIdFromMemberId(row.memberId);
@@ -38,6 +41,10 @@ export async function familyIdForListQuery(req) {
 
 // Résout la familyId directement depuis req.query.familyId
 export function familyIdFromQuery(req) {
-  const id = parseInt(req.query.familyId);
-  return isNaN(id) ? null : id;
+  return parseId(req.query.familyId);
+}
+
+// Même chose depuis le corps de la requête (créations).
+export function familyIdFromBody(req) {
+  return parseId(req.body?.familyId);
 }

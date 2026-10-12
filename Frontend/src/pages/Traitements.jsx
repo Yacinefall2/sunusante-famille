@@ -7,7 +7,7 @@ import { Input, Textarea, Select } from "../components/ui/Input";
 import { Badge } from "../components/ui/Badge";
 import { MemberAvatar } from "../components/members/MemberAvatar";
 import { Plus, Pencil, Trash2, Loader2, Pill, User, Calendar, Stethoscope, X, Clock, History, Search } from "lucide-react";
-import { formatDate } from "../lib/utils";
+import { clickableCardProps, formatDate } from "../lib/utils";
 import { IntakeAnswerButtons, IntakeStatusBadge, NOTIFICATIONS_REFRESH_EVENT } from "../components/notifications/intakes";
 import { format, isToday, parseISO, startOfDay, subDays } from "date-fns";
 import { fr } from "date-fns/locale";
@@ -112,6 +112,7 @@ function IntakeTimesEditor({ value, onChange }) {
               <button
                 type="button"
                 onClick={() => onChange(times.filter((x) => x !== t))}
+                aria-label={`Retirer l'horaire ${t}`}
                 className="hover:text-red-500"
                 title="Retirer cette heure"
               >
@@ -408,6 +409,10 @@ export default function TraitementsPage() {
       const res = await fetch(`/api/treatments?familyId=${selectedFamily.id}`);
       const data = await res.json().catch(() => null);
       setTreatments(res.ok && Array.isArray(data) ? data : []);
+      if (!res.ok) toast.error(data?.error || "Erreur lors du chargement des traitements");
+    } catch {
+      setTreatments([]);
+      toast.error("Erreur lors du chargement des traitements");
     } finally {
       setLoading(false);
     }
@@ -816,7 +821,8 @@ export default function TraitementsPage() {
                   <div
                     key={t.id}
                     onClick={() => setViewing(t)}
-                    className={`bg-white rounded-2xl shadow-sm border p-5 hover:shadow-md transition-all duration-200 cursor-pointer ${t.isActive ? "border-gray-100" : "border-gray-100 opacity-70"}`}
+                    {...clickableCardProps(() => setViewing(t))}
+                    className={`bg-white rounded-2xl shadow-sm border p-5 hover:shadow-md transition-all duration-200 cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 ${t.isActive ? "border-gray-100" : "border-gray-100 opacity-70"}`}
                     title="Cliquez pour voir les détails"
                   >
                     <div className="flex items-start justify-between mb-3">
@@ -838,12 +844,12 @@ export default function TraitementsPage() {
                       <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                         <Badge variant={status.variant}>{status.label}</Badge>
                         {canWriteMember(t.memberId) && (
-                          <button onClick={() => openEdit(t)} className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-teal-600 transition-colors">
+                          <button type="button" onClick={() => openEdit(t)} title="Modifier" aria-label="Modifier le traitement" className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-teal-600 transition-colors">
                             <Pencil size={14} />
                           </button>
                         )}
                         {canWriteMember(t.memberId) && (
-                          <button onClick={() => deleteTreatmentFromCard(t.id)} className="p-1.5 rounded-lg hover:bg-red-50 text-gray-400 hover:text-red-500 transition-colors">
+                          <button type="button" onClick={() => deleteTreatmentFromCard(t.id)} title="Supprimer" aria-label="Supprimer le traitement" className="p-1.5 rounded-lg hover:bg-red-50 text-gray-400 hover:text-red-500 transition-colors">
                             <Trash2 size={14} />
                           </button>
                         )}
@@ -1100,6 +1106,7 @@ export default function TraitementsPage() {
                     <button
                       type="button"
                       onClick={() => removeMedicationRow(i)}
+                      aria-label="Retirer ce médicament"
                       className="absolute top-2 right-2 p-1 rounded-lg hover:bg-red-50 text-gray-400 hover:text-red-500 transition-colors"
                       title="Retirer ce médicament"
                     >

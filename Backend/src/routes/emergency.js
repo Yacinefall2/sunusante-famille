@@ -5,10 +5,20 @@ import { emergencyCards, emergencyCardViews, members } from "../db/schema.js";
 import { requireFamilyMembership } from "../middleware/auth.js";
 import { familyIdFromMemberId } from "../lib/familyResolvers.js";
 import { canReadMember, canWriteMember } from "../lib/documentAccess.js";
-import { canComposeEmergency, EMERGENCY_FIELDS, emergencyPublicView, frontendUrl, newToken } from "../lib/sharing.js";
+import {
+  canComposeEmergency,
+  EMERGENCY_FIELDS,
+  emergencyPublicView,
+  emergencyTokenColumns,
+  emergencyTokenOf,
+  frontendUrl,
+  newToken,
+  upgradeEmergencyCard,
+} from "../lib/sharing.js";
 
 // Fiche d'urgence (A6, UC-24/38) : composée champ par champ. Rien n'est
-// publié par défaut ; le QR code imprimé pointe vers le jeton de la fiche.
+// publié par défaut ; le QR code imprimé pointe vers le jeton de la fiche,
+// stocké chiffré (voir lib/sharing.js).
 const router = Router();
 
 const membershipFor = requireFamilyMembership((req) => familyIdFromMemberId(req.params.memberId));
@@ -24,7 +34,9 @@ async function load(req, res) {
     res.status(403).json({ error: "Accès refusé à ce dossier" });
     return null;
   }
-  const [card] = await db.select().from(emergencyCards).where(eq(emergencyCards.memberId, memberId));
+  const [stored] = await db.select().from(emergencyCards).where(eq(emergencyCards.memberId, memberId));
+  // Ancien jeton encore en clair : converti au passage.
+  const card = await upgradeEmergencyCard(stored);
   const canEdit = await canComposeEmergency(req, member, await canWriteMember(req, memberId));
   return { member, card: card ?? null, canEdit };
 }
@@ -46,7 +58,9 @@ async function describe({ member, card, canEdit }) {
     extraInfo: settings.extraInfo,
     fields: Object.fromEntries(EMERGENCY_FIELDS.map((f) => [f, settings[f]])),
     // Seul celui qui compose la fiche obtient le lien du QR code.
-    url: canEdit && card ? `${frontendUrl()}/urgence/${card.token}` : null,
+    // Jeton illisible (secret de chiffrement changé) : pas de lien, il faut
+    // régénérer le QR code.
+    url: canEdit && emergencyTokenOf(card) ? `${frontendUrl()}/urgence/${emergencyTokenOf(card)}` : null,
     // Aperçu « ce que verra un inconnu », avec les réglages enregistrés.
     preview: settings.active ? await emergencyPublicView(settings, member) : null,
     views,
@@ -78,7 +92,10 @@ router.put("/:memberId", membershipFor, async (req, res) => {
     }
     const [card] = ctx.card
       ? await db.update(emergencyCards).set(values).where(eq(emergencyCards.id, ctx.card.id)).returning()
-      : await db.insert(emergencyCards).values({ ...values, memberId: ctx.member.id, token: newToken() }).returning();
+      : await db
+          .insert(emergencyCards)
+          .values({ ...values, memberId: ctx.member.id, ...emergencyTokenColumns(newToken(), ctx.member.id) })
+          .returning();
     res.json(await describe({ ...ctx, card }));
   } catch (error) {
     console.error(error);
@@ -95,7 +112,7 @@ router.post("/:memberId/regenerate", membershipFor, async (req, res) => {
     if (!ctx.card) return res.status(400).json({ error: "Enregistrez d'abord la fiche d'urgence" });
     const [card] = await db
       .update(emergencyCards)
-      .set({ token: newToken(), updatedByUserId: req.user.id, updatedAt: new Date() })
+      .set({ ...emergencyTokenColumns(newToken(), ctx.member.id), updatedByUserId: req.user.id, updatedAt: new Date() })
       .where(eq(emergencyCards.id, ctx.card.id))
       .returning();
     res.json(await describe({ ...ctx, card }));

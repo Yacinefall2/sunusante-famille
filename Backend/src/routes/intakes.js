@@ -6,6 +6,7 @@ import { requireFamilyMembership } from "../middleware/auth.js";
 import { familyIdForListQuery, familyIdFromMemberId } from "../lib/familyResolvers.js";
 import { canWriteMember, isHolder, readableScope } from "../lib/documentAccess.js";
 import { markIntakeNotificationsRead } from "../reminders/engine.js";
+import { INVALID_ID, parseId } from "../lib/validation.js";
 
 // Prises de médicament : réponse « pris » / « pas pris » (UC-20, UC-44) et
 // historique des prises d'un dossier.
@@ -19,7 +20,7 @@ router.get("/", requireFamilyMembership(familyIdForListQuery), async (req, res) 
     const memberIds = await readableScope(req);
     if (!memberIds) return res.status(403).json({ error: "Accès refusé à ce dossier" });
     if (memberIds.length === 0) return res.json([]);
-    const days = Math.min(parseInt(req.query.days) || 14, 90);
+    const days = Math.min(Math.max(parseInt(req.query.days) || 14, 1), 90);
     const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
     const rows = await db
       .select({
@@ -52,7 +53,9 @@ router.post(
   "/:id/respond",
   async (req, res, next) => {
     try {
-      const [intake] = await db.select().from(medicationIntakes).where(eq(medicationIntakes.id, parseInt(req.params.id)));
+      const id = parseId(req.params.id);
+      if (!id) return res.status(400).json({ error: INVALID_ID });
+      const [intake] = await db.select().from(medicationIntakes).where(eq(medicationIntakes.id, id));
       if (!intake) return res.status(404).json({ error: "Prise introuvable" });
       req.intake = intake;
       next();

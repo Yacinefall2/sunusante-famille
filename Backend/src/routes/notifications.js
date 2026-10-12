@@ -1,12 +1,20 @@
 import { Router } from "express";
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, isNull, or, sql } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { medicationIntakes, notifications } from "../db/schema.js";
+import { familyMemberships, medicationIntakes, notifications } from "../db/schema.js";
 import { NOTIFICATION_CATEGORIES, getAllPreferences, setPreference } from "../lib/notificationPreferences.js";
+import { INVALID_ID, parseId } from "../lib/validation.js";
 
 // Notifications de l'application (la cloche) et préférences par catégorie.
-// Chaque compte ne voit et ne modifie que les siennes.
+// Chaque compte ne voit et ne modifie que les siennes, et seulement celles
+// des familles dont il est encore membre (ou sans famille).
 const router = Router();
+
+const inMyFamilies = (userId) =>
+  or(
+    isNull(notifications.familyId),
+    sql`exists (select 1 from ${familyMemberships} where ${familyMemberships.userId} = ${userId} and ${familyMemberships.familyId} = ${notifications.familyId})`
+  );
 
 router.get("/", async (req, res) => {
   try {
@@ -26,7 +34,7 @@ router.get("/", async (req, res) => {
       })
       .from(notifications)
       .leftJoin(medicationIntakes, eq(medicationIntakes.id, notifications.intakeId))
-      .where(and(eq(notifications.userId, req.user.id), eq(notifications.inApp, true)))
+      .where(and(eq(notifications.userId, req.user.id), eq(notifications.inApp, true), inMyFamilies(req.user.id)))
       .orderBy(desc(notifications.createdAt), desc(notifications.id))
       .limit(50);
     res.json({ unreadCount: items.filter((n) => !n.readAt).length, items });
@@ -51,10 +59,12 @@ router.post("/read-all", async (req, res) => {
 
 router.post("/:id/read", async (req, res) => {
   try {
+    const id = parseId(req.params.id);
+    if (!id) return res.status(400).json({ error: INVALID_ID });
     const [updated] = await db
       .update(notifications)
       .set({ readAt: new Date() })
-      .where(and(eq(notifications.id, parseInt(req.params.id)), eq(notifications.userId, req.user.id)))
+      .where(and(eq(notifications.id, id), eq(notifications.userId, req.user.id)))
       .returning({ id: notifications.id });
     if (!updated) return res.status(404).json({ error: "Notification introuvable" });
     res.json({ success: true });

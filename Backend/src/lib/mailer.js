@@ -1,6 +1,7 @@
 import nodemailer from "nodemailer";
 
-// Transport SMTP : Gmail en développement. Pour passer à Brevo (ou tout autre
+// Transport SMTP : MailHog en développement (docker compose --profile dev),
+// Gmail possible pour des essais réels. Pour passer à Brevo (ou tout autre
 // service), il suffit de changer SMTP_HOST / SMTP_USER / SMTP_PASS (relais
 // SMTP smtp-relay.brevo.com) ; les rebonds signalés ensuite par le service
 // arrivent sur /api/webhooks/mail (voir routes/mailWebhooks.js).
@@ -254,14 +255,29 @@ export async function sendDoctorShareEmail({ to, ...details }) {
   await transporter.sendMail({ from: FROM, to, ...buildDoctorShareEmail(details) });
 }
 
-// Courriel d'une notification (rappel de rendez-vous, de prise, de vaccin).
-// Renvoie l'identifiant du message, qui permet de rattacher un rebond signalé
-// plus tard par le service d'envoi à cette notification.
-export async function sendNotificationEmail({ to, subject, heading, lines = [], link, buttonLabel = "Voir dans SunuSanté Famille" }) {
-  const info = await transporter.sendMail({
-    from: FROM,
-    to,
-    subject,
+// Objet des courriels de notification : NEUTRE, sans aucune donnée de santé.
+// L'objet s'affiche sur l'écran verrouillé du téléphone, dans les aperçus et
+// les listes de messages : le nom d'un médicament, d'un vaccin ou le motif
+// d'un rendez-vous n'y a pas sa place. Le détail reste dans le corps.
+const NOTIFICATION_SUBJECTS = {
+  appointment_reminder: "Rappel de rendez-vous — SunuSanté Famille",
+  medication_intake: "Rappel de prise — SunuSanté Famille",
+  vaccine_reminder: "Rappel de vaccination — SunuSanté Famille",
+  doctor_share: "Partage de dossier — SunuSanté Famille",
+  emergency_view: "Fiche d'urgence consultée — SunuSanté Famille",
+};
+export const DEFAULT_NOTIFICATION_SUBJECT = "Rappel SunuSanté Famille";
+
+export function notificationSubject(category) {
+  return NOTIFICATION_SUBJECTS[category] ?? DEFAULT_NOTIFICATION_SUBJECT;
+}
+
+// Contenu d'un courriel de notification (objet + HTML), séparé de l'envoi
+// pour pouvoir être vérifié par les tests. Le paramètre `subject` fourni par
+// l'appelant (qui peut contenir le titre de la notification) est ignoré.
+export function buildNotificationEmail({ category, heading, lines = [], link, buttonLabel = "Voir dans SunuSanté Famille" }) {
+  return {
+    subject: notificationSubject(category),
     html: accessButtonTemplate({
       heading: escapeHtml(heading),
       bodyHtml: lines.map((l) => `<p>${escapeHtml(l)}</p>`).join(""),
@@ -270,6 +286,13 @@ export async function sendNotificationEmail({ to, subject, heading, lines = [], 
       validityLabel: "Vous pouvez choisir vos canaux de notification dans l'application.",
       footer: "",
     }),
-  });
+  };
+}
+
+// Courriel d'une notification (rappel de rendez-vous, de prise, de vaccin).
+// Renvoie l'identifiant du message, qui permet de rattacher un rebond signalé
+// plus tard par le service d'envoi à cette notification.
+export async function sendNotificationEmail({ to, ...details }) {
+  const info = await transporter.sendMail({ from: FROM, to, ...buildNotificationEmail(details) });
   return info.messageId ?? null;
 }

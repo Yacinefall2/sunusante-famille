@@ -43,7 +43,7 @@ export default function RegisterPage() {
         <form onSubmit={submit} className="space-y-4">
           <Input label="Nom complet" required value={name} onChange={(e) => setName(e.target.value)} placeholder="Marie Dupont" />
           <Input
-            label="Email"
+            label="Adresse courriel"
             type="email"
             required
             value={email}

@@ -105,3 +105,29 @@ export function formatTimeAgo(date) {
   if (days < 7) return `il y a ${days} jours`;
   return formatDate(d);
 }
+
+
+// Remplace, dans un texte libre (souvent fourni par le serveur), les dates
+// au format ISO AAAA-MM-JJ par le format d'affichage JJ/MM/AAAA.
+// Ex. : « Prévu le 2026-10-05 » → « Prévu le 05/10/2026 ».
+export function formatIsoDatesInText(text) {
+  if (typeof text !== "string") return text;
+  return text.replace(/\b(\d{4})-(\d{2})-(\d{2})(?:T[\d:.]+(?:Z|[+-]\d{2}:?\d{2})?)?\b/g, (_, y, m, d) => `${d}/${m}/${y}`);
+}
+
+// Propriétés d'accessibilité pour une carte cliquable (<div onClick>) :
+// focalisable au clavier et activable par Entrée ou Espace. Les touches
+// pressées sur un bouton à l'intérieur de la carte ne la déclenchent pas.
+export function clickableCardProps(onActivate) {
+  return {
+    role: "button",
+    tabIndex: 0,
+    onKeyDown: (e) => {
+      if (e.target !== e.currentTarget) return;
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        onActivate(e);
+      }
+    },
+  };
+}

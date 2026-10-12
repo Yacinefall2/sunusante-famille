@@ -5,8 +5,9 @@ import { Modal } from "../components/ui/Modal";
 import { Button } from "../components/ui/Button";
 import { Input } from "../components/ui/Input";
 import { useAuth } from "../context/AuthContext";
-import { UserRound, Mail, KeyRound, Download, Trash2, Loader2, AlertTriangle, Clock } from "lucide-react";
+import { UserRound, Mail, KeyRound, Download, Trash2, Loader2, AlertTriangle, Clock, RotateCw } from "lucide-react";
 import { formatDate } from "../lib/utils";
+import { openPrivateLink } from "../lib/session";
 import toast from "react-hot-toast";
 
 const MIN_PASSWORD_LENGTH = 8;
@@ -53,12 +54,20 @@ export default function ComptePage() {
   const [deleteForm, setDeleteForm] = useState({ password: "", deleteMyFiche: false, confirmText: "" });
   const [deleting, setDeleting] = useState(false);
 
+  // Erreur de chargement : affichée avec un bouton « Réessayer » au lieu
+  // d'un chargement sans fin.
+  const [loadError, setLoadError] = useState(false);
+
   const load = async () => {
-    const res = await fetch("/api/account");
-    if (res.ok) {
+    setLoadError(false);
+    try {
+      const res = await fetch("/api/account");
+      if (!res.ok) throw new Error();
       const data = await res.json();
       setAccount(data);
       setName(data.name);
+    } catch {
+      setLoadError(true);
     }
   };
 
@@ -124,6 +133,22 @@ export default function ComptePage() {
       setDeleting(false);
     }
   };
+
+  if (!account && loadError) {
+    return (
+      <AppShell>
+        <div className="max-w-md mx-auto text-center py-20">
+          <AlertTriangle className="text-amber-500 mx-auto mb-3" size={32} />
+          <p className="text-gray-700 font-semibold mb-1">Impossible de charger votre compte</p>
+          <p className="text-sm text-gray-500 mb-5">Vérifiez votre connexion Internet puis réessayez.</p>
+          <Button onClick={load}>
+            <RotateCw size={15} />
+            Réessayer
+          </Button>
+        </div>
+      </AppShell>
+    );
+  }
 
   if (!account) {
     return (
@@ -231,11 +256,14 @@ export default function ComptePage() {
         </Section>
 
         <Section icon={Download} title="Mes données" hint="Une copie de votre compte et de votre fiche médicale, au format JSON.">
-          <a href="/api/account/export" download className="inline-block">
-            <Button variant="outline">
-              <Download size={15} />
-              Télécharger mes données
-            </Button>
+          <a
+            href="/api/account/export"
+            download
+            onClick={openPrivateLink}
+            className="inline-flex items-center justify-center gap-2 font-semibold rounded-xl transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 text-sm px-4 py-2.5 border-2 border-teal-600 text-teal-600 hover:bg-teal-50 focus:ring-teal-500"
+          >
+            <Download size={15} />
+            Télécharger mes données
           </a>
         </Section>
 
@@ -243,7 +271,8 @@ export default function ComptePage() {
           {blocking.length > 0 ? (
             <p className="text-sm text-gray-700 bg-gray-50 rounded-xl p-3">
               Vous administrez <strong>{blocking.map((f) => f.name).join(", ")}</strong>, qui compte d'autres comptes.
-              Retirez-les depuis « Comptes & invitations », ou supprimez l'espace, avant de supprimer votre compte.
+              Retirez-les depuis « Comptes & invitations », ou supprimez l'espace familial (même page, « Zone sensible »),
+              avant de supprimer votre compte.
             </p>
           ) : (
             <Button variant="ghost" className="text-red-600 hover:bg-red-50" onClick={() => setShowDelete(true)}>

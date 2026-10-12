@@ -1,6 +1,8 @@
-import { eq, and, ne, inArray, isNotNull } from "drizzle-orm";
+import { eq, and, ne, inArray, isNotNull, isNull } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { documentRoles, familyMemberships, members, users } from "../db/schema.js";
+import { effectiveRole } from "./family.js";
+import { parseId } from "./validation.js";
 
 // ── Contrôle d'accès dossier par dossier ─────────────────────────────────────
 // Point unique de décision : chaque route qui lit ou écrit des données
@@ -43,20 +45,33 @@ function strongest(a, b) {
 //     SAUF la fiche de l'autre administrateur (règle réciproque §10) — sauf
 //     délégation explicite par un rôle de dossier (UC-26).
 // Le niveau retenu est le plus fort des niveaux applicables.
+//
+// Une fiche ARCHIVÉE (members.archivedAt, voir lib/archive.js) n'est
+// accessible à personne, quel que soit le rôle — parents compris.
 export async function getFamilyAccess(req) {
   if (req._familyAccess) return req._familyAccess;
+  req._familyAccess = await computeFamilyAccess({
+    userId: req.user.id,
+    familyId: req.familyId,
+    role: req.membership.role,
+    linkedMemberId: req.membership.linkedMemberId,
+  });
+  return req._familyAccess;
+}
 
-  const { membership } = req;
+// Même calcul, sans requête HTTP (moteur de rappels, vérifications à
+// l'acceptation d'une invitation…). `role` est le rôle EFFECTIF du compte.
+export async function computeFamilyAccess({ userId, familyId, role, linkedMemberId }) {
   const access = new Map();
   const familyMemberIds = (
-    await db.select({ id: members.id }).from(members).where(eq(members.familyId, req.familyId))
+    await db
+      .select({ id: members.id })
+      .from(members)
+      .where(and(eq(members.familyId, familyId), isNull(members.archivedAt)))
   ).map((m) => m.id);
 
-  if (membership.role === "dependent") {
-    if (membership.linkedMemberId && familyMemberIds.includes(membership.linkedMemberId)) {
-      access.set(membership.linkedMemberId, ACCESS.READ);
-    }
-    req._familyAccess = access;
+  if (role === "dependent") {
+    if (linkedMemberId && familyMemberIds.includes(linkedMemberId)) access.set(linkedMemberId, ACCESS.READ);
     return access;
   }
 
@@ -64,19 +79,19 @@ export async function getFamilyAccess(req) {
     const myRoles = await db
       .select({ memberId: documentRoles.memberId, role: documentRoles.role })
       .from(documentRoles)
-      .where(and(eq(documentRoles.userId, req.user.id), inArray(documentRoles.memberId, familyMemberIds)));
+      .where(and(eq(documentRoles.userId, userId), inArray(documentRoles.memberId, familyMemberIds)));
     const roleByMember = new Map(myRoles.map((r) => [r.memberId, r.role]));
 
     let otherAdminFiches = new Set();
-    if (membership.role === "parent") {
+    if (role === "parent") {
       const otherAdmins = await db
         .select({ linkedMemberId: familyMemberships.linkedMemberId })
         .from(familyMemberships)
         .where(
           and(
-            eq(familyMemberships.familyId, req.familyId),
+            eq(familyMemberships.familyId, familyId),
             eq(familyMemberships.role, "parent"),
-            ne(familyMemberships.userId, req.user.id),
+            ne(familyMemberships.userId, userId),
             isNotNull(familyMemberships.linkedMemberId)
           )
         );
@@ -85,20 +100,65 @@ export async function getFamilyAccess(req) {
 
     for (const memberId of familyMemberIds) {
       let level = null;
-      if (memberId === membership.linkedMemberId) level = ACCESS.FULL;
+      if (memberId === linkedMemberId) level = ACCESS.FULL;
       level = strongest(level, ROLE_ACCESS[roleByMember.get(memberId)]);
-      if (membership.role === "parent" && !otherAdminFiches.has(memberId)) level = ACCESS.FULL;
+      if (role === "parent" && !otherAdminFiches.has(memberId)) level = ACCESS.FULL;
       if (level) access.set(memberId, level);
     }
   }
-
-  req._familyAccess = access;
   return access;
+}
+
+// Appartenance d'un compte à une famille, avec son rôle EFFECTIF (selon
+// l'âge de sa fiche, comme requireFamilyMembership). null s'il n'en est pas.
+export async function membershipOf(userId, familyId) {
+  const [membership] = await db
+    .select()
+    .from(familyMemberships)
+    .where(and(eq(familyMemberships.userId, userId), eq(familyMemberships.familyId, familyId)));
+  if (!membership) return null;
+  membership.storedRole = membership.role;
+  if (membership.role !== "parent" && membership.linkedMemberId) {
+    const [fiche] = await db
+      .select({ dateOfBirth: members.dateOfBirth })
+      .from(members)
+      .where(eq(members.id, membership.linkedMemberId));
+    membership.role = effectiveRole(membership.role, fiche?.dateOfBirth);
+  }
+  return membership;
+}
+
+// Niveau d'accès d'un compte quelconque à une fiche (null : aucun, y compris
+// s'il n'appartient plus à la famille).
+export async function userAccessTo(userId, memberId) {
+  const [fiche] = await db.select({ familyId: members.familyId }).from(members).where(eq(members.id, memberId));
+  if (!fiche) return null;
+  const membership = await membershipOf(userId, fiche.familyId);
+  if (!membership) return null;
+  const access = await computeFamilyAccess({
+    userId,
+    familyId: fiche.familyId,
+    role: membership.role,
+    linkedMemberId: membership.linkedMemberId,
+  });
+  return access.get(memberId) ?? null;
+}
+
+// Ne garde, parmi `users` ({ id, … }), que ceux dont l'accès réel à la fiche
+// satisfait `allowed` (par défaut : lecture du dossier). Sert à filtrer les
+// destinataires des rappels : un compte qui a perdu l'accès ne reçoit rien.
+export async function withAccess(users, memberId, allowed = (level) => canRead(level)) {
+  const kept = [];
+  for (const user of users) {
+    if (allowed(await userAccessTo(user.id, memberId))) kept.push(user);
+  }
+  return kept;
 }
 
 export async function getAccess(req, memberId) {
   const access = await getFamilyAccess(req);
-  return access.get(parseInt(memberId)) ?? null;
+  const id = parseId(memberId);
+  return id ? access.get(id) ?? null : null;
 }
 
 export const canRead = (level) => level === ACCESS.FULL || level === ACCESS.READ;
@@ -122,8 +182,8 @@ export async function readableMemberIds(req) {
 // lisible (sinon null → 403), sans paramètre → toutes les fiches lisibles.
 export async function readableScope(req) {
   if (req.query.memberId) {
-    const id = parseInt(req.query.memberId);
-    return (await canReadMember(req, id)) ? [id] : null;
+    const id = parseId(req.query.memberId);
+    return id && (await canReadMember(req, id)) ? [id] : null;
   }
   return readableMemberIds(req);
 }
@@ -133,7 +193,7 @@ export async function readableScope(req) {
 // Administrateur ayant un accès complet à cette fiche.
 export async function canManageRoles(req, memberId) {
   if (req.membership.role === "dependent") return false;
-  if (req.membership.linkedMemberId === parseInt(memberId)) return true;
+  if (req.membership.linkedMemberId === parseId(memberId)) return true;
   return req.membership.role === "parent" && (await canWriteMember(req, memberId));
 }
 
@@ -141,7 +201,7 @@ export async function canManageRoles(req, memberId) {
 
 // Titulaire de la fiche = compte qui y est relié.
 export function isHolder(req, memberId) {
-  return req.membership.linkedMemberId === parseInt(memberId);
+  return req.membership.linkedMemberId === parseId(memberId);
 }
 
 // Un document confidentiel n'est visible que du titulaire du dossier et de

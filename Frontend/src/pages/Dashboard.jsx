@@ -126,9 +126,17 @@ function MemberDashboard() {
         fetch(`/api/dashboard?familyId=${familyId}`),
         fetch(`/api/members/household?familyId=${familyId}`).catch(() => null),
       ]);
-      const d = await res.json();
-      setData(d);
-      setHousehold(householdRes?.ok ? await householdRes.json() : null);
+      const d = await res.json().catch(() => null);
+      if (res.ok && d && typeof d === "object") {
+        setData(d);
+      } else {
+        setData(null);
+        toast.error(d?.error || "Erreur lors du chargement du tableau de bord");
+      }
+      setHousehold(householdRes?.ok ? await householdRes.json().catch(() => null) : null);
+    } catch {
+      setData(null);
+      toast.error("Erreur lors du chargement du tableau de bord");
     } finally {
       setLoading(false);
     }

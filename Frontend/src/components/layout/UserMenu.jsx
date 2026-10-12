@@ -38,8 +38,11 @@ export function UserMenu() {
 
   const handleLogout = async () => {
     close();
-    await logout();
-    navigate("/login");
+    try {
+      await logout();
+    } finally {
+      navigate("/login");
+    }
   };
 
   const switchFamily = (family) => {
@@ -49,7 +52,7 @@ export function UserMenu() {
   };
 
   const items = [
-    { to: "/compte", icon: UserCog, label: "Mon profil", hint: "Nom, adresse, mot de passe" },
+    { to: "/compte", icon: UserCog, label: "Mon compte", hint: "Nom, adresse, mot de passe" },
     myMember && { to: `/fiches?fiche=${myMember.id}`, icon: HeartPulse, label: "Ma fiche médicale" },
     myMember && { to: `/partage?fiche=${myMember.id}`, icon: ShieldPlus, label: "Ma fiche d'urgence" },
     { to: "/notifications", icon: BellRing, label: "Notifications et préférences" },
@@ -61,6 +64,7 @@ export function UserMenu() {
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
+        aria-label={`Menu du compte${user?.name ? ` — ${user.name}` : ""}`}
         aria-haspopup="menu"
         aria-expanded={open}
         className="flex items-center gap-2 px-2 sm:px-3 py-1.5 rounded-xl hover:bg-gray-50 transition-colors"

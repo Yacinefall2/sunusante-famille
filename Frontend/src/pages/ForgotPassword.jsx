@@ -65,7 +65,7 @@ export default function ForgotPasswordPage() {
             </div>
             <form onSubmit={submit} className="space-y-4">
               <Input
-                label="Email"
+                label="Adresse courriel"
                 type="email"
                 required
                 value={email}

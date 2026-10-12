@@ -7,8 +7,9 @@ Réécriture du projet (initialement en Next.js) en architecture séparée :
 
 ## Prérequis
 
-- Node.js 18+
-- PostgreSQL (local ou distant)
+- Node.js 20+ (hors Docker ; les images Docker utilisent Node 20)
+- PostgreSQL 16 (local, distant, ou celui de docker compose)
+- Docker et Docker Compose v2 (option A)
 
 ## Option A — Lancer avec Docker (recommandé)
 
@@ -16,23 +17,49 @@ Le projet est entièrement dockerisé : PostgreSQL, backend et frontend démarre
 ensemble avec une seule commande.
 
 ```bash
-cp .env.example .env        # éditer si besoin (identifiants PostgreSQL, CORS)
-docker compose up --build
+cp .env.example .env        # puis remplir les variables obligatoires (voir ci-dessous)
+docker compose --profile dev up --build   # avec MailHog et pgAdmin (développement)
+# ou : docker compose up --build          # sans les outils de développement
 ```
 
-- Frontend (React servi par Nginx) : http://localhost:8080
-- Backend (API Express) : http://localhost:4000/api/health
-- PostgreSQL : port 5432
+Variables **obligatoires** dans `.env` (docker compose refuse de démarrer sans
+elles) : `POSTGRES_PASSWORD`, `PGADMIN_PASSWORD`, `JWT_ACCESS_SECRET`,
+`JWT_REFRESH_SECRET`. Générer un secret :
+`node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"`.
+L'image backend tourne en `NODE_ENV=production` : elle exige des secrets JWT
+d'au moins 32 caractères (différents l'un de l'autre) et `COOKIE_SECURE=true`
+(qui fonctionne aussi sur http://localhost). Voir le tableau complet des
+variables et la section « Sécurité en production » dans
+[DOCUMENTATION.md](DOCUMENTATION.md).
 
-L'API et PostgreSQL ne sont joignables que depuis la machine elle-même
-(`127.0.0.1`), jamais depuis le réseau. Les outils de développement (pgAdmin
-sur http://localhost:5050, Mailhog sur http://localhost:8025) ne démarrent
-qu'avec le profil `dev` : `docker compose --profile dev up --build`.
+Adresses par défaut (ports réglables dans `.env`) :
+
+| Service | Adresse | Variable de port |
+|---|---|---|
+| Frontend (React servi par Nginx) | http://localhost:8080 | `FRONTEND_PORT` |
+| Backend (API Express, accès direct) | http://localhost:4000/api/health | `BACKEND_PORT` |
+| PostgreSQL | 127.0.0.1:5432 | `DB_HOST_PORT` |
+| pgAdmin (profil `dev`) | http://localhost:5050 | `PGADMIN_PORT` |
+| MailHog, interface web (profil `dev`) | http://localhost:8025 | `MAILHOG_UI_PORT` |
+| MailHog, SMTP (profil `dev`) | 127.0.0.1:1025 | `MAILHOG_SMTP_PORT` |
+
+Si vous changez `FRONTEND_PORT`, alignez `FRONTEND_URL` (liens des courriels
+et seule origine autorisée à appeler l'API).
+
+L'API, PostgreSQL et les outils ne sont joignables que depuis la machine
+elle-même (`127.0.0.1`), jamais depuis le réseau. pgAdmin et MailHog ne
+démarrent qu'avec le profil `dev`. Par défaut les courriels partent vers
+MailHog (`SMTP_HOST=mailhog`) : sans le profil `dev`, configurez un vrai
+serveur SMTP (Gmail, Brevo...) dans `.env`.
 
 Au démarrage, le conteneur backend applique automatiquement les migrations
-versionnées du dossier `Backend/drizzle/` avant de lancer le serveur — aucune
-commande manuelle n'est nécessaire. Une base créée par l'ancien
-`drizzle-kit push` est reprise automatiquement au premier démarrage.
+versionnées du dossier `Backend/drizzle/` (`node src/db/migrate.js`, lancé
+par `docker-entrypoint.sh`) avant de lancer le serveur — aucune commande
+manuelle n'est nécessaire. Une base créée par l'ancien `drizzle-kit push` est
+reprise automatiquement au premier démarrage. Le backend tourne sous
+l'utilisateur `node` (non root) ; le service `uploads-permissions` rend le
+volume des fichiers téléversés inscriptible par cet utilisateur avant son
+démarrage.
 
 ### Rappels et notifications
 
@@ -49,8 +76,12 @@ personne et à l'administrateur familial. Fuseau de référence : `APP_TIMEZONE`
 - **Mot de passe oublié** (`/mot-de-passe-oublie`) : un lien valable 1 heure,
   à usage unique, est envoyé par courriel ; une nouvelle demande annule la
   précédente. Changer son mot de passe ferme toutes les sessions ouvertes.
-- **Limite des tentatives** : après 5 échecs de connexion en 15 minutes sur une
-  même adresse, la connexion est refusée jusqu'à la fin de ce délai.
+- **Limite des tentatives** : 5 échecs de mot de passe sur une même adresse
+  depuis une même connexion (20 toutes connexions confondues, 30 sur une même
+  connexion toutes adresses confondues) bloquent pendant 15 minutes, sans
+  prolongation. S'applique aussi au mot de passe redemandé dans « Mon compte ».
+  Les routes d'authentification et publiques sont en outre limitées à 100
+  requêtes par adresse IP et par quart d'heure.
 - **Mon compte** (`/compte`, clic sur son nom en haut à droite) : changer son
   nom, son adresse (confirmée par un lien envoyé à la nouvelle, avis envoyé à
   l'ancienne) ou son mot de passe (alerte par courriel, autres appareils
@@ -59,7 +90,9 @@ personne et à l'administrateur familial. Fuseau de référence : `APP_TIMEZONE`
   un type imposé, en-têtes de sécurité (helmet côté API, `security-headers.conf`
   côté Nginx), cookies `SameSite=Strict`, contrôle de l'origine des requêtes,
   jetons d'invitation et de vérification stockés sous forme d'empreinte,
-  20 invitations ou liens médecin par compte et par 24 heures.
+  jeton de fiche d'urgence chiffré, réponses de l'API jamais mises en cache,
+  objet des courriels de rappel sans donnée de santé, 20 invitations ou liens
+  médecin par compte et par 24 heures, 500 Mo de fichiers par famille.
 
 ### Partage médecin et fiche d'urgence
 
@@ -68,9 +101,13 @@ Page « Partage & urgence » (`/partage`) :
 - **Lien médecin** (2 h, 24 h ou 7 jours, révocable à tout moment) : envoyé par courriel à l'adresse
   du médecin saisie à la création, avec un bouton d'accès ; il n'est jamais
   affiché à la famille. Si le courriel ne part pas, le lien est supprimé. À
-  usage unique : la première ouverture le réserve à l'appareil du médecin
-  jusqu'à l'expiration ; une ouverture depuis un autre appareil est refusée et
-  signalée. Vue en lecture seule `/medecin/:jeton`, imprimable (pas d'export PDF).
+  usage unique : la page affiche d'abord « Dossier médical de X partagé avec
+  vous » et un bouton « Ouvrir le dossier » ; c'est ce clic (et non le simple
+  chargement, que les robots des messageries déclenchent) qui réserve le lien
+  à l'appareil du médecin jusqu'à l'expiration. Une ouverture depuis un autre
+  appareil est refusée et signalée. Vue en lecture seule `/medecin/:jeton`,
+  imprimable (pas d'export PDF). Un document confidentiel ne peut être partagé
+  que par le titulaire du dossier.
 - **Fiche d'urgence** : rien n'est publié par défaut, le titulaire coche chaque
   information. QR code vers `/urgence/:jeton` (régénérable : l'ancien cesse de
   fonctionner), carte imprimable et image d'écran de verrouillage avec les
@@ -116,7 +153,7 @@ docker compose up --build
 ```bash
 cd Backend
 cp .env.example .env
-# éditer .env : DATABASE_URL, PORT, CORS_ORIGIN
+# éditer .env : DATABASE_URL, secrets JWT, FRONTEND_URL (voir DOCUMENTATION.md §3.5)
 npm install
 npm run db:migrate   # crée/met à jour les tables à partir des migrations de Backend/drizzle/
 npm run dev           # démarre l'API sur http://localhost:4000
@@ -153,10 +190,10 @@ Docker ci-dessus, qui gère déjà ce proxy via Nginx (`Frontend/nginx.conf`).
 ```
 .
 ├── docker-compose.yml       # orchestre db + backend + frontend
-├── .env.example             # variables PostgreSQL / CORS pour Docker
+├── .env.example             # variables d'environnement pour Docker (à copier en .env)
 ├── Backend/
 │   ├── Dockerfile
-│   ├── docker-entrypoint.sh # applique le schéma PostgreSQL puis lance le serveur
+│   ├── docker-entrypoint.sh # applique les migrations (src/db/migrate.js) puis lance le serveur
 │   └── .dockerignore
 └── Frontend/
     ├── Dockerfile            # build Vite multi-stage → Nginx

@@ -6,8 +6,14 @@ import { notifications } from "../db/schema.js";
 import { markEmailFailed } from "../reminders/engine.js";
 
 // Rebonds signalés par le service d'envoi (UC-67) — prêt pour Brevo : son
-// webhook « transactionnel » envoie { event, "message-id", reason }. L'adresse
-// contient un secret (MAIL_WEBHOOK_SECRET) ; sans lui, la route n'existe pas.
+// webhook « transactionnel » envoie { event, "message-id", reason }. Le secret
+// MAIL_WEBHOOK_SECRET est exigé ; sans lui, la route n'existe pas. Deux façons
+// de le transmettre :
+//   - dans l'en-tête X-Webhook-Secret, adresse POST /api/webhooks/mail
+//     (préférable : un en-tête n'apparaît pas dans les journaux d'accès des
+//     serveurs et proxys, contrairement à l'adresse) ;
+//   - dans l'adresse, POST /api/webhooks/mail/<secret> (pour les services qui
+//     ne savent pas ajouter d'en-tête).
 // Utilisable seulement une fois l'application joignable depuis Internet.
 const router = Router();
 
@@ -26,9 +32,9 @@ function sameSecret(given, expected) {
   return crypto.timingSafeEqual(a, b);
 }
 
-router.post("/:secret", async (req, res) => {
+async function handleEvents(req, res, given) {
   const secret = process.env.MAIL_WEBHOOK_SECRET;
-  if (!secret || !sameSecret(req.params.secret, secret)) return res.status(404).end();
+  if (!secret || given == null || !sameSecret(given, secret)) return res.status(404).end();
   try {
     const events = Array.isArray(req.body) ? req.body : [req.body];
     for (const event of events) {
@@ -45,6 +51,9 @@ router.post("/:secret", async (req, res) => {
     console.error(error);
     res.status(500).json({ error: "Erreur serveur" });
   }
-});
+}
+
+router.post("/", (req, res) => handleEvents(req, res, req.get("x-webhook-secret")));
+router.post("/:secret", (req, res) => handleEvents(req, res, req.params.secret));
 
 export default router;

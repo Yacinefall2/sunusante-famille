@@ -4,6 +4,7 @@ import { db } from "../db/index.js";
 import { families, familyMemberships, members } from "../db/schema.js";
 import { requireFamilyMembership } from "../middleware/auth.js";
 import { documentFilesOf, removeFiles } from "../lib/documentFiles.js";
+import { parseId } from "../lib/validation.js";
 
 const router = Router();
 
@@ -29,8 +30,11 @@ router.get("/", async (req, res) => {
 router.post("/", async (req, res) => {
   try {
     const { name } = req.body;
-    if (!name?.trim()) {
+    if (typeof name !== "string" || !name.trim()) {
       return res.status(400).json({ error: "Le nom est requis" });
+    }
+    if (name.trim().length > 255) {
+      return res.status(400).json({ error: "Nom de la famille : 255 caractères maximum" });
     }
 
     // Une personne déjà membre d'une famille (quel que soit son rôle) ne peut
@@ -70,7 +74,7 @@ router.post("/", async (req, res) => {
 // même si celui-ci a le rôle "parent" (UC-11 / section 9.2).
 router.delete(
   "/",
-  requireFamilyMembership((req) => parseInt(req.query.id) || null, { roles: ["parent"] }),
+  requireFamilyMembership((req) => parseId(req.query.id), { roles: ["parent"] }),
   async (req, res) => {
     try {
       if (!req.membership.isPrimaryAdmin) {

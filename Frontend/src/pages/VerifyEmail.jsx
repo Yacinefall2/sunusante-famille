@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { Loader2, CheckCircle2, XCircle } from "lucide-react";
@@ -13,7 +13,13 @@ export default function VerifyEmailPage() {
   const [status, setStatus] = useState("loading"); // loading | success | error
   const [error, setError] = useState("");
 
+  // Un seul appel (lien à usage unique, double montage en développement
+  // avec StrictMode).
+  const requested = useRef(false);
+
   useEffect(() => {
+    if (requested.current) return;
+    requested.current = true;
     verifyEmail(token)
       .then(() => {
         setStatus("success");

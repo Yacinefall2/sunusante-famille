@@ -1,15 +1,16 @@
 import { Router } from "express";
-import { eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { members, appointments, treatments, vaccinations, documents } from "../db/schema.js";
 import { requireFamilyMembership } from "../middleware/auth.js";
 import { canSeeDocument, readableMemberIds } from "../lib/documentAccess.js";
+import { familyIdFromQuery } from "../lib/familyResolvers.js";
 
 const router = Router();
 
 router.get(
   "/",
-  requireFamilyMembership((req) => parseInt(req.query.familyId) || null),
+  requireFamilyMembership(familyIdFromQuery),
   async (req, res) => {
     try {
       // Tableau de bord limité aux dossiers lisibles par ce compte (le sien,
@@ -17,7 +18,7 @@ router.get(
       const [{ householdCount }] = await db
         .select({ householdCount: sql`count(*)::int` })
         .from(members)
-        .where(eq(members.familyId, req.familyId));
+        .where(and(eq(members.familyId, req.familyId), isNull(members.archivedAt))); // fiches archivées exclues
       const readableIds = await readableMemberIds(req);
       const familyMembers =
         readableIds.length > 0

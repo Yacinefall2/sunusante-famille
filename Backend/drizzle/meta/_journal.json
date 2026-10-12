@@ -92,6 +92,20 @@
       "when": 1791803652176,
       "tag": "0012_hachage_jetons",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1791810558944,
+      "tag": "0013_jeton_urgence_chiffre",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1791812276847,
+      "tag": "0014_fiches_archivees",
+      "breakpoints": true
     }
   ]
 }

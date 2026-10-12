@@ -17,7 +17,7 @@ import {
   ShieldPlus,
 } from "lucide-react";
 import { cn } from "../../lib/utils";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 const navItems = [
   { href: "/dashboard", label: "Tableau de bord", icon: LayoutDashboard },
@@ -36,6 +36,14 @@ const navItems = [
 export function Sidebar() {
   const { pathname } = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
+
+  // Menu mobile ouvert : la touche Échap le referme.
+  useEffect(() => {
+    if (!mobileOpen) return;
+    const onKey = (e) => e.key === "Escape" && setMobileOpen(false);
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [mobileOpen]);
 
   const NavLink = ({ item }) => {
     const Icon = item.icon;
@@ -62,7 +70,10 @@ export function Sidebar() {
     <>
       {/* Mobile hamburger */}
       <button
+        type="button"
         onClick={() => setMobileOpen(true)}
+        aria-label="Ouvrir le menu"
+        aria-expanded={mobileOpen}
         className="lg:hidden fixed top-4 left-4 z-50 p-2.5 bg-white rounded-xl shadow-lg border border-gray-100"
       >
         <Menu size={22} className="text-teal-600" />
@@ -93,7 +104,11 @@ export function Sidebar() {
               <span className="text-lg font-bold text-teal-600">Famille</span>
             </div>
           </Link>
-          <button onClick={() => setMobileOpen(false)} className="lg:hidden p-1 rounded-lg hover:bg-gray-100 text-gray-500">
+          <button
+            type="button"
+            onClick={() => setMobileOpen(false)}
+            aria-label="Fermer le menu"
+            className="lg:hidden p-1 rounded-lg hover:bg-gray-100 text-gray-500">
             <X size={18} />
           </button>
         </div>

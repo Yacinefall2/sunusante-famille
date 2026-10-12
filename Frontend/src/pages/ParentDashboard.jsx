@@ -34,7 +34,7 @@ import { Button } from "../components/ui/Button";
 import { useFamily } from "../context/FamilyContext";
 import { useAuth } from "../context/AuthContext";
 import { kinshipLabel } from "../lib/kinship";
-import { cn, formatDate, formatTimeAgo } from "../lib/utils";
+import { cn, formatDate, formatIsoDatesInText, formatTimeAgo } from "../lib/utils";
 import {
   IntakeStatusBadge,
   NOTIFICATIONS_REFRESH_EVENT,
@@ -276,9 +276,9 @@ function TodoBlock({ todo, memberById, busyKey, handlers }) {
                 {member && <Avatar member={member} size="sm" />}
                 <div className="min-w-0">
                   <p className="font-semibold text-gray-800 text-sm">
-                    {item.title}
+                    {formatIsoDatesInText(item.title)}
                   </p>
-                  {item.detail && <p className="text-xs text-gray-500">{item.detail}</p>}
+                  {item.detail && <p className="text-xs text-gray-500">{formatIsoDatesInText(item.detail)}</p>}
                 </div>
               </div>
               <div className="flex-shrink-0 sm:ml-auto pl-[52px] sm:pl-0">
@@ -682,7 +682,7 @@ function ActivityBlock({ activity, memberById }) {
                 >
                   <Icon size={14} />
                 </span>
-                <p className="text-sm text-gray-800">{ev.text}</p>
+                <p className="text-sm text-gray-800">{formatIsoDatesInText(ev.text)}</p>
                 <p className="text-xs text-gray-400 mt-0.5">
                   {formatTimeAgo(ev.at)}
                   {member && !ev.text?.includes(member.firstName) ? ` · ${member.firstName}` : ""}

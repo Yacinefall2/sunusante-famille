@@ -1,5 +1,6 @@
 node_modules
 npm-debug.log
+# Secrets : jamais dans l'image
 .env
 .env.*
 !.env.example
@@ -7,3 +8,11 @@ npm-debug.log
 .gitignore
 *.md
 .DS_Store
+# Fichiers téléversés (données de santé) : ils vivent dans le volume
+# uploads_data, jamais dans l'image
+uploads
+# Tests et outils de développement
+test
+coverage
+vitest.config.js
+drizzle.config.js

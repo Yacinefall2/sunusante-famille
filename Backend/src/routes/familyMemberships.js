@@ -1,10 +1,13 @@
 import { Router } from "express";
 import { eq, and, sql, inArray } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { familyMemberships, users, members, documentRoles } from "../db/schema.js";
+import { familyMemberships, users, members, documentRoles, notifications } from "../db/schema.js";
 import { requireFamilyMembership } from "../middleware/auth.js";
 import { canWriteMember } from "../lib/documentAccess.js";
-import { ageOn, effectiveRole } from "../lib/family.js";
+import { ADULT_AGE, ACCOUNT_MIN_AGE, MINOR_PARENT_ERROR, UNDER_MIN_AGE_ERROR, ageOn, effectiveRole, statusForLinkedFiche } from "../lib/family.js";
+import { ARCHIVED_ERROR, afterFicheLinked, afterFicheUnlinked, archiveFicheOfLeavingAccount } from "../lib/archive.js";
+import { familyIdFromQuery } from "../lib/familyResolvers.js";
+import { INVALID_ID, parseId } from "../lib/validation.js";
 
 const router = Router();
 
@@ -15,7 +18,7 @@ const MAX_PARENTS = 2;
 // tous les membres de la famille (pas seulement les Parents).
 router.get(
   "/",
-  requireFamilyMembership((req) => parseInt(req.query.familyId) || null),
+  requireFamilyMembership(familyIdFromQuery),
   async (req, res) => {
     try {
       const rows = await db
@@ -46,7 +49,7 @@ router.get(
 // Résout la familyId à partir de l'id d'une family_membership (pour PUT/DELETE,
 // qui ne reçoivent que l'id de la ligne, pas familyId directement)
 async function resolveFamilyIdFromMembershipId(req) {
-  const id = parseInt(req.body?.id ?? req.query?.id);
+  const id = parseId(req.body?.id ?? req.query?.id);
   if (!id) return null;
   const [row] = await db
     .select({ familyId: familyMemberships.familyId })
@@ -63,7 +66,7 @@ router.put("/", requireFamilyMembership(resolveFamilyIdFromMembershipId, { roles
       return res.status(400).json({ error: "Rôle invalide" });
     }
 
-    const membershipId = parseInt(id);
+    const membershipId = parseId(id);
     const [existing] = await db.select().from(familyMemberships).where(eq(familyMemberships.id, membershipId));
     if (!existing) return res.status(404).json({ error: "Introuvable" });
 
@@ -102,19 +105,30 @@ router.put("/", requireFamilyMembership(resolveFamilyIdFromMembershipId, { roles
 
     // Fiche de la personne (« sa fiche », dont elle est Titulaire) — valable
     // pour tous les rôles, conservée d'un rôle à l'autre, obligatoire pour un
-    // "dependent". Un Parent relie ici le compte d'un AUTRE ; pour soi-même,
-    // c'est POST /api/members/claim (on ne s'attribue pas une fiche qu'on
-    // ne gère pas).
+    // "dependent". Seul le titulaire choisit sa fiche (POST /api/members/claim) :
+    // un Parent ne relie ici que le compte d'un AUTRE qui n'a pas encore de
+    // fiche, ou un compte adolescent ; jamais un adulte qui a déjà la sienne
+    // (ni pour la lui retirer, ni pour lui en donner une autre).
+    const [currentFiche] = existing.linkedMemberId
+      ? await db.select().from(members).where(eq(members.id, existing.linkedMemberId))
+      : [];
+    let newFiche = currentFiche ?? null;
     let newLinkedMemberId = existing.linkedMemberId;
-    const parsedId = parseInt(linkedMemberId);
+    const hasLinkedParam = linkedMemberId !== undefined && linkedMemberId !== null && linkedMemberId !== "";
+    const parsedId = hasLinkedParam ? parseId(linkedMemberId) : null;
+    if (hasLinkedParam && !parsedId) return res.status(400).json({ error: INVALID_ID });
     if (parsedId && parsedId !== existing.linkedMemberId) {
       if (existing.userId === req.user.id) {
         return res.status(403).json({ error: "Utilisez « Ma fiche » pour désigner votre propre fiche" });
+      }
+      if (existing.linkedMemberId && effectiveRole(existing.role, currentFiche?.dateOfBirth) !== "dependent") {
+        return res.status(403).json({ error: "Ce compte a déjà sa fiche : seul son titulaire peut en changer" });
       }
       const [member] = await db.select().from(members).where(eq(members.id, parsedId));
       if (!member || member.familyId !== req.familyId) {
         return res.status(400).json({ error: "Fiche membre introuvable dans cette famille" });
       }
+      if (member.archivedAt) return res.status(409).json({ error: ARCHIVED_ERROR });
       const [alreadyLinked] = await db
         .select({ id: familyMemberships.id })
         .from(familyMemberships)
@@ -125,10 +139,18 @@ router.put("/", requireFamilyMembership(resolveFamilyIdFromMembershipId, { roles
       if (!(await canWriteMember(req, parsedId))) {
         return res.status(403).json({ error: "Vous n'avez pas les droits sur cette fiche" });
       }
+      // Même règle d'âge que les invitations : pas de compte avant 15 ans.
+      const age = ageOn(member.dateOfBirth);
+      if (age !== null && age < ACCOUNT_MIN_AGE) return res.status(400).json({ error: UNDER_MIN_AGE_ERROR });
       newLinkedMemberId = parsedId;
+      newFiche = member;
     }
     if (role === "dependent" && !newLinkedMemberId) {
       return res.status(400).json({ error: "Choisissez la fiche membre correspondant à cette personne" });
+    }
+    // Un mineur n'est jamais administrateur du foyer.
+    if (role === "parent" && newFiche && ageOn(newFiche.dateOfBirth) !== null && ageOn(newFiche.dateOfBirth) < ADULT_AGE) {
+      return res.status(400).json({ error: MINOR_PARENT_ERROR });
     }
 
     const [updated] = await db
@@ -136,11 +158,20 @@ router.put("/", requireFamilyMembership(resolveFamilyIdFromMembershipId, { roles
       .set({ role, linkedMemberId: newLinkedMemberId })
       .where(eq(familyMemberships.id, membershipId))
       .returning();
-    // Le lien « Parent » suit le rôle d'administrateur.
-    if (newLinkedMemberId && (role === "parent") !== (existing.role === "parent")) {
+    if (newLinkedMemberId !== existing.linkedMemberId) {
+      // Nouvelle fiche reliée : rôles posés avant la liaison retirés, statut
+      // à jour ; l'ancienne fiche (adolescent) redevient gérée par les parents.
+      await afterFicheLinked({ memberId: newLinkedMemberId, userId: existing.userId, role });
+      if (existing.linkedMemberId) await afterFicheUnlinked(existing.linkedMemberId);
+    } else if (newLinkedMemberId) {
+      // Le lien « Parent » suit le rôle d'administrateur ; le statut suit le rôle.
+      const roleChanged = (role === "parent") !== (existing.role === "parent");
       await db
         .update(members)
-        .set(role === "parent" ? { kinship: "parent", kinshipRelatedMemberId: null } : { kinship: null })
+        .set({
+          status: statusForLinkedFiche(role, newFiche?.dateOfBirth, newFiche?.status),
+          ...(roleChanged ? (role === "parent" ? { kinship: "parent", kinshipRelatedMemberId: null } : { kinship: null }) : {}),
+        })
         .where(eq(members.id, newLinkedMemberId));
     }
     res.json(updated);
@@ -151,11 +182,14 @@ router.put("/", requireFamilyMembership(resolveFamilyIdFromMembershipId, { roles
 });
 
 // Retirer l'accès d'un membre à la famille — réservé aux Parents, jamais
-// applicable à l'Administrateur familial A1 (UC-06, section 9.2).
+// applicable à l'Administrateur familial A1 (UC-06, section 9.2). Sa fiche
+// est archivée s'il est adulte (lib/archive.js), rendue aux parents s'il est
+// adolescent ; ses rôles de dossier et ses notifications de cette famille
+// disparaissent.
 router.delete("/", requireFamilyMembership(resolveFamilyIdFromMembershipId, { roles: ["parent"] }), async (req, res) => {
   try {
-    const id = parseInt(req.query.id ?? "");
-    if (isNaN(id)) return res.status(400).json({ error: "ID invalide" });
+    const id = parseId(req.query.id);
+    if (!id) return res.status(400).json({ error: INVALID_ID });
 
     const [existing] = await db.select().from(familyMemberships).where(eq(familyMemberships.id, id));
     if (!existing) return res.status(404).json({ error: "Introuvable" });
@@ -163,6 +197,7 @@ router.delete("/", requireFamilyMembership(resolveFamilyIdFromMembershipId, { ro
       return res.status(403).json({ error: "L'administrateur familial ne peut pas être retiré de l'espace" });
     }
 
+    await archiveFicheOfLeavingAccount(existing);
     await db.delete(familyMemberships).where(eq(familyMemberships.id, id));
 
     // Ses rôles de dossier (Axe 2) dans cette famille tombent avec lui :
@@ -175,6 +210,11 @@ router.delete("/", requireFamilyMembership(resolveFamilyIdFromMembershipId, { ro
         .delete(documentRoles)
         .where(and(eq(documentRoles.userId, existing.userId), inArray(documentRoles.memberId, familyMemberIds)));
     }
+    // Ses notifications de cette famille aussi (elles décrivent des dossiers
+    // auxquels il n'a plus accès).
+    await db
+      .delete(notifications)
+      .where(and(eq(notifications.userId, existing.userId), eq(notifications.familyId, req.familyId)));
 
     res.json({ success: true });
   } catch (error) {

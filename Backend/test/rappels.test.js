@@ -153,9 +153,15 @@ describe("Préférences et courriels (UC-65, UC-66, UC-67)", () => {
     const fatouList = await notifsOf(f.fatou);
     expect(fatouList[0]).toMatchObject({ emailStatus: "failed", emailAttempts: 3 });
     expect(fatouList[1]).toMatchObject({ category: "delivery_failure", inApp: true });
+    // A1 est prévenu sans rien apprendre du dossier de l'autre : ni le titre
+    // du rappel (motif du rendez-vous), ni la fiche concernée.
     const awaList = await notifsOf(f.awa);
     expect(awaList).toHaveLength(1);
-    expect(awaList[0].title).toContain(f.fatou.email);
+    expect(awaList[0].title).toBe(`Un courriel n'a pas pu être remis à ${f.fatou.name}`);
+    expect(awaList[0].body).toContain(f.fatou.email);
+    expect(`${awaList[0].title} ${awaList[0].body}`).not.toContain(fatouList[0].title);
+    expect(awaList[0].memberId).toBeNull();
+    expect(fatouList[1].body).toContain(fatouList[0].title); // la personne concernée garde le détail
   });
 });
 
@@ -193,14 +199,18 @@ describe("Rappels de prise de médicament (UC-56, UC-20, UC-44)", () => {
     expect(await notifsOf(f.fatou)).toHaveLength(1);
   });
 
-  it("ne rattrape pas une prise de plus de 2 h ; marque « sans réponse » au bout de 12 h", async () => {
+  it("ne rappelle pas une prise de plus de 2 h (enregistrée « sans réponse ») ; marque « sans réponse » au bout de 12 h", async () => {
     const med = await medication(f.fiches.khady, ["08:00", "14:00"]);
-    await tick(at("2026-11-10T14:05:00Z")); // 08:00 trop ancienne, 14:00 oui
-    const intakes = await db.select().from(medicationIntakes).where(eq(medicationIntakes.medicationId, med.id));
-    expect(intakes.map((i) => i.scheduledAt.toISOString())).toEqual(["2026-11-10T14:00:00.000Z"]);
+    await tick(at("2026-11-10T14:05:00Z")); // moteur arrêté depuis le matin : 08:00 trop ancienne, 14:00 oui
+    const intakes = await db.select().from(medicationIntakes).where(eq(medicationIntakes.medicationId, med.id)).orderBy(medicationIntakes.scheduledAt);
+    expect(intakes.map((i) => [i.scheduledAt.toISOString(), i.status])).toEqual([
+      ["2026-11-10T08:00:00.000Z", "missed"],
+      ["2026-11-10T14:00:00.000Z", "pending"],
+    ]);
+    expect((await notifsOf(f.khady)).map((n) => n.title)).toEqual(["C'est l'heure : Amlodipine 5 mg"]);
     await tick(at("2026-11-11T02:30:00Z"));
-    const [after] = await db.select().from(medicationIntakes).where(eq(medicationIntakes.medicationId, med.id));
-    expect(after.status).toBe("missed");
+    const after = await db.select().from(medicationIntakes).where(eq(medicationIntakes.medicationId, med.id));
+    expect(after.every((i) => i.status === "missed")).toBe(true);
   });
 
   it("l'adolescente répond « pris » : historique gardé, notifications lues, plus de relance", async () => {

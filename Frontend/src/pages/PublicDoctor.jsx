@@ -1,10 +1,32 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
-import { Heart, Loader2, Printer, Droplets, AlertTriangle, Stethoscope, Pill, Syringe, FileText, ExternalLink, Lock, ShieldX } from "lucide-react";
+import {
+  Heart,
+  Loader2,
+  Printer,
+  Droplets,
+  AlertTriangle,
+  Stethoscope,
+  Pill,
+  Syringe,
+  FileText,
+  ExternalLink,
+  Lock,
+  ShieldX,
+  FolderOpen,
+} from "lucide-react";
 import { DOCUMENT_TYPES, formatDate, formatDateTime } from "../lib/utils";
 
 // Vue publique, en lecture seule, du dossier partagé avec un professionnel
 // de santé (lien à usage unique). Accessible sans compte.
+//
+// Le lien n'est PAS consommé au simple chargement de la page : les robots des
+// messageries (analyse des liens, Outlook Safe Links...) ouvrent les liens
+// reçus, parfois en exécutant le JavaScript, et l'auraient « utilisé » avant
+// le médecin. La page lit d'abord l'état du lien (sans effet), puis attend
+// que le médecin clique sur « Ouvrir le dossier » : c'est ce clic qui lie le
+// lien à cet appareil. Un appareil qui l'a déjà ouvert affiche directement
+// le dossier.
 
 const ERRORS = {
   already_opened: {
@@ -22,6 +44,10 @@ const ERRORS = {
   unknown: {
     title: "Lien introuvable",
     text: "Ce lien n'existe pas ou est incomplet. Vérifiez l'adresse reçue, ou demandez un nouveau lien à la famille.",
+  },
+  not_opened: {
+    title: "Dossier pas encore ouvert",
+    text: "Rechargez la page puis cliquez sur « Ouvrir le dossier ».",
   },
   network: {
     title: "Chargement impossible",
@@ -46,31 +72,68 @@ function Section({ icon: Icon, title, children }) {
 
 const Empty = ({ children }) => <p className="text-sm text-gray-400 italic">{children}</p>;
 
+// Raison d'erreur affichable à partir d'une réponse refusée.
+async function failureReason(res) {
+  const body = await res.json().catch(() => ({}));
+  return res.status === 404 ? "unknown" : ERRORS[body.reason] ? body.reason : "unknown";
+}
+
 export default function PublicDoctorPage() {
   const { token } = useParams();
+  const base = `/api/public/doctor/${encodeURIComponent(token)}`;
+  const [status, setStatus] = useState(null); // état du lien, avant ouverture
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
-  // Un seul appel au chargement : le lien est à usage unique (garde contre
-  // le double montage de React.StrictMode en développement).
+  const [opening, setOpening] = useState(false);
+  // Un seul appel au chargement (garde contre le double montage de
+  // React.StrictMode en développement).
   const requested = useRef(false);
+
+  async function loadSynthesis() {
+    try {
+      const res = await fetch(base, { credentials: "include" });
+      if (res.ok) setData(await res.json());
+      else setError(await failureReason(res));
+    } catch {
+      setError("network");
+    }
+  }
 
   useEffect(() => {
     if (requested.current) return;
     requested.current = true;
     (async () => {
       try {
-        const res = await fetch(`/api/public/doctor/${encodeURIComponent(token)}`, { credentials: "include" });
-        if (res.ok) {
-          setData(await res.json());
+        const res = await fetch(`${base}/status`, { credentials: "include" });
+        if (!res.ok) {
+          setError(await failureReason(res));
           return;
         }
-        const body = await res.json().catch(() => ({}));
-        setError(res.status === 404 ? "unknown" : ERRORS[body.reason] ? body.reason : "unknown");
+        const body = await res.json();
+        if (body.hasSession) await loadSynthesis();
+        else setStatus(body);
       } catch {
         setError("network");
       }
     })();
   }, [token]);
+
+  // Clic du médecin : le lien est lié à cet appareil, puis le dossier s'affiche.
+  async function openFolder() {
+    setOpening(true);
+    try {
+      const res = await fetch(`${base}/open`, { method: "POST", credentials: "include" });
+      if (!res.ok) {
+        setError(await failureReason(res));
+        return;
+      }
+      await loadSynthesis();
+    } catch {
+      setError("network");
+    } finally {
+      setOpening(false);
+    }
+  }
 
   useEffect(() => {
     document.title = "Dossier partagé — SunuSanté Famille";
@@ -86,6 +149,39 @@ export default function PublicDoctorPage() {
       </div>
     </header>
   );
+
+  if (!data && !error && status) {
+    return (
+      <div className="min-h-screen bg-gray-50">
+        {header}
+        <div className="max-w-lg mx-auto px-4 py-16">
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-8 text-center">
+            <div className="w-16 h-16 bg-teal-50 rounded-2xl flex items-center justify-center mx-auto mb-4">
+              <FolderOpen size={32} className="text-teal-600" />
+            </div>
+            <h1 className="text-xl font-bold text-gray-800 mb-2">
+              {status.memberFirstName ? `Dossier médical de ${status.memberFirstName} partagé avec vous` : "Dossier médical partagé avec vous"}
+            </h1>
+            <p className="text-gray-600">
+              Ce lien ne s'ouvre qu'une fois, sur cet appareil : ouvrez-le sur celui où vous consulterez le dossier. Il
+              ne fonctionnera plus ensuite sur un autre appareil.
+            </p>
+            {status.expiresAt && (
+              <p className="text-sm text-gray-500 mt-3">Accès valable jusqu'au {formatDateTime(status.expiresAt)}.</p>
+            )}
+            <button
+              onClick={openFolder}
+              disabled={opening}
+              className="mt-6 inline-flex items-center gap-2 bg-teal-600 hover:bg-teal-700 disabled:opacity-60 text-white font-semibold rounded-xl px-6 py-3 shadow-sm"
+            >
+              {opening ? <Loader2 size={18} className="animate-spin" /> : <FolderOpen size={18} />}
+              Ouvrir le dossier
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (!data && !error) {
     return (

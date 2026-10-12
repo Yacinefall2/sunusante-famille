@@ -100,6 +100,12 @@ router.post("/", requireFamilyMembership((req) => familyIdFromMemberId(req.body.
       const docs = await db.select().from(documents).where(inArray(documents.id, documentIds));
       const valid = docs.filter((d) => d.memberId === memberId && canSeeDocument(req, d));
       if (valid.length !== documentIds.length) return res.status(400).json({ error: "Document invalide pour ce dossier" });
+      // Un document confidentiel ne quitte la famille que par la décision de
+      // son titulaire : l'Administrateur A1, qui peut le voir, ne peut pas
+      // l'envoyer à un médecin.
+      if (valid.some((d) => d.isConfidential) && !isHolder(req, memberId)) {
+        return res.status(403).json({ error: "Seul le titulaire du dossier peut partager un document confidentiel" });
+      }
     }
     if (!includeEssentials && !includeTreatments && !includeVaccinations && documentIds.length === 0) {
       return res.status(400).json({ error: "Choisissez au moins un élément à partager" });

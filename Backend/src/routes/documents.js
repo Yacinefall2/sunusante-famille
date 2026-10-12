@@ -1,9 +1,9 @@
 import { Router } from "express";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNotNull } from "drizzle-orm";
 import fs from "node:fs";
 import path from "node:path";
 import { db } from "../db/index.js";
-import { documents } from "../db/schema.js";
+import { documents, members } from "../db/schema.js";
 import { uploadSingle, UPLOAD_DIR_PATH } from "../middleware/upload.js";
 import { requireFamilyMembership } from "../middleware/auth.js";
 import { familyIdForListQuery, familyIdFromMemberId, familyIdFromResource } from "../lib/familyResolvers.js";
@@ -15,8 +15,73 @@ import {
   presentDocuments,
   readableScope,
 } from "../lib/documentAccess.js";
+import { tooLong } from "../lib/validation.js";
 
 const router = Router();
+
+// ── Téléversement : contrôle d'accès avant écriture et quota par famille ────
+
+// Espace de stockage maximal des fichiers d'une famille (tous dossiers
+// confondus) : un compte ne peut pas remplir le disque du serveur.
+export const FAMILY_STORAGE_QUOTA_BYTES = 500 * 1024 * 1024; // 500 Mo
+const QUOTA_MESSAGE = "Espace de stockage de la famille plein (500 Mo) : supprimez des documents avant d'en ajouter.";
+
+// Taille totale des fichiers des documents d'une famille, mesurée sur le
+// disque (la base ne conserve pas la taille des fichiers).
+export async function familyStorageBytes(familyId) {
+  const rows = await db
+    .select({ fileUrl: documents.fileUrl })
+    .from(documents)
+    .innerJoin(members, eq(members.id, documents.memberId))
+    .where(and(eq(members.familyId, familyId), isNotNull(documents.fileUrl)));
+  const sizes = await Promise.all(
+    rows.map((r) =>
+      fs.promises
+        .stat(path.join(UPLOAD_DIR_PATH, path.basename(r.fileUrl)))
+        .then((st) => st.size)
+        .catch(() => 0)
+    )
+  );
+  return sizes.reduce((a, b) => a + b, 0);
+}
+
+const membershipForUpload = requireFamilyMembership((req) => familyIdFromMemberId(req.body.memberId));
+
+// Exécute un middleware hors de la chaîne Express : renvoie sa réponse de
+// refus ({ status, error }) ou null s'il laisse passer.
+function runCheck(middleware, req) {
+  return new Promise((resolve, reject) => {
+    const res = {
+      statusCode: 200,
+      status(code) {
+        this.statusCode = code;
+        return this;
+      },
+      json(body) {
+        resolve({ status: this.statusCode, error: body?.error ?? "Accès refusé" });
+        return this;
+      },
+    };
+    Promise.resolve(middleware(req, res, () => resolve(null))).catch(reject);
+  });
+}
+
+// Appelé par Multer quand le fichier arrive, AVANT de l'écrire : le
+// frontend (pages/Documents.jsx) envoie memberId avant le fichier, on peut
+// donc refuser un compte sans droit d'écriture ou une famille au quota
+// atteint sans que rien ne touche le disque. Si memberId arrive après le
+// fichier (autre client), les mêmes contrôles sont faits dans la route, et
+// le fichier écrit est effacé en cas de refus.
+async function authorizeUpload(req) {
+  if (!req.body?.memberId) return null;
+  const refusal = await runCheck(membershipForUpload, req);
+  if (refusal) return refusal;
+  if (!(await canWriteMember(req, parseInt(req.body.memberId)))) {
+    return { status: 403, error: "Vous n'avez pas les droits d'écriture sur ce dossier" };
+  }
+  if ((await familyStorageBytes(req.familyId)) >= FAMILY_STORAGE_QUOTA_BYTES) return { status: 413, error: QUOTA_MESSAGE };
+  return null;
+}
 
 router.get("/", requireFamilyMembership(familyIdForListQuery), async (req, res) => {
   try {
@@ -44,6 +109,13 @@ router.put(
       if (!id) return res.status(400).json({ error: "ID manquant" });
       if (!title?.trim() || !documentType) {
         return res.status(400).json({ error: "Données manquantes" });
+      }
+      const lengthError = tooLong([
+        [title, 255, "Titre"],
+        [documentType, 100, "Type de document"],
+      ]);
+      if (lengthError) {
+        return res.status(400).json({ error: lengthError });
       }
 
       const [existing] = await db.select().from(documents).where(eq(documents.id, parseInt(id)));
@@ -77,9 +149,11 @@ router.put(
 // Upload réel d'un fichier (multipart/form-data, champ "file")
 // IMPORTANT : uploadSingle("file") doit s'exécuter AVANT requireFamilyMembership,
 // car req.body.memberId n'existe qu'une fois le corps multipart parsé par Multer.
+// L'accès et le quota sont toutefois vérifiés dès l'arrivée du fichier, avant
+// son écriture (authorizeUpload ci-dessus), puis de nouveau ici.
 router.post(
   "/",
-  uploadSingle("file"),
+  uploadSingle("file", { authorize: authorizeUpload }),
   requireFamilyMembership((req) => familyIdFromMemberId(req.body.memberId)),
   async (req, res) => {
     try {
@@ -93,6 +167,15 @@ router.post(
         return res.status(400).json({ error: "Données manquantes" });
       }
 
+      const lengthError = tooLong([
+        [title, 255, "Titre"],
+        [documentType, 100, "Type de document"],
+      ]);
+      if (lengthError) {
+        if (req.file) fs.unlink(req.file.path, () => {});
+        return res.status(400).json({ error: lengthError });
+      }
+
       if (!(await canWriteMember(req, parseInt(memberId)))) {
         if (req.file) fs.unlink(req.file.path, () => {});
         return res.status(403).json({ error: "Vous n'avez pas les droits d'écriture sur ce dossier" });
@@ -100,6 +183,11 @@ router.post(
       if (isConfidential && !canSetConfidential(req, memberId)) {
         if (req.file) fs.unlink(req.file.path, () => {});
         return res.status(403).json({ error: "Seul le titulaire du dossier peut marquer un document confidentiel" });
+      }
+      // Quota de la famille, nouveau fichier compris (il n'est pas encore en base).
+      if (req.file && (await familyStorageBytes(req.familyId)) + req.file.size > FAMILY_STORAGE_QUOTA_BYTES) {
+        fs.unlink(req.file.path, () => {});
+        return res.status(413).json({ error: QUOTA_MESSAGE });
       }
 
       const fileUrl = req.file ? `/uploads/${req.file.filename}` : null;

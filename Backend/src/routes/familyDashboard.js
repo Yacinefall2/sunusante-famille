@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { and, eq, gte, inArray, isNull, lte, gt } from "drizzle-orm";
+import { and, eq, gte, inArray, isNull, lte, gt, ne } from "drizzle-orm";
 import { db } from "../db/index.js";
 import {
   appointments,
@@ -21,6 +21,7 @@ import { canSeeDocument, readableMemberIds } from "../lib/documentAccess.js";
 import { ageOn } from "../lib/family.js";
 import { APP_TIMEZONE, addDays, localDate, zonedTime } from "../lib/time.js";
 import { boosterStatus } from "./vaccinations.js";
+import { familyIdFromQuery } from "../lib/familyResolvers.js";
 
 // ── Tableau de bord des parents : tout ce qui se passe dans la famille ───────
 // Réservé aux administrateurs (A1/A2). Il couvre toutes les fiches qu'ils
@@ -36,7 +37,7 @@ const pct = (num, den) => (den > 0 ? Math.round((num / den) * 100) : null);
 
 router.get(
   "/",
-  requireFamilyMembership((req) => parseInt(req.query.familyId) || null, { roles: ["parent"] }),
+  requireFamilyMembership(familyIdFromQuery, { roles: ["parent"] }),
   async (req, res) => {
     try {
       const now = new Date();
@@ -45,7 +46,12 @@ router.get(
       const dayEnd = new Date(dayStart.getTime() + DAY);
       const since30 = new Date(now.getTime() - 30 * DAY);
 
-      const all = await db.select().from(members).where(eq(members.familyId, req.familyId)).orderBy(members.dateOfBirth);
+      // Les fiches archivées (titulaire parti, lib/archive.js) n'apparaissent pas.
+      const all = await db
+        .select()
+        .from(members)
+        .where(and(eq(members.familyId, req.familyId), isNull(members.archivedAt)))
+        .orderBy(members.dateOfBirth);
       const readable = new Set(await readableMemberIds(req));
       const ids = [...readable];
       const byId = new Map(all.map((m) => [m.id, m]));
@@ -72,10 +78,24 @@ router.get(
         ? await db.select().from(treatmentMedications).where(inArray(treatmentMedications.treatmentId, activeTreatments.map((t) => t.id)))
         : [];
       const vaccs = (await db.select().from(vaccinations).where(inFiches(vaccinations.memberId))).map((v) => ({ ...v, boosterStatus: boosterStatus(v, today) }));
-      const openRelays = await db
-        .select()
-        .from(relayTasks)
-        .where(and(eq(relayTasks.familyId, req.familyId), inFiches(relayTasks.memberId), isNull(relayTasks.notifiedAt), gt(relayTasks.appointmentDate, now)));
+      // Tâches Village encore à traiter : rendez-vous à venir, ni annulé ni
+      // déplacé depuis (même règle que villageTick).
+      const openRelays = (
+        await db
+          .select({ t: relayTasks })
+          .from(relayTasks)
+          .innerJoin(appointments, eq(appointments.id, relayTasks.appointmentId))
+          .where(
+            and(
+              eq(relayTasks.familyId, req.familyId),
+              inFiches(relayTasks.memberId),
+              isNull(relayTasks.notifiedAt),
+              gt(relayTasks.appointmentDate, now),
+              ne(appointments.status, "cancelled"),
+              eq(appointments.appointmentDate, relayTasks.appointmentDate)
+            )
+          )
+      ).map((r) => r.t);
       const relayHistory = await db
         .select()
         .from(relayTasks)
@@ -127,7 +147,17 @@ router.get(
       const failures = await db
         .select()
         .from(notifications)
-        .where(and(eq(notifications.userId, req.user.id), eq(notifications.category, "delivery_failure"), isNull(notifications.readAt)));
+        .where(
+          and(
+            eq(notifications.userId, req.user.id),
+            eq(notifications.familyId, req.familyId),
+            eq(notifications.category, "delivery_failure"),
+            isNull(notifications.readAt)
+          )
+        );
+      // Échecs de remise : la notification d'A1 pour le courriel d'un autre
+      // compte est neutre (reminders/engine.js markEmailFailed) — aucun titre
+      // de rappel médical d'un autre dossier ne s'affiche ici.
       for (const n of failures) {
         push({ type: "delivery", severity: "alert", memberId: n.memberId, title: n.title, detail: n.body, action: null, link: "/notifications" });
       }

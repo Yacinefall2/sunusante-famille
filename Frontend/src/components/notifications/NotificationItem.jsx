@@ -1,5 +1,5 @@
 import { AlertTriangle, Bell, CalendarClock, CheckCircle, PhoneCall, Pill, Syringe } from "lucide-react";
-import { cn, formatTimeAgo } from "../../lib/utils";
+import { cn, formatIsoDatesInText, formatTimeAgo } from "../../lib/utils";
 import { IntakeAnswerButtons, IntakeStatusBadge } from "./intakes";
 
 // Icône et couleurs par catégorie de notification.
@@ -45,12 +45,12 @@ export function NotificationItem({ notification: n, onOpen, onAnswered, compact 
       <div className="flex-1 min-w-0">
         <div className="flex items-start gap-2">
           <p className={cn("text-sm flex-1 min-w-0 break-words", unread ? "font-bold text-gray-800" : "font-medium text-gray-700", isFailure && "text-red-700")}>
-            {n.title}
+            {formatIsoDatesInText(n.title)}
           </p>
           {unread && <span className={cn("mt-1.5 w-2 h-2 rounded-full flex-shrink-0", isFailure ? "bg-red-500" : "bg-teal-500")} title="Non lue" />}
         </div>
         {n.body && (
-          <p className={cn("text-xs mt-0.5 break-words", isFailure ? "text-red-600" : "text-gray-500")}>{n.body}</p>
+          <p className={cn("text-xs mt-0.5 break-words", isFailure ? "text-red-600" : "text-gray-500")}>{formatIsoDatesInText(n.body)}</p>
         )}
         <div className="flex items-center justify-between gap-2 mt-1.5 flex-wrap">
           <span className="text-[11px] text-gray-400">{formatTimeAgo(n.createdAt)}</span>

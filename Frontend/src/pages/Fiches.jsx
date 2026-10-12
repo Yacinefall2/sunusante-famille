@@ -26,7 +26,7 @@ import {
   TreePine,
   ShieldPlus,
 } from "lucide-react";
-import { calculateAge, formatDate } from "../lib/utils";
+import { calculateAge, clickableCardProps, formatDate } from "../lib/utils";
 import {
   FICHE_ROLE_OPTIONS,
   ficheRoleShortLabel,
@@ -112,6 +112,14 @@ export default function FichesPage() {
       } else {
         openView(m);
       }
+    } else if (members.length > 0) {
+      // Fiches chargées (la liste n'est jamais vide une fois chargée : elle
+      // contient au moins celle de l'utilisateur) mais identifiant inconnu
+      // ou dossier non lisible : on prévient et on nettoie l'adresse.
+      toast.error("Fiche introuvable ou inaccessible");
+      searchParams.delete("fiche");
+      searchParams.delete("modifier");
+      setSearchParams(searchParams, { replace: true });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams, members, loading]);
@@ -206,15 +214,24 @@ export default function FichesPage() {
         fetch(`/api/treatments?memberId=${m.id}`),
         fetch(`/api/documents?memberId=${m.id}`),
       ]);
+      // Une réponse d'erreur (objet { error }) n'est jamais traitée comme une liste.
+      const asList = async (res) => {
+        const data = await res.json().catch(() => null);
+        return res.ok && Array.isArray(data) ? data : [];
+      };
       const [appointments, vaccinations, treatments, documents] = await Promise.all([
-        apptsRes.json(),
-        vaccsRes.json(),
-        treatsRes.json(),
-        docsRes.json(),
+        asList(apptsRes),
+        asList(vaccsRes),
+        asList(treatsRes),
+        asList(docsRes),
       ]);
+      if (![apptsRes, vaccsRes, treatsRes, docsRes].every((r) => r.ok)) {
+        toast.error("Certaines informations de la fiche n'ont pas pu être chargées");
+      }
       setMemberStats({ appointments, vaccinations, treatments, documents });
     } catch (err) {
       console.error(err);
+      toast.error("Impossible de charger le résumé de la fiche");
     } finally {
       setStatsLoading(false);
     }
@@ -235,12 +252,12 @@ export default function FichesPage() {
   };
 
   const deleteFiche = async (id) => {
-    if (!confirm("Supprimer ce membre, sa fiche et toutes ses données médicales ?")) return;
+    if (!confirm("Supprimer cette fiche ? Toutes les données médicales qu'elle contient seront définitivement supprimées.")) return;
     setDeleting(id);
     try {
       const res = await fetch(`/api/members?id=${id}`, { method: "DELETE" });
       if (res.ok) {
-        toast.success("Membre et fiche supprimés");
+        toast.success("Fiche supprimée");
         reloadMembers();
       } else {
         const err = await res.json().catch(() => ({}));
@@ -315,7 +332,9 @@ export default function FichesPage() {
                 <div
                   key={m.id}
                   onClick={() => openView(m)}
-                  className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition-all duration-200 cursor-pointer select-none"
+                  {...clickableCardProps(() => openView(m))}
+                  aria-label={`Ouvrir la fiche de ${m.firstName} ${m.lastName}`}
+                  className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition-all duration-200 cursor-pointer select-none focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
                   title="Cliquez pour ouvrir la fiche"
                 >
                   <div className="flex items-start justify-between mb-3">
@@ -338,6 +357,7 @@ export default function FichesPage() {
                         <button
                           onClick={() => openEdit(m)}
                           title="Modifier la fiche"
+                          aria-label={`Modifier la fiche de ${m.firstName} ${m.lastName}`}
                           className="p-2 rounded-xl hover:bg-gray-100 text-gray-400 hover:text-teal-600 transition-colors"
                         >
                           <Pencil size={15} />
@@ -347,7 +367,8 @@ export default function FichesPage() {
                         <button
                           onClick={() => deleteFiche(m.id)}
                           disabled={deleting === m.id}
-                          title="Supprimer ce membre et sa fiche"
+                          title="Supprimer cette fiche"
+                          aria-label={`Supprimer la fiche de ${m.firstName} ${m.lastName}`}
                           className="p-2 rounded-xl hover:bg-red-50 text-gray-400 hover:text-red-500 transition-colors"
                         >
                           {deleting === m.id ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />}
@@ -581,6 +602,7 @@ export default function FichesPage() {
                               disabled={revokingRoleId === r.id}
                               className="p-1.5 rounded-lg hover:bg-red-50 text-gray-400 hover:text-red-500 transition-colors"
                               title="Retirer ce rôle"
+                              aria-label={`Retirer le rôle de ${r.userName}`}
                             >
                               {revokingRoleId === r.id ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
                             </button>

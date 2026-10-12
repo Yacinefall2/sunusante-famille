@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { eq, and, isNull } from "drizzle-orm";
+import { eq, and, isNull, isNotNull, desc, sql } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { families, familyMemberships, pendingInvitations, members, users } from "../db/schema.js";
 import { requireAuth, requireFamilyMembership, requireVerifiedEmail } from "../middleware/auth.js";
@@ -7,8 +7,19 @@ import { generateToken } from "../lib/token.js";
 import { hashToken } from "../lib/session.js";
 import { QUOTA_MESSAGE, overDailyQuota } from "../lib/sendQuota.js";
 import { sendInvitationEmail } from "../lib/mailer.js";
-import { DOCUMENT_ROLES, canManageRoles, canWriteMember, setDocumentRole } from "../lib/documentAccess.js";
-import { ACCOUNT_MIN_AGE, ageOn } from "../lib/family.js";
+import {
+  ACCESS,
+  DOCUMENT_ROLES,
+  canManageRoles,
+  canWriteMember,
+  computeFamilyAccess,
+  membershipOf,
+  setDocumentRole,
+} from "../lib/documentAccess.js";
+import { ADULT_AGE, ACCOUNT_MIN_AGE, MINOR_PARENT_ERROR, UNDER_MIN_AGE_ERROR, ageOn, effectiveRole } from "../lib/family.js";
+import { ARCHIVED_ERROR, afterFicheLinked, restoreArchivedFiche } from "../lib/archive.js";
+import { familyIdFromBody, familyIdFromQuery } from "../lib/familyResolvers.js";
+import { INVALID_ID, parseId } from "../lib/validation.js";
 
 const router = Router();
 
@@ -16,6 +27,15 @@ const INVITATION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 jours
 const ALLOWED_ROLES = ["parent", "adult", "dependent"];
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const MAX_PARENTS = 2;
+const TEEN_ROLE_ERROR = "Un compte adolescent ne peut pas recevoir de rôle sur un dossier";
+
+async function parentCount(familyId) {
+  const [{ count }] = await db
+    .select({ count: sql`count(*)::int` })
+    .from(familyMemberships)
+    .where(and(eq(familyMemberships.familyId, familyId), eq(familyMemberships.role, "parent")));
+  return count;
+}
 
 // Créer une invitation — réservé aux Parents. Le rôle d'espace ET le rôle de
 // dossier (le cas échéant) sont fixés AVANT l'envoi, jamais après (§6.2/6.3).
@@ -23,7 +43,7 @@ router.post(
   "/",
   requireAuth,
   requireVerifiedEmail,
-  requireFamilyMembership((req) => parseInt(req.body.familyId) || null, { roles: ["parent"] }),
+  requireFamilyMembership(familyIdFromBody, { roles: ["parent"] }),
   async (req, res) => {
     try {
       const { email, linkedMemberId, documentMemberId, documentRole } = req.body;
@@ -48,28 +68,28 @@ router.post(
             error: "Seul l'administrateur qui a créé l'espace familial peut inviter un co-administrateur",
           });
         }
-        const parents = await db
-          .select()
-          .from(familyMemberships)
-          .where(and(eq(familyMemberships.familyId, req.familyId), eq(familyMemberships.role, "parent")));
-        if (parents.length >= MAX_PARENTS) {
+        if ((await parentCount(req.familyId)) >= MAX_PARENTS) {
           return res.status(400).json({ error: `Maximum ${MAX_PARENTS} parents par famille` });
         }
       }
 
       // Fiche de la personne invitée (« sa fiche ») — obligatoire pour un
       // "dependent", optionnelle sinon (l'invité la créera à son arrivée).
-      // Elle doit être libre et l'invitant doit en avoir l'accès complet.
+      // Elle doit être libre, non archivée, et l'invitant doit en avoir
+      // l'accès complet.
       let validatedLinkedMemberId = null;
+      let linkedFiche = null;
       if (role === "dependent" && !linkedMemberId) {
         return res.status(400).json({ error: "Choisissez la fiche membre correspondante" });
       }
       if (linkedMemberId) {
-        const parsedId = parseInt(linkedMemberId);
+        const parsedId = parseId(linkedMemberId);
+        if (!parsedId) return res.status(400).json({ error: INVALID_ID });
         const [member] = await db.select().from(members).where(eq(members.id, parsedId));
         if (!member || member.familyId !== req.familyId) {
           return res.status(400).json({ error: "Fiche membre introuvable dans cette famille" });
         }
+        if (member.archivedAt) return res.status(409).json({ error: ARCHIVED_ERROR });
         const [alreadyLinked] = await db
           .select({ id: familyMemberships.id })
           .from(familyMemberships)
@@ -80,26 +100,33 @@ router.post(
         if (!(await canWriteMember(req, parsedId))) {
           return res.status(403).json({ error: "Vous n'avez pas les droits sur cette fiche" });
         }
-        if (role !== "parent" && ageOn(member.dateOfBirth) !== null && ageOn(member.dateOfBirth) < ACCOUNT_MIN_AGE) {
-          return res.status(400).json({ error: `Moins de ${ACCOUNT_MIN_AGE} ans : pas de compte personnel, la fiche est tenue par les parents` });
-        }
+        const age = ageOn(member.dateOfBirth);
+        if (age !== null && age < ACCOUNT_MIN_AGE) return res.status(400).json({ error: UNDER_MIN_AGE_ERROR });
+        // Un mineur n'est jamais administrateur du foyer.
+        if (role === "parent" && age !== null && age < ADULT_AGE) return res.status(400).json({ error: MINOR_PARENT_ERROR });
         validatedLinkedMemberId = parsedId;
+        linkedFiche = member;
       }
 
       // Rôle Axe 2 (optionnel) — le rôle d'espace ET le rôle de dossier sont
       // fixés avant l'envoi, jamais après (§6.2/6.3). S'il est fourni, la
-      // fiche visée doit exister dans cette même famille.
+      // fiche visée doit exister dans cette même famille, et l'invité ne doit
+      // pas être un adolescent (lecture seule de sa propre fiche, §9.6).
       let validatedDocumentMemberId = null;
       let validatedDocumentRole = null;
       if (documentMemberId || documentRole) {
-        if (!documentMemberId || !DOCUMENT_ROLES.includes(documentRole)) {
+        const parsedDocMemberId = parseId(documentMemberId);
+        if (!parsedDocMemberId || !DOCUMENT_ROLES.includes(documentRole)) {
           return res.status(400).json({ error: "Choisissez un dossier ET un rôle de dossier valides" });
         }
-        const parsedDocMemberId = parseInt(documentMemberId);
+        if (role !== "parent" && effectiveRole(role, linkedFiche?.dateOfBirth) === "dependent") {
+          return res.status(400).json({ error: TEEN_ROLE_ERROR });
+        }
         const [docMember] = await db.select().from(members).where(eq(members.id, parsedDocMemberId));
         if (!docMember || docMember.familyId !== req.familyId) {
           return res.status(400).json({ error: "Fiche membre introuvable dans cette famille" });
         }
+        if (docMember.archivedAt) return res.status(409).json({ error: ARCHIVED_ERROR });
         if (!(await canManageRoles(req, parsedDocMemberId))) {
           return res.status(403).json({ error: "Vous ne pouvez pas gérer les accès de ce dossier" });
         }
@@ -133,15 +160,23 @@ router.post(
         if (docMember) documentMemberName = `${docMember.firstName} ${docMember.lastName}`;
       }
 
-      await sendInvitationEmail({
-        to: normalizedEmail,
-        familyName: family.name,
-        role,
-        token,
-        inviterName: req.user.name,
-        documentMemberName,
-        documentRole: validatedDocumentRole,
-      });
+      try {
+        await sendInvitationEmail({
+          to: normalizedEmail,
+          familyName: family.name,
+          role,
+          token,
+          inviterName: req.user.name,
+          documentMemberName,
+          documentRole: validatedDocumentRole,
+        });
+      } catch (mailError) {
+        // Le jeton n'existe que dans ce courriel : sans envoi, l'invitation
+        // est inutilisable — elle est supprimée (comme le lien médecin).
+        console.error(mailError);
+        await db.delete(pendingInvitations).where(eq(pendingInvitations.id, invitation.id));
+        return res.status(502).json({ error: "Le courriel d'invitation n'a pas pu être envoyé. Vérifiez l'adresse et réessayez." });
+      }
 
       const { token: _token, ...publicInvitation } = invitation;
       res.status(201).json(publicInvitation);
@@ -157,7 +192,7 @@ router.get(
   "/",
   requireAuth,
   requireVerifiedEmail,
-  requireFamilyMembership((req) => parseInt(req.query.familyId) || null, { roles: ["parent"] }),
+  requireFamilyMembership(familyIdFromQuery, { roles: ["parent"] }),
   async (req, res) => {
     try {
       const rows = await db
@@ -212,8 +247,8 @@ router.get("/:token", async (req, res) => {
 // Annuler une invitation en attente — réservé aux Parents
 router.delete("/", requireAuth, requireVerifiedEmail, async (req, res) => {
   try {
-    const id = parseInt(req.query.id ?? "");
-    if (isNaN(id)) return res.status(400).json({ error: "ID invalide" });
+    const id = parseId(req.query.id);
+    if (!id) return res.status(400).json({ error: INVALID_ID });
 
     const [invitation] = await db.select().from(pendingInvitations).where(eq(pendingInvitations.id, id));
     if (!invitation) return res.status(404).json({ error: "Invitation introuvable" });
@@ -234,6 +269,23 @@ router.delete("/", requireAuth, requireVerifiedEmail, async (req, res) => {
   }
 });
 
+// L'auteur de l'invitation peut-il encore attribuer un rôle sur ce dossier ?
+// Même règle que canManageRoles, recalculée pour lui (et non pour l'invité).
+async function inviterCanManageRoles(inviter, familyId, memberId) {
+  if (inviter.role === "dependent") return false;
+  if (inviter.linkedMemberId === memberId) return true;
+  if (inviter.role !== "parent") return false;
+  const access = await computeFamilyAccess({
+    userId: inviter.userId,
+    familyId,
+    role: inviter.role,
+    linkedMemberId: inviter.linkedMemberId,
+  });
+  return access.get(memberId) === ACCESS.FULL;
+}
+
+const NEW_INVITATION = "demandez une nouvelle invitation";
+
 // Accepter l'invitation — nécessite d'être connecté, ET que l'email du
 // compte connecté corresponde exactement à l'email invité (c'est le fait
 // d'avoir cliqué le lien reçu par email qui prouve la possession de la boîte).
@@ -242,6 +294,13 @@ router.delete("/", requireAuth, requireVerifiedEmail, async (req, res) => {
 // EST la preuve de possession de cette adresse (§6.2). L'acceptation
 // vérifie donc elle-même l'adresse au passage, y compris pour un compte tout
 // juste créé via ce même écran.
+//
+// Tout ce qui a été vérifié à l'envoi est revérifié ici, l'espace ayant pu
+// changer depuis : l'auteur est-il encore parent (A1 pour inviter un
+// parent) ? reste-t-il une place de parent ? la fiche prévue existe-t-elle
+// encore et est-elle libre ? le rôle de dossier prévu est-il encore
+// attribuable ? Si l'invité avait déjà une fiche dans cette famille
+// (archivée à son départ), elle lui est rendue.
 router.post("/:token/accept", requireAuth, async (req, res) => {
   try {
     const { token } = req.params;
@@ -263,37 +322,87 @@ router.post("/:token/accept", requireAuth, async (req, res) => {
       return res.status(409).json({ error: "Vous êtes déjà membre d'un espace familial" });
     }
 
-    // La fiche prévue a pu être reliée à un autre compte depuis l'envoi.
-    let linkedMemberId = invitation.linkedMemberId;
-    if (linkedMemberId) {
+    // L'auteur doit toujours administrer cet espace (A1 pour un parent).
+    const inviter = invitation.invitedByUserId ? await membershipOf(invitation.invitedByUserId, invitation.familyId) : null;
+    if (!inviter || inviter.role !== "parent" || (invitation.role === "parent" && !inviter.isPrimaryAdmin)) {
+      return res.status(409).json({
+        error: `Cette invitation n'est plus valable : la personne qui l'a envoyée n'administre plus cet espace, ${NEW_INVITATION}`,
+      });
+    }
+    if (invitation.role === "parent" && (await parentCount(invitation.familyId)) >= MAX_PARENTS) {
+      return res.status(409).json({ error: `Le foyer compte déjà ${MAX_PARENTS} parents : cette invitation ne peut plus être acceptée` });
+    }
+
+    // Fiche de l'invité : sa fiche archivée s'il revient, sinon celle prévue
+    // (elle a pu être supprimée, archivée ou reliée à un autre compte depuis).
+    const [archivedFiche] = await db
+      .select()
+      .from(members)
+      .where(
+        and(
+          eq(members.familyId, invitation.familyId),
+          eq(members.archivedUserId, req.user.id),
+          isNotNull(members.archivedAt)
+        )
+      )
+      .orderBy(desc(members.archivedAt))
+      .limit(1);
+    let linkedFiche = archivedFiche ?? null;
+    if (!linkedFiche && invitation.linkedMemberId) {
+      const [planned] = await db.select().from(members).where(eq(members.id, invitation.linkedMemberId));
       const [taken] = await db
         .select({ id: familyMemberships.id })
         .from(familyMemberships)
-        .where(eq(familyMemberships.linkedMemberId, linkedMemberId));
-      if (taken) {
-        if (invitation.role === "dependent") {
-          return res.status(409).json({ error: "La fiche prévue n'est plus disponible : demandez une nouvelle invitation" });
-        }
-        linkedMemberId = null;
+        .where(eq(familyMemberships.linkedMemberId, invitation.linkedMemberId));
+      if (planned && !taken && !planned.archivedAt) linkedFiche = planned;
+    }
+    if (invitation.role === "dependent" && !linkedFiche) {
+      return res.status(409).json({ error: `La fiche prévue n'est plus disponible : ${NEW_INVITATION}` });
+    }
+    if (linkedFiche) {
+      const age = ageOn(linkedFiche.dateOfBirth);
+      if (invitation.role === "parent" && age !== null && age < ADULT_AGE) {
+        return res.status(409).json({ error: MINOR_PARENT_ERROR });
+      }
+      if (invitation.role !== "parent" && age !== null && age < ACCOUNT_MIN_AGE) {
+        return res.status(409).json({ error: UNDER_MIN_AGE_ERROR });
       }
     }
+    const inviteeRole = effectiveRole(invitation.role, linkedFiche?.dateOfBirth);
 
+    // Le rôle de dossier prévu est-il encore attribuable ?
+    let grantedRole = null;
+    if (invitation.documentRole && invitation.documentMemberId !== linkedFiche?.id) {
+      const [docFiche] = invitation.documentMemberId
+        ? await db.select().from(members).where(eq(members.id, invitation.documentMemberId))
+        : [];
+      if (!docFiche || docFiche.familyId !== invitation.familyId || docFiche.archivedAt) {
+        return res.status(409).json({ error: `Le dossier prévu par l'invitation n'est plus disponible : ${NEW_INVITATION}` });
+      }
+      if (inviteeRole === "dependent") {
+        return res.status(409).json({ error: `${TEEN_ROLE_ERROR} : ${NEW_INVITATION}` });
+      }
+      if (!(await inviterCanManageRoles(inviter, invitation.familyId, docFiche.id))) {
+        return res.status(409).json({ error: `La personne qui vous a invité ne gère plus ce dossier : ${NEW_INVITATION}` });
+      }
+      grantedRole = { memberId: docFiche.id, role: invitation.documentRole };
+    }
+
+    if (archivedFiche) await restoreArchivedFiche(req.user.id, invitation.familyId);
     await db.insert(familyMemberships).values({
       userId: req.user.id,
       familyId: invitation.familyId,
       role: invitation.role,
-      linkedMemberId,
+      linkedMemberId: linkedFiche?.id ?? null,
     });
-    if (linkedMemberId && invitation.role === "parent") {
-      await db.update(members).set({ kinship: "parent", kinshipRelatedMemberId: null }).where(eq(members.id, linkedMemberId));
-    }
+    // Fiche reliée : les rôles posés avant la liaison tombent (le créateur de
+    // la fiche n'en garde pas la gestion), statut et lien « Parent » à jour.
+    if (linkedFiche) await afterFicheLinked({ memberId: linkedFiche.id, userId: req.user.id, role: invitation.role });
     await db.update(pendingInvitations).set({ acceptedAt: new Date() }).where(eq(pendingInvitations.id, invitation.id));
 
     // Le rôle de dossier (Axe 2) fixé avant l'envoi est appliqué maintenant
     // que l'invitation est acceptée (§6.2).
-    if (invitation.documentMemberId && invitation.documentRole) {
-      await setDocumentRole(invitation.documentMemberId, req.user.id, invitation.documentRole);
-    }
+    if (grantedRole) await setDocumentRole(grantedRole.memberId, req.user.id, grantedRole.role);
 
     // La possession de l'adresse vient d'être prouvée par la consommation de
     // ce lien unique — on active donc l'adresse si ce n'était pas déjà fait.
@@ -301,7 +410,7 @@ router.post("/:token/accept", requireAuth, async (req, res) => {
       await db.update(users).set({ emailVerified: true }).where(eq(users.id, req.user.id));
     }
 
-    res.json({ success: true, familyId: invitation.familyId });
+    res.json({ success: true, familyId: invitation.familyId, linkedMemberId: linkedFiche?.id ?? null, restored: !!archivedFiche });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Erreur serveur" });

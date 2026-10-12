@@ -7,7 +7,7 @@ import { Input, Textarea, Select } from "../components/ui/Input";
 import { Badge } from "../components/ui/Badge";
 import { MemberAvatar } from "../components/members/MemberAvatar";
 import { Plus, Trash2, Loader2, Syringe, Calendar, User, Hash, Pencil, CheckCircle2, AlertTriangle } from "lucide-react";
-import { formatDate } from "../lib/utils";
+import { clickableCardProps, formatDate } from "../lib/utils";
 import { notifyNotificationsChanged } from "../components/notifications/intakes";
 import { format } from "date-fns";
 import toast from "react-hot-toast";
@@ -107,8 +107,12 @@ export default function VaccinationsPage() {
     setLoading(true);
     try {
       const res = await fetch(`/api/vaccinations?familyId=${selectedFamily.id}`);
-      const data = res.ok ? await res.json() : [];
-      setVaccinations(Array.isArray(data) ? data : []);
+      const data = await res.json().catch(() => null);
+      setVaccinations(res.ok && Array.isArray(data) ? data : []);
+      if (!res.ok) toast.error(data?.error || "Erreur lors du chargement des vaccinations");
+    } catch {
+      setVaccinations([]);
+      toast.error("Erreur lors du chargement des vaccinations");
     } finally {
       setLoading(false);
     }
@@ -410,7 +414,8 @@ export default function VaccinationsPage() {
                       <div
                         key={v.id}
                         onClick={() => setViewing(v)}
-                        className="px-6 py-4 flex items-center gap-4 hover:bg-gray-50 transition-colors cursor-pointer"
+                        {...clickableCardProps(() => setViewing(v))}
+                        className="px-6 py-4 flex items-center gap-4 hover:bg-gray-50 transition-colors cursor-pointer focus:outline-none focus-visible:bg-gray-50 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500"
                         title="Cliquez pour voir les détails"
                       >
                         <div className="w-10 h-10 bg-amber-100 rounded-xl flex items-center justify-center flex-shrink-0">
@@ -449,13 +454,14 @@ export default function VaccinationsPage() {
                             onClick={(e) => { e.stopPropagation(); openBooster(v); }}
                             className="flex-shrink-0"
                             title="Rappel effectué"
+                            aria-label="Rappel effectué"
                           >
                             <CheckCircle2 size={14} />
                             <span className="hidden sm:inline">Rappel effectué</span>
                           </Button>
                         )}
                         {canWriteMember(v.memberId) && (
-                          <button onClick={(e) => { e.stopPropagation(); deleteVaccFromCard(v.id); }} className="p-2 rounded-xl hover:bg-red-50 text-gray-300 hover:text-red-500 transition-colors">
+                          <button type="button" onClick={(e) => { e.stopPropagation(); deleteVaccFromCard(v.id); }} title="Supprimer" aria-label="Supprimer la vaccination" className="p-2 rounded-xl hover:bg-red-50 text-gray-300 hover:text-red-500 transition-colors">
                             <Trash2 size={15} />
                           </button>
                         )}

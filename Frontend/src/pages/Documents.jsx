@@ -22,7 +22,8 @@ import {
   Camera,
   UserRound,
 } from "lucide-react";
-import { formatDateTime, DOCUMENT_TYPES } from "../lib/utils";
+import { formatDateTime, DOCUMENT_TYPES, clickableCardProps } from "../lib/utils";
+import { ensureFreshSession, isSessionStale, openPrivateLink } from "../lib/session";
 import toast from "react-hot-toast";
 
 const defaultForm = {
@@ -44,10 +45,13 @@ const docTypeIcons = {
 const MAX_FILE_SIZE = 15 * 1024 * 1024; // 15 Mo — doit correspondre à la limite backend
 const ACCEPTED_TYPES = ".pdf,.jpg,.jpeg,.png,.webp,.heic,.doc,.docx";
 
+// Images affichables directement par le navigateur. Les photos HEIC/HEIF
+// (iPhone) ne le sont pas (Chrome, Firefox) : elles sont proposées au
+// téléchargement comme les autres fichiers.
 const isImageFile = (url) => {
   if (!url) return false;
   const ext = url.split(".").pop()?.toLowerCase();
-  return ["jpg", "jpeg", "png", "webp", "gif", "heic"].includes(ext);
+  return ["jpg", "jpeg", "png", "webp", "gif"].includes(ext);
 };
 
 const isPdfFile = (url) => {
@@ -89,9 +93,26 @@ export default function DocumentsPage() {
     setStepType(null);
   }, [selectedFamily]);
 
+  // L'aperçu (<img>/<iframe>) charge /uploads directement, sans passer par
+  // l'intercepteur fetch : si la session est ancienne, on la renouvelle
+  // d'abord pour éviter un aperçu vide.
+  const [previewReady, setPreviewReady] = useState(true);
+
   useEffect(() => {
     setShowPreview(true);
     setPreviewLoading(false);
+    if (!viewing?.fileUrl || !isSessionStale()) {
+      setPreviewReady(true);
+      return;
+    }
+    let cancelled = false;
+    setPreviewReady(false);
+    ensureFreshSession().finally(() => {
+      if (!cancelled) setPreviewReady(true);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [viewing]);
 
   const load = async () => {
@@ -601,7 +622,8 @@ export default function DocumentsPage() {
                     <div
                       key={doc.id}
                       onClick={() => setViewing(doc)}
-                      className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 hover:shadow-md transition-all duration-200 flex flex-col cursor-pointer"
+                      {...clickableCardProps(() => setViewing(doc))}
+                      className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 hover:shadow-md transition-all duration-200 flex flex-col cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
                       title="Cliquez pour voir les détails"
                     >
                       <div className="flex items-start justify-between mb-3">
@@ -622,8 +644,10 @@ export default function DocumentsPage() {
                               href={doc.fileUrl}
                               target="_blank"
                               rel="noopener noreferrer"
+                              onClick={openPrivateLink}
                               className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-teal-600 transition-colors"
                               title="Ouvrir le fichier"
+                              aria-label={`Ouvrir le fichier « ${doc.title} »`}
                             >
                               <ExternalLink size={14} />
                             </a>
@@ -635,6 +659,7 @@ export default function DocumentsPage() {
                                 deleteDocFromCard(doc.id)
                               }
                               title="Supprimer"
+                              aria-label={`Supprimer le document « ${doc.title} »`}
                               className="p-1.5 rounded-lg hover:bg-red-50 text-gray-400 hover:text-red-500 transition-colors"
                             >
                               <Trash2 size={14} />
@@ -766,6 +791,7 @@ export default function DocumentsPage() {
                     href={viewing.fileUrl}
                     target="_blank"
                     rel="noopener noreferrer"
+                    onClick={openPrivateLink}
                     className="inline-flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 rounded-xl text-sm font-semibold text-gray-700 hover:border-teal-300 hover:text-teal-600 transition-colors"
                   >
                     <ExternalLink size={15} />
@@ -853,6 +879,7 @@ export default function DocumentsPage() {
                   type="button"
                   role="switch"
                   aria-checked={!!viewing.isConfidential}
+                  aria-label="Document confidentiel"
                   disabled={togglingConfidential}
                   onClick={() => toggleConfidential(viewing)}
                   className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${
@@ -906,7 +933,13 @@ export default function DocumentsPage() {
                   </button>
                 </div>
 
-                {showPreview && (
+                {showPreview && !previewReady && (
+                  <div className="flex items-center justify-center bg-gray-50 border border-gray-200 rounded-xl h-40">
+                    <Loader2 className="animate-spin text-teal-600" size={28} />
+                  </div>
+                )}
+
+                {showPreview && previewReady && (
                   <div className="bg-gray-50 border border-gray-200 rounded-xl overflow-hidden">
                     {isViewingImage && (
                       <div className="flex items-center justify-center bg-white p-4">
@@ -969,6 +1002,7 @@ export default function DocumentsPage() {
                             href={viewing.fileUrl}
                             target="_blank"
                             rel="noopener noreferrer"
+                            onClick={openPrivateLink}
                             className="inline-flex items-center gap-2 px-4 py-2 bg-teal-600 text-white rounded-xl text-sm font-semibold hover:bg-teal-700 transition-colors"
                           >
                             <ExternalLink size={15} />
@@ -1175,6 +1209,8 @@ export default function DocumentsPage() {
                 <button
                   type="button"
                   onClick={removeFile}
+                  title="Retirer le fichier"
+                  aria-label="Retirer le fichier sélectionné"
                   className="p-1 rounded-lg hover:bg-gray-200 text-gray-500 flex-shrink-0"
                 >
                   <X size={16} />
