@@ -15,10 +15,21 @@ export async function requireAuth(req, res, next) {
   try {
     const payload = verifyAccessToken(token);
     const [user] = await db
-      .select({ id: users.id, name: users.name, email: users.email, emailVerified: users.emailVerified })
+      .select({
+        id: users.id,
+        name: users.name,
+        email: users.email,
+        emailVerified: users.emailVerified,
+        passwordChangedAt: users.passwordChangedAt,
+      })
       .from(users)
       .where(eq(users.id, payload.sub));
     if (!user) return res.status(401).json({ error: "Non authentifié" });
+    // Session ouverte avant le dernier changement de mot de passe : refusée.
+    if (user.passwordChangedAt && payload.iat < Math.floor(user.passwordChangedAt.getTime() / 1000)) {
+      return res.status(401).json({ error: "Session expirée, reconnexion requise" });
+    }
+    delete user.passwordChangedAt;
     req.user = user;
     next();
   } catch (err) {

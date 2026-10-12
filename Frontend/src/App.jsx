@@ -5,6 +5,10 @@ import LoginPage from "./pages/Login.jsx";
 import RegisterPage from "./pages/Register.jsx";
 import PendingVerificationPage from "./pages/PendingVerification.jsx";
 import VerifyEmailPage from "./pages/VerifyEmail.jsx";
+import ForgotPasswordPage from "./pages/ForgotPassword.jsx";
+import ResetPasswordPage from "./pages/ResetPassword.jsx";
+import ConfirmEmailChangePage from "./pages/ConfirmEmailChange.jsx";
+import ComptePage from "./pages/Compte.jsx";
 import AcceptInvitationPage from "./pages/AcceptInvitation.jsx";
 import DashboardPage from "./pages/Dashboard.jsx";
 import MembresPage from "./pages/Membres.jsx";
@@ -38,6 +42,9 @@ export default function App() {
       <Route path="/register" element={<RegisterPage />} />
       <Route path="/verification-en-attente" element={<PendingVerificationPage />} />
       <Route path="/verifier-email/:token" element={<VerifyEmailPage />} />
+      <Route path="/mot-de-passe-oublie" element={<ForgotPasswordPage />} />
+      <Route path="/reinitialiser-mot-de-passe/:token" element={<ResetPasswordPage />} />
+      <Route path="/confirmer-email/:token" element={<ConfirmEmailChangePage />} />
       <Route path="/invitations/:token" element={<AcceptInvitationPage />} />
       {/* Pages publiques de la phase F : sans connexion */}
       <Route path="/medecin/:token" element={<PublicDoctorPage />} />
@@ -61,6 +68,7 @@ export default function App() {
                   <Route path="/village" element={<VillagePage />} />
                   <Route path="/partage" element={<PartagePage />} />
                   <Route path="/notifications" element={<NotificationsPage />} />
+                  <Route path="/compte" element={<ComptePage />} />
                   <Route path="*" element={<Navigate to="/dashboard" replace />} />
                 </Routes>
               </MyFicheGate>

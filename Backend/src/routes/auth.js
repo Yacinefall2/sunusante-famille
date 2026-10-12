@@ -1,11 +1,11 @@
 import { Router } from "express";
-import crypto from "node:crypto";
 import { eq, and, isNull, desc } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { users, refreshTokens, emailVerificationTokens } from "../db/schema.js";
+import { users, refreshTokens, emailVerificationTokens, passwordResetTokens, emailChangeTokens } from "../db/schema.js";
 import { hashPassword, comparePassword } from "../lib/password.js";
 import { generateToken } from "../lib/token.js";
-import { sendVerificationEmail } from "../lib/mailer.js";
+import { sendAccountExistsEmail, sendPasswordChangedAlert, sendPasswordResetEmail, sendVerificationEmail } from "../lib/mailer.js";
+import { clearFailures, lockedMinutes, recordFailure } from "../lib/loginThrottle.js";
 import {
   signAccessToken,
   signRefreshToken,
@@ -14,39 +14,17 @@ import {
   REFRESH_TOKEN_TTL_MS,
 } from "../lib/jwt.js";
 import { requireAuth } from "../middleware/auth.js";
+import { clearAuthCookies, hashToken, setAuthCookies } from "../lib/session.js";
 
 const router = Router();
 
-const COOKIE_SECURE = process.env.COOKIE_SECURE === "true";
 const VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000; // 24 heures
 const RESEND_MIN_INTERVAL_MS = 60 * 1000; // délai minimal entre deux renvois (UC-62)
-
-function setAuthCookies(res, accessToken, refreshToken) {
-  res.cookie("access_token", accessToken, {
-    httpOnly: true,
-    secure: COOKIE_SECURE,
-    sameSite: "lax",
-    maxAge: ACCESS_TOKEN_TTL_MS,
-    path: "/",
-  });
-  res.cookie("refresh_token", refreshToken, {
-    httpOnly: true,
-    secure: COOKIE_SECURE,
-    sameSite: "lax",
-    maxAge: REFRESH_TOKEN_TTL_MS,
-    // Le refresh token n'est envoyé que vers les routes d'authentification
-    path: "/api/auth",
-  });
-}
-
-function clearAuthCookies(res) {
-  res.clearCookie("access_token", { path: "/" });
-  res.clearCookie("refresh_token", { path: "/api/auth" });
-}
-
-function hashToken(token) {
-  return crypto.createHash("sha256").update(token).digest("hex");
-}
+const PASSWORD_RESET_TTL_MS = 60 * 60 * 1000; // 1 heure
+const MIN_PASSWORD_LENGTH = 8;
+// Un jeton de rafraîchissement remplacé il y a peu peut légitimement revenir
+// (deux onglets qui renouvellent en même temps) ; au-delà, c'est suspect.
+const REUSE_GRACE_MS = 60 * 1000;
 
 // Crée un nouveau jeton de vérification pour un utilisateur et envoie le
 // courriel — utilisé à la fois par /register et par /resend-verification.
@@ -54,7 +32,8 @@ async function issueVerificationEmail(user) {
   const token = generateToken();
   await db.insert(emailVerificationTokens).values({
     userId: user.id,
-    token,
+    // Empreinte seule : le jeton en clair ne part que par courriel.
+    token: hashToken(token),
     expiresAt: new Date(Date.now() + VERIFICATION_TTL_MS),
   });
   await sendVerificationEmail({ to: user.email, name: user.name, token });
@@ -71,9 +50,13 @@ router.post("/register", async (req, res) => {
     }
 
     const normalizedEmail = email.toLowerCase().trim();
-    const existing = await db.select().from(users).where(eq(users.email, normalizedEmail));
-    if (existing.length > 0) {
-      return res.status(409).json({ error: "Un compte existe déjà avec cet email" });
+    // Adresse déjà inscrite : même réponse qu'une inscription réussie, pour ne
+    // pas révéler qui a un compte ; la personne est prévenue par courriel.
+    const [existing] = await db.select().from(users).where(eq(users.email, normalizedEmail));
+    if (existing) {
+      if (existing.emailVerified) await sendAccountExistsEmail({ to: existing.email, name: existing.name });
+      else await issueVerificationEmail(existing);
+      return res.status(201).json({ status: "pending_verification", email: existing.email });
     }
 
     const passwordHash = await hashPassword(password);
@@ -104,9 +87,8 @@ router.post("/resend-verification", async (req, res) => {
     // pas révéler quelles adresses sont enregistrées.
     if (!user) return res.json({ success: true });
 
-    if (user.emailVerified) {
-      return res.status(400).json({ error: "Cette adresse est déjà vérifiée, vous pouvez vous connecter" });
-    }
+    // Déjà vérifiée : rien à envoyer, même réponse (aucune information révélée).
+    if (user.emailVerified) return res.json({ success: true });
 
     // Délai minimal entre deux envois — évite le spam accidentel du bouton.
     const [recent] = await db
@@ -137,7 +119,7 @@ router.post("/verify-email/:token", async (req, res) => {
     const [verification] = await db
       .select()
       .from(emailVerificationTokens)
-      .where(eq(emailVerificationTokens.token, token));
+      .where(eq(emailVerificationTokens.token, hashToken(token)));
 
     if (!verification) return res.status(404).json({ error: "Lien de vérification invalide" });
     if (verification.consumedAt) return res.status(409).json({ error: "Ce lien a déjà été utilisé" });
@@ -177,15 +159,24 @@ router.post("/login", async (req, res) => {
       return res.status(400).json({ error: "Email et mot de passe requis" });
     }
 
-    const [user] = await db.select().from(users).where(eq(users.email, email.toLowerCase().trim()));
-    if (!user) {
-      return res.status(401).json({ error: "Identifiants invalides" });
+    const normalizedEmail = email.toLowerCase().trim();
+    // Trop d'échecs récents sur cette adresse : refus, même avec le bon mot
+    // de passe, jusqu'à la fin de la fenêtre (protection contre l'essai de
+    // mots de passe en série).
+    const minutes = lockedMinutes(normalizedEmail);
+    if (minutes > 0) {
+      return res.status(429).json({
+        error: `Trop de tentatives. Réessayez dans ${minutes} minute${minutes > 1 ? "s" : ""}, ou utilisez « Mot de passe oublié ».`,
+      });
     }
 
-    const valid = await comparePassword(password, user.passwordHash);
+    const [user] = await db.select().from(users).where(eq(users.email, normalizedEmail));
+    const valid = user ? await comparePassword(password, user.passwordHash) : false;
     if (!valid) {
+      recordFailure(normalizedEmail);
       return res.status(401).json({ error: "Identifiants invalides" });
     }
+    clearFailures(normalizedEmail);
 
     const accessToken = signAccessToken(user);
     const refreshToken = signRefreshToken(user);
@@ -201,6 +192,125 @@ router.post("/login", async (req, res) => {
     // fonctionnalités (familles, dossiers...), pas la connexion elle-même.
     setAuthCookies(res, accessToken, refreshToken);
     res.json({ id: user.id, name: user.name, email: user.email, emailVerified: user.emailVerified });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Mot de passe oublié : envoie un lien de réinitialisation. Réponse
+// identique que le compte existe ou non, pour ne pas révéler quelles
+// adresses sont enregistrées.
+router.post("/forgot-password", async (req, res) => {
+  try {
+    const normalizedEmail = String(req.body.email ?? "").toLowerCase().trim();
+    if (!normalizedEmail) return res.status(400).json({ error: "Email requis" });
+
+    const [user] = await db.select().from(users).where(eq(users.email, normalizedEmail));
+    if (!user) return res.json({ success: true });
+
+    const [recent] = await db
+      .select()
+      .from(passwordResetTokens)
+      .where(eq(passwordResetTokens.userId, user.id))
+      .orderBy(desc(passwordResetTokens.createdAt))
+      .limit(1);
+    if (recent && Date.now() - new Date(recent.createdAt).getTime() < RESEND_MIN_INTERVAL_MS) {
+      return res.status(429).json({ error: "Merci de patienter une minute avant de redemander un courriel" });
+    }
+
+    // Une nouvelle demande annule les liens encore valides.
+    const now = new Date();
+    await db
+      .update(passwordResetTokens)
+      .set({ consumedAt: now })
+      .where(and(eq(passwordResetTokens.userId, user.id), isNull(passwordResetTokens.consumedAt)));
+
+    const token = generateToken();
+    await db.insert(passwordResetTokens).values({
+      userId: user.id,
+      tokenHash: hashToken(token),
+      expiresAt: new Date(now.getTime() + PASSWORD_RESET_TTL_MS),
+    });
+    await sendPasswordResetEmail({ to: user.email, name: user.name, token });
+    res.json({ success: true });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Nouveau mot de passe via le lien reçu par courriel. Toutes les sessions
+// ouvertes sont fermées ; la personne se reconnecte avec le nouveau mot de
+// passe. Le lien prouvant l'accès à la boîte, l'adresse est tenue pour vérifiée.
+router.post("/reset-password/:token", async (req, res) => {
+  try {
+    const password = req.body.password;
+    if (typeof password !== "string" || password.length < MIN_PASSWORD_LENGTH) {
+      return res.status(400).json({ error: `Le mot de passe doit contenir au moins ${MIN_PASSWORD_LENGTH} caractères` });
+    }
+
+    const [reset] = await db
+      .select()
+      .from(passwordResetTokens)
+      .where(eq(passwordResetTokens.tokenHash, hashToken(req.params.token)));
+    if (!reset) return res.status(404).json({ error: "Lien de réinitialisation invalide" });
+    if (reset.consumedAt) return res.status(409).json({ error: "Ce lien a déjà été utilisé ou remplacé par une demande plus récente" });
+    if (reset.expiresAt < new Date()) return res.status(410).json({ error: "Ce lien a expiré, faites une nouvelle demande" });
+
+    // Consommation conditionnelle : deux envois simultanés, un seul passe.
+    const now = new Date();
+    const [claimed] = await db
+      .update(passwordResetTokens)
+      .set({ consumedAt: now })
+      .where(and(eq(passwordResetTokens.id, reset.id), isNull(passwordResetTokens.consumedAt)))
+      .returning();
+    if (!claimed) return res.status(409).json({ error: "Ce lien a déjà été utilisé" });
+
+    const passwordHash = await hashPassword(password);
+    const [user] = await db
+      .update(users)
+      .set({ passwordHash, emailVerified: true, passwordChangedAt: now })
+      .where(eq(users.id, reset.userId))
+      .returning();
+    await db
+      .update(refreshTokens)
+      .set({ revokedAt: now })
+      .where(and(eq(refreshTokens.userId, reset.userId), isNull(refreshTokens.revokedAt)));
+    clearFailures(user.email);
+    await sendPasswordChangedAlert(user);
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Confirmation d'une nouvelle adresse (lien envoyé à celle-ci depuis « Mon
+// compte »). Public : le lien suffit, comme pour la vérification initiale.
+router.post("/confirm-email-change/:token", async (req, res) => {
+  try {
+    const [change] = await db
+      .select()
+      .from(emailChangeTokens)
+      .where(eq(emailChangeTokens.tokenHash, hashToken(req.params.token)));
+    if (!change) return res.status(404).json({ error: "Lien de confirmation invalide" });
+    if (change.consumedAt) return res.status(409).json({ error: "Ce lien a déjà été utilisé ou remplacé par une demande plus récente" });
+    if (change.expiresAt < new Date()) return res.status(410).json({ error: "Ce lien a expiré, refaites la demande depuis « Mon compte »" });
+
+    const [taken] = await db.select({ id: users.id }).from(users).where(eq(users.email, change.newEmail));
+    if (taken) return res.status(409).json({ error: "Un compte existe déjà avec cette adresse" });
+
+    const [claimed] = await db
+      .update(emailChangeTokens)
+      .set({ consumedAt: new Date() })
+      .where(and(eq(emailChangeTokens.id, change.id), isNull(emailChangeTokens.consumedAt)))
+      .returning();
+    if (!claimed) return res.status(409).json({ error: "Ce lien a déjà été utilisé" });
+
+    await db.update(users).set({ email: change.newEmail, emailVerified: true }).where(eq(users.id, change.userId));
+    res.json({ email: change.newEmail });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Erreur serveur" });
@@ -225,6 +335,14 @@ router.post("/refresh", async (req, res) => {
     const tokenHash = hashToken(token);
     const [stored] = await db.select().from(refreshTokens).where(eq(refreshTokens.tokenHash, tokenHash));
 
+    if (stored?.revokedAt && Date.now() - stored.revokedAt.getTime() > REUSE_GRACE_MS) {
+      // Jeton déjà remplacé depuis longtemps présenté à nouveau : signe d'un
+      // vol. Toutes les sessions du compte sont fermées par précaution.
+      await db
+        .update(refreshTokens)
+        .set({ revokedAt: new Date() })
+        .where(and(eq(refreshTokens.userId, stored.userId), isNull(refreshTokens.revokedAt)));
+    }
     if (!stored || stored.revokedAt || stored.expiresAt < new Date()) {
       clearAuthCookies(res);
       return res.status(401).json({ error: "Session expirée, reconnexion requise" });
@@ -236,7 +354,16 @@ router.post("/refresh", async (req, res) => {
       return res.status(401).json({ error: "Session expirée, reconnexion requise" });
     }
 
-    await db.update(refreshTokens).set({ revokedAt: new Date() }).where(eq(refreshTokens.id, stored.id));
+    // Rotation atomique : deux renouvellements simultanés, un seul aboutit.
+    const [rotated] = await db
+      .update(refreshTokens)
+      .set({ revokedAt: new Date() })
+      .where(and(eq(refreshTokens.id, stored.id), isNull(refreshTokens.revokedAt)))
+      .returning();
+    if (!rotated) {
+      clearAuthCookies(res);
+      return res.status(401).json({ error: "Session expirée, reconnexion requise" });
+    }
 
     const newAccessToken = signAccessToken(user);
     const newRefreshToken = signRefreshToken(user);

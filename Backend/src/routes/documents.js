@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { db } from "../db/index.js";
 import { documents } from "../db/schema.js";
-import { upload, UPLOAD_DIR_PATH } from "../middleware/upload.js";
+import { uploadSingle, UPLOAD_DIR_PATH } from "../middleware/upload.js";
 import { requireFamilyMembership } from "../middleware/auth.js";
 import { familyIdForListQuery, familyIdFromMemberId, familyIdFromResource } from "../lib/familyResolvers.js";
 import {
@@ -75,11 +75,11 @@ router.put(
 );
 
 // Upload réel d'un fichier (multipart/form-data, champ "file")
-// IMPORTANT : upload.single("file") doit s'exécuter AVANT requireFamilyMembership,
+// IMPORTANT : uploadSingle("file") doit s'exécuter AVANT requireFamilyMembership,
 // car req.body.memberId n'existe qu'une fois le corps multipart parsé par Multer.
 router.post(
   "/",
-  upload.single("file"),
+  uploadSingle("file"),
   requireFamilyMembership((req) => familyIdFromMemberId(req.body.memberId)),
   async (req, res) => {
     try {

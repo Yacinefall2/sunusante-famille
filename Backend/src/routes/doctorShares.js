@@ -8,6 +8,7 @@ import { canSeeDocument, canWriteMember, isHolder } from "../lib/documentAccess.
 import { DOCTOR_SHARE_DURATIONS, frontendUrl, hashToken, newToken, recipientsFor, shareState } from "../lib/sharing.js";
 import { formatDateTime } from "../lib/time.js";
 import { sendDoctorShareEmail } from "../lib/mailer.js";
+import { QUOTA_MESSAGE, overDailyQuota } from "../lib/sendQuota.js";
 import { notify } from "../reminders/notify.js";
 
 // Partage avec un professionnel de santé (A4) : UC-22 (titulaire), UC-37
@@ -84,6 +85,9 @@ router.post("/", requireFamilyMembership((req) => familyIdFromMemberId(req.body.
     const doctorEmail = String(req.body.doctorEmail ?? "").trim().toLowerCase();
     if (!EMAIL_RE.test(doctorEmail) || doctorEmail.length > 255) {
       return res.status(400).json({ error: "Adresse courriel du médecin invalide" });
+    }
+    if (await overDailyQuota(doctorShares, doctorShares.createdByUserId, req.user.id)) {
+      return res.status(429).json({ error: QUOTA_MESSAGE });
     }
     const duration = req.body.duration || "2h";
     if (!DOCTOR_SHARE_DURATIONS[duration]) return res.status(400).json({ error: "Durée invalide (2h, 24h ou 7j)" });

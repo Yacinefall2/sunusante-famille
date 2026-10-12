@@ -1,9 +1,8 @@
 import { Router } from "express";
-import path from "node:path";
 import { and, eq, isNull } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { doctorShares, documents, emergencyCards, emergencyCardViews, members } from "../db/schema.js";
-import { UPLOAD_DIR_PATH } from "../middleware/upload.js";
+import { sendStoredFile } from "../middleware/upload.js";
 import { doctorSynthesis, emergencyPublicView, hashToken, newToken, recipientsFor } from "../lib/sharing.js";
 import { formatDateTime } from "../lib/time.js";
 import { notify } from "../reminders/notify.js";
@@ -100,10 +99,7 @@ router.get("/doctor/:token/documents/:documentId", async (req, res) => {
     if (!share.documentIds.includes(documentId)) return res.status(403).json({ error: "Document non partagé" });
     const [doc] = await db.select().from(documents).where(eq(documents.id, documentId));
     if (!doc?.fileUrl || doc.memberId !== share.memberId) return res.status(404).json({ error: "Fichier introuvable" });
-    res.set("Cache-Control", "no-store");
-    res.sendFile(path.join(UPLOAD_DIR_PATH, path.basename(doc.fileUrl)), (err) => {
-      if (err && !res.headersSent) res.status(404).json({ error: "Fichier introuvable" });
-    });
+    sendStoredFile(res, doc.fileUrl, doc.originalName);
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Erreur serveur" });

@@ -3,7 +3,7 @@ import path from "node:path";
 import { eq } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { documents } from "../db/schema.js";
-import { UPLOAD_DIR_PATH } from "../middleware/upload.js";
+import { sendStoredFile } from "../middleware/upload.js";
 import { requireFamilyMembership } from "../middleware/auth.js";
 import { familyIdFromMemberId } from "../lib/familyResolvers.js";
 import { canReadMember, canSeeDocument } from "../lib/documentAccess.js";
@@ -37,10 +37,7 @@ router.get(
       if (!(await canReadMember(req, req.document.memberId)) || !canSeeDocument(req, req.document)) {
         return res.status(403).json({ error: "Accès refusé à ce dossier" });
       }
-      const filePath = path.join(UPLOAD_DIR_PATH, path.basename(req.document.fileUrl));
-      res.sendFile(filePath, (err) => {
-        if (err && !res.headersSent) res.status(404).json({ error: "Fichier introuvable" });
-      });
+      sendStoredFile(res, req.document.fileUrl, req.document.originalName);
     } catch (error) {
       console.error(error);
       res.status(500).json({ error: "Erreur serveur" });

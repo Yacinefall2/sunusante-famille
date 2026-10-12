@@ -1,4 +1,5 @@
 import express from "express";
+import helmet from "helmet";
 import cookieParser from "cookie-parser";
 import cors from "cors";
 import authRouter from "./routes/auth.js";
@@ -21,12 +22,43 @@ import familyDashboardRouter from "./routes/familyDashboard.js";
 import doctorSharesRouter from "./routes/doctorShares.js";
 import emergencyRouter from "./routes/emergency.js";
 import publicRouter from "./routes/public.js";
+import accountRouter from "./routes/account.js";
 import { requireAuth, requireVerifiedEmail } from "./middleware/auth.js";
 
 const app = express();
 
+app.disable("x-powered-by");
+// En-têtes de sécurité (anti-clickjacking, nosniff, CSP stricte : l'API ne
+// sert que du JSON et des fichiers). Les fichiers téléversés posent leur
+// propre politique (sendStoredFile), d'où contentSecurityPolicy laissé à
+// helmet pour le reste.
+app.use(
+  helmet({
+    contentSecurityPolicy: { directives: { defaultSrc: ["'none'"], frameAncestors: ["'none'"] } },
+    crossOriginResourcePolicy: { policy: "same-origin" },
+  })
+);
 app.use(cors({ origin: process.env.FRONTEND_URL || "http://localhost:5173", credentials: true }));
-app.use(express.json());
+// Requêtes qui modifient des données : refusées si elles viennent d'une autre
+// origine que l'application (protection CSRF en plus des cookies
+// SameSite=Strict, qui ne couvrent pas un sous-domaine voisin). Sans en-tête
+// Origin (outils, tests, anciens navigateurs), la requête passe : les cookies
+// SameSite et le CORS s'appliquent alors seuls.
+const FRONTEND_ORIGIN = new URL(process.env.FRONTEND_URL || "http://localhost:5173").origin;
+app.use((req, res, next) => {
+  if (["GET", "HEAD", "OPTIONS"].includes(req.method) || req.path.startsWith("/api/webhooks/")) return next();
+  const origin = req.get("origin");
+  if (!origin) return next();
+  let host;
+  try {
+    host = new URL(origin).host;
+  } catch {
+    return res.status(403).json({ error: "Origine refusée" });
+  }
+  if (origin === FRONTEND_ORIGIN || host === req.get("host")) return next();
+  res.status(403).json({ error: "Origine refusée" });
+});
+app.use(express.json({ limit: "100kb" }));
 app.use(cookieParser());
 
 // Fichiers téléversés : contrôle d'accès au dossier, comme les données médicales.
@@ -42,6 +74,7 @@ app.use("/api/public", publicRouter);
 // courriel vérifiée (règle transverse §10, sans exception). L'isolation
 // entre familles (vérification de l'appartenance) est gérée route par route
 // via requireFamilyMembership, à l'intérieur de chaque fichier de routes.
+app.use("/api/account", requireAuth, requireVerifiedEmail, accountRouter);
 app.use("/api/families", requireAuth, requireVerifiedEmail, familiesRouter);
 app.use("/api/members", requireAuth, requireVerifiedEmail, membersRouter);
 app.use("/api/appointments", requireAuth, requireVerifiedEmail, appointmentsRouter);
@@ -60,5 +93,14 @@ app.use("/api/doctor-shares", requireAuth, requireVerifiedEmail, doctorSharesRou
 app.use("/api/emergency", requireAuth, requireVerifiedEmail, emergencyRouter);
 
 app.get("/api/health", (req, res) => res.json({ status: "ok" }));
+
+// Erreurs non rattrapées (JSON mal formé, corps trop gros...) : réponse JSON
+// sobre, jamais de trace technique renvoyée au navigateur.
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  const status = err.status || err.statusCode || 500;
+  if (status >= 500) console.error(err);
+  res.status(status).json({ error: status >= 500 ? "Erreur serveur" : "Requête invalide" });
+});
 
 export default app;

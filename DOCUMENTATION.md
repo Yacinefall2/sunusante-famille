@@ -311,13 +311,17 @@ ici pour garder une image de production simple et légère.
 
 ## 8. Aller plus loin
 
-- **Authentification** : le projet n'a actuellement aucune authentification (toute
-  personne ayant accès à l'URL peut voir/modifier toutes les familles). Pour un usage
-  réel, il faudrait ajouter un système de connexion (ex. sessions ou JWT) avant de
-  déployer publiquement.
-- **Upload de fichiers réel** : la page Documents stocke actuellement un simple lien
-  URL (`fileUrl`) plutôt qu'un vrai fichier téléversé. Pour un vrai upload, il faudrait
-  ajouter un service de stockage (ex. dossier local avec `multer`, ou un service cloud
-  type S3) côté backend.
-- **Tests automatisés** : aucun test n'est présent actuellement. Pour en ajouter :
-  `vitest` ou `jest` côté backend, `vitest` + `@testing-library/react` côté frontend.
+Déjà en place : comptes avec vérification de l'adresse, sessions (JWT en cookies
+`httpOnly`), « Mot de passe oublié », limite des tentatives de connexion, accès
+dossier par dossier, téléversement réel des fichiers (`multer`, servis uniquement
+aux comptes autorisés) et tests d'API (Vitest + Supertest).
+
+Pistes restantes :
+
+- **Mise en ligne** : hébergement avec HTTPS (`COOKIE_SECURE=true`), `FRONTEND_URL`
+  réglé sur l'adresse publique, sauvegardes régulières de PostgreSQL et du volume
+  `uploads_data`.
+- **Limite des tentatives** : les compteurs sont en mémoire (un seul serveur,
+  remis à zéro au redémarrage). Avec plusieurs instances, les stocker en base ou
+  dans Redis.
+- **Tests de l'interface** : `vitest` + `@testing-library/react` côté frontend.

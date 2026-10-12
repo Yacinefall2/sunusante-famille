@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { Router } from "express";
 import { eq } from "drizzle-orm";
 import { db } from "../db/index.js";
@@ -18,9 +19,16 @@ const FAILURE_EVENTS = {
   spam: "Signalé comme indésirable",
 };
 
+// Comparaison à durée constante : le temps de réponse ne trahit pas le secret.
+function sameSecret(given, expected) {
+  const a = crypto.createHash("sha256").update(String(given)).digest();
+  const b = crypto.createHash("sha256").update(expected).digest();
+  return crypto.timingSafeEqual(a, b);
+}
+
 router.post("/:secret", async (req, res) => {
   const secret = process.env.MAIL_WEBHOOK_SECRET;
-  if (!secret || req.params.secret !== secret) return res.status(404).end();
+  if (!secret || !sameSecret(req.params.secret, secret)) return res.status(404).end();
   try {
     const events = Array.isArray(req.body) ? req.body : [req.body];
     for (const event of events) {

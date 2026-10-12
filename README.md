@@ -22,7 +22,12 @@ docker compose up --build
 
 - Frontend (React servi par Nginx) : http://localhost:8080
 - Backend (API Express) : http://localhost:4000/api/health
-- PostgreSQL : exposé sur le port 5432 de la machine hôte
+- PostgreSQL : port 5432
+
+L'API et PostgreSQL ne sont joignables que depuis la machine elle-même
+(`127.0.0.1`), jamais depuis le réseau. Les outils de développement (pgAdmin
+sur http://localhost:5050, Mailhog sur http://localhost:8025) ne démarrent
+qu'avec le profil `dev` : `docker compose --profile dev up --build`.
 
 Au démarrage, le conteneur backend applique automatiquement les migrations
 versionnées du dossier `Backend/drizzle/` avant de lancer le serveur — aucune
@@ -38,6 +43,23 @@ dans l'application et par courriel selon les préférences de chacun. Un
 courriel non remis après 3 tentatives est signalé dans l'application à la
 personne et à l'administrateur familial. Fuseau de référence : `APP_TIMEZONE`
 (Africa/Dakar par défaut). Journal : `docker compose logs -f worker`.
+
+### Comptes et connexion
+
+- **Mot de passe oublié** (`/mot-de-passe-oublie`) : un lien valable 1 heure,
+  à usage unique, est envoyé par courriel ; une nouvelle demande annule la
+  précédente. Changer son mot de passe ferme toutes les sessions ouvertes.
+- **Limite des tentatives** : après 5 échecs de connexion en 15 minutes sur une
+  même adresse, la connexion est refusée jusqu'à la fin de ce délai.
+- **Mon compte** (`/compte`, clic sur son nom en haut à droite) : changer son
+  nom, son adresse (confirmée par un lien envoyé à la nouvelle, avis envoyé à
+  l'ancienne) ou son mot de passe (alerte par courriel, autres appareils
+  déconnectés), télécharger ses données (JSON) et supprimer son compte.
+- **Sécurité** : fichiers téléversés vérifiés par leur contenu et servis avec
+  un type imposé, en-têtes de sécurité (helmet côté API, `security-headers.conf`
+  côté Nginx), cookies `SameSite=Strict`, contrôle de l'origine des requêtes,
+  jetons d'invitation et de vérification stockés sous forme d'empreinte,
+  20 invitations ou liens médecin par compte et par 24 heures.
 
 ### Partage médecin et fiche d'urgence
 
