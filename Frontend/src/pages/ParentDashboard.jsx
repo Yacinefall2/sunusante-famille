@@ -24,6 +24,7 @@ import {
   Pill,
   RefreshCw,
   ShieldCheck,
+  ArrowRightLeft,
   Stethoscope,
   Syringe,
   UserPlus,
@@ -66,6 +67,7 @@ const TODO_ICONS = {
   delivery: Package,
   invitation: Mail,
   consent: ShieldCheck,
+  role_transfer: ArrowRightLeft,
 };
 
 // Icône d'une ligne d'activité selon sa nature.
@@ -155,7 +157,7 @@ function Skeleton() {
 // ---------------------------------------------------------------------------
 // Bloc 1 — « À traiter »
 // ---------------------------------------------------------------------------
-function TodoActions({ item, busy, onIntake, onBooster, onAttendance }) {
+function TodoActions({ item, busy, onIntake, onBooster, onAttendance, onRoleTransfer }) {
   const action = item.action;
   const small =
     "inline-flex items-center gap-1 text-xs font-semibold px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap";
@@ -217,6 +219,18 @@ function TodoActions({ item, busy, onIntake, onBooster, onAttendance }) {
         <Link to={item.link || "/fiches"} className={neutral}>
           <ClipboardPen size={12} /> Compléter
         </Link>
+      );
+    case "role_transfer":
+      // Proposition de reprendre la gestion d'un dossier (UC-39).
+      return (
+        <div className="flex items-center gap-1.5">
+          <button type="button" disabled={busy} onClick={() => onRoleTransfer(action.id, "accept")} className={primary}>
+            Accepter
+          </button>
+          <button type="button" disabled={busy} onClick={() => onRoleTransfer(action.id, "decline")} className={secondary}>
+            Refuser
+          </button>
+        </div>
       );
     case "consent":
       // Accord oral d'un proche majeur à attester (UC-29) : écran d'engagement.
@@ -715,7 +729,7 @@ function ActivityBlock({ activity, memberById }) {
 // Page
 // ---------------------------------------------------------------------------
 export default function ParentDashboard() {
-  const { selectedFamily, myMember, members } = useFamily();
+  const { selectedFamily, myMember, members, reloadMembers } = useFamily();
   const { user } = useAuth();
   const navigate = useNavigate();
   const [data, setData] = useState(null);
@@ -823,6 +837,24 @@ export default function ParentDashboard() {
           return true;
         } catch {
           toast.error("Impossible d'enregistrer la présence");
+          return false;
+        }
+      }),
+    // Transfert de gestion (UC-39) : accepter ou refuser la proposition.
+    onRoleTransfer: (id, answer) =>
+      run(key, async () => {
+        try {
+          const res = await fetch(`/api/role-transfers/${id}/${answer}`, { method: "POST" });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            toast.error(err.error || "La réponse n'a pas pu être enregistrée");
+            return true;
+          }
+          toast.success(answer === "accept" ? "Vous êtes désormais gestionnaire de ce dossier" : "Proposition refusée");
+          reloadMembers();
+          return true;
+        } catch {
+          toast.error("La réponse n'a pas pu être enregistrée");
           return false;
         }
       }),

@@ -93,8 +93,18 @@ export const FICHE_ROLE_OPTIONS = [
     value: "relais",
     label: "Relais — prévient la personne de ses rendez-vous (date, heure, lieu), sans accès au dossier",
   },
-  { value: "lecteur_invite", label: "Lecteur invité — consulte le dossier sans le modifier" },
+  { value: "lecteur_invite", label: "Lecteur invité — consulte le dossier sans le modifier, pour une durée limitée" },
 ];
+
+// Durée d'accès d'un Lecteur invité (R4) : obligatoire à l'attribution, à
+// l'invitation et à la prolongation. Mêmes valeurs que le serveur.
+export const ROLE_DURATION_OPTIONS = [
+  { value: "7j", label: "7 jours" },
+  { value: "30j", label: "30 jours" },
+  { value: "3m", label: "3 mois" },
+  { value: "1a", label: "1 an" },
+];
+export const DEFAULT_ROLE_DURATION = "30j";
 
 const FICHE_ROLE_SHORT = {
   titulaire: "Titulaire",

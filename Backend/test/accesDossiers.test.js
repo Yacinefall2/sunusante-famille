@@ -84,7 +84,7 @@ describe("Administrateurs (A1 / A2) — règle réciproque §10", () => {
   it("A2 peut déléguer la lecture de son dossier à A1, puis la révoquer (UC-26)", async () => {
     const grant = await as(f.moussa)
       .post("/api/document-roles")
-      .send({ memberId: f.fiches.moussa.id, userId: f.awa.id, role: "lecteur_invite" });
+      .send({ memberId: f.fiches.moussa.id, userId: f.awa.id, role: "lecteur_invite", duration: "7j" });
     expect(grant.status).toBe(201);
     expect((await as(f.awa).get(`/api/treatments?memberId=${f.fiches.moussa.id}`)).status).toBe(200);
     expect((await as(f.awa).post("/api/appointments").send(newAppointment(f.fiches.moussa))).status).toBe(403);

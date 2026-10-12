@@ -1,4 +1,4 @@
-import { eq, and, ne, inArray, isNotNull, isNull } from "drizzle-orm";
+import { eq, and, ne, inArray, isNotNull, isNull, or, gt } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { documentRoles, familyMemberships, members, users } from "../db/schema.js";
 import { effectiveRole } from "./family.js";
@@ -26,6 +26,32 @@ const ROLE_ACCESS = {
   relais: ACCESS.RELAY,
 };
 
+// Durées d'accès d'un Lecteur invité (R4 : « consultation seule, durée
+// limitée ») — obligatoires à l'attribution, à l'invitation et à la
+// prolongation.
+export const ROLE_DURATIONS = {
+  "7j": { days: 7, label: "7 jours" },
+  "30j": { days: 30, label: "30 jours" },
+  "3m": { months: 3, label: "3 mois" },
+  "1a": { months: 12, label: "1 an" },
+};
+export const DURATION_REQUIRED_ERROR = "Choisissez la durée d'accès du lecteur invité : 7 jours, 30 jours, 3 mois ou 1 an";
+export const isRoleDuration = (value) => Object.hasOwn(ROLE_DURATIONS, value ?? "");
+
+// Échéance d'un accès de lecteur invité : `from` + la durée choisie (mois
+// calendaires pour « 3 mois » et « 1 an »).
+export function expiryFor(duration, from = new Date()) {
+  const d = ROLE_DURATIONS[duration];
+  if (!d) return null;
+  const end = new Date(from.getTime());
+  if (d.days) end.setTime(end.getTime() + d.days * 24 * 60 * 60 * 1000);
+  if (d.months) end.setUTCMonth(end.getUTCMonth() + d.months);
+  return end;
+}
+
+// Rôle de dossier encore en vigueur à `now` (sans échéance, ou échéance future).
+export const activeRole = (now = new Date()) => or(isNull(documentRoles.expiresAt), gt(documentRoles.expiresAt, now));
+
 function strongest(a, b) {
   if (!a) return b ?? null;
   if (!b) return a;
@@ -40,7 +66,9 @@ function strongest(a, b) {
 // Règles (spécification §2, §9 et §10) :
 //   - Adolescent / dépendant : lecture seule de sa propre fiche, rien d'autre.
 //   - Sa propre fiche (fiche reliée au compte) : accès complet (R1).
-//   - Rôle de dossier explicite : selon le rôle (R2 complet, R4 lecture, R3 relais).
+//   - Rôle de dossier explicite : selon le rôle (R2 complet, R4 lecture, R3
+//     relais). Un rôle dont l'échéance est passée (lecteur invité) ne compte
+//     plus, même avant que le worker ne le supprime.
 //   - Administrateur (A1/A2) : accès complet à toutes les fiches du foyer,
 //     SAUF la fiche de l'autre administrateur (règle réciproque §10) — sauf
 //     délégation explicite par un rôle de dossier (UC-26).
@@ -79,7 +107,7 @@ export async function computeFamilyAccess({ userId, familyId, role, linkedMember
     const myRoles = await db
       .select({ memberId: documentRoles.memberId, role: documentRoles.role })
       .from(documentRoles)
-      .where(and(eq(documentRoles.userId, userId), inArray(documentRoles.memberId, familyMemberIds)));
+      .where(and(eq(documentRoles.userId, userId), inArray(documentRoles.memberId, familyMemberIds), activeRole()));
     const roleByMember = new Map(myRoles.map((r) => [r.memberId, r.role]));
 
     let otherAdminFiches = new Set();
@@ -261,8 +289,13 @@ export async function presentDocuments(req, docs) {
 // Enregistre un rôle Axe 2 pour un utilisateur sur une fiche — remplace
 // l'éventuel rôle déjà attribué à cette même personne sur ce même dossier
 // (un seul rôle par dossier, cumulable entre dossiers différents).
-export async function setDocumentRole(memberId, userId, role) {
-  await db.delete(documentRoles).where(and(eq(documentRoles.memberId, memberId), eq(documentRoles.userId, userId)));
-  const [created] = await db.insert(documentRoles).values({ memberId, userId, role }).returning();
+// `expiresAt` : échéance d'un Lecteur invité (ignorée pour les autres rôles).
+// `executor` : transaction en cours, le cas échéant.
+export async function setDocumentRole(memberId, userId, role, { expiresAt = null, executor = db } = {}) {
+  await executor.delete(documentRoles).where(and(eq(documentRoles.memberId, memberId), eq(documentRoles.userId, userId)));
+  const [created] = await executor
+    .insert(documentRoles)
+    .values({ memberId, userId, role, expiresAt: role === "lecteur_invite" ? expiresAt : null })
+    .returning();
   return created;
 }

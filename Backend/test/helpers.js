@@ -26,7 +26,7 @@ export async function resetDatabase() {
       family_memberships, refresh_tokens, pending_invitations, notifications,
       medication_intakes, notification_preferences, relay_tasks, relay_events,
       doctor_shares, emergency_cards, emergency_card_views, password_reset_tokens, email_change_tokens,
-      activity_log, consent_attestations
+      activity_log, consent_attestations, role_transfers, family_reminder_settings
     restart identity cascade
   `);
   resetLoginThrottle();

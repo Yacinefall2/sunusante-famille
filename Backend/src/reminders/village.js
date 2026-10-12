@@ -10,10 +10,11 @@ import {
   relayTasks,
   users,
 } from "../db/schema.js";
-import { formatDateTime } from "../lib/time.js";
+import { addDays, formatDateTime, localDate, zonedTime } from "../lib/time.js";
 import { canWrite, withAccess } from "../lib/documentAccess.js";
 import { notify } from "./notify.js";
 import { logActivity } from "../lib/activityLog.js";
+import { NEXT_MORNING_TIME, REMINDER_BOUNDS, reminderSettingsCache } from "../lib/reminderSettings.js";
 
 // ── Village : le rappel relayé vers un proche non connecté (§4) ──────────────
 // J-3   : « à relayer » au(x) gestionnaire(s) — pas au patient, qui n'a pas
@@ -29,11 +30,24 @@ import { logActivity } from "../lib/activityLog.js";
 // Seules les fiches « non connecté », non archivées et SANS titulaire (aucun
 // compte relié) sont concernées : dès qu'un compte est relié, ce sont les
 // rappels classiques qui s'appliquent.
+//
+// Ces délais sont les valeurs PAR DÉFAUT : chaque famille peut les régler
+// (UC-08, lib/reminderSettings.js) — premier « à relayer » 2 à 7 jours avant,
+// relance la veille ou 2 jours avant, escalade 1 à 12 h après la relance,
+// présence demandée le soir même (12 h après) ou le lendemain à 8 h.
 
 const HOUR = 60 * 60 * 1000;
 export const ESCALATION_DELAY = 3 * HOUR;
 export const ATTENDANCE_PROMPT_AFTER = 12 * HOUR;
 export const RELAY_FOLLOW_UP_MIN_DELAY = 1 * HOUR;
+
+// Instant où la présence est demandée, selon le réglage de la famille.
+export function attendancePromptAt(appointmentDate, settings) {
+  if (settings.attendancePrompt === "next_morning") {
+    return zonedTime(addDays(localDate(appointmentDate), 1), NEXT_MORNING_TIME);
+  }
+  return new Date(appointmentDate.getTime() + ATTENDANCE_PROMPT_AFTER);
+}
 
 const memberName = (m) => `${m.firstName} ${m.lastName}`;
 const userCols = { id: users.id, name: users.name, email: users.email, emailVerified: users.emailVerified };
@@ -97,7 +111,12 @@ async function notifyMany(users, base, keyPrefix) {
 }
 
 export async function villageTick(now) {
-  // 1. J-3 : création des tâches et « à relayer » aux gestionnaires.
+  // Règles de la famille (UC-08), lues une fois par passage.
+  const settingsOf = reminderSettingsCache();
+
+  // 1. J-3 (ou selon le réglage) : création des tâches et « à relayer » aux
+  // gestionnaires. On lit sur la fenêtre la plus large permise, puis chaque
+  // rendez-vous est filtré selon le réglage de sa famille.
   const upcoming = await db
     .select({ a: appointments, m: members })
     .from(appointments)
@@ -107,10 +126,12 @@ export async function villageTick(now) {
         relayedFiche(),
         ne(appointments.status, "cancelled"),
         gt(appointments.appointmentDate, now),
-        lte(appointments.appointmentDate, new Date(now.getTime() + 72 * HOUR))
+        lte(appointments.appointmentDate, new Date(now.getTime() + REMINDER_BOUNDS.relayFirstDays.max * 24 * HOUR))
       )
     );
   for (const { a, m } of upcoming) {
+    const settings = await settingsOf(m.familyId);
+    if (a.appointmentDate.getTime() - now.getTime() > settings.relayFirstDays * 24 * HOUR) continue;
     const [task] = await db
       .insert(relayTasks)
       .values({ appointmentId: a.id, memberId: m.id, familyId: m.familyId, appointmentDate: a.appointmentDate, createdAt: now })
@@ -152,10 +173,13 @@ export async function villageTick(now) {
 
   for (const { t, a, m } of open) {
     const remaining = t.appointmentDate.getTime() - now.getTime();
+    const settings = await settingsOf(m.familyId);
+    const escalationDelay = settings.escalationDelayHours * HOUR;
 
-    // 2. J-1 : relance aux gestionnaires — jamais dans la foulée de la
-    // création de la tâche (rendez-vous pris moins de 24 h à l'avance).
-    if (!t.followUpAt && remaining <= 24 * HOUR) {
+    // 2. J-1 (ou J-2 selon le réglage) : relance aux gestionnaires — jamais
+    // dans la foulée de la création de la tâche (rendez-vous pris moins de
+    // 24 h à l'avance).
+    if (!t.followUpAt && remaining <= settings.followUpDaysBefore * 24 * HOUR) {
       if (now.getTime() - t.createdAt.getTime() < RELAY_FOLLOW_UP_MIN_DELAY) continue;
       await db.update(relayTasks).set({ followUpAt: now }).where(eq(relayTasks.id, t.id));
       await logRelayEvent(t.id, "follow_up", null, now);
@@ -164,7 +188,7 @@ export async function villageTick(now) {
         {
           category: "relay_to_relay",
           title: `Relance : ${memberName(m)} n'est pas encore prévenu`,
-          body: [whereLine(a), "Sans « Prévenu » d'ici 3 h, les relais seront sollicités."].join(" · "),
+          body: [whereLine(a), `Sans « Prévenu » d'ici ${settings.escalationDelayHours} h, les relais seront sollicités.`].join(" · "),
           link: "/village",
           familyId: m.familyId,
           memberId: m.id,
@@ -175,9 +199,9 @@ export async function villageTick(now) {
       continue;
     }
 
-    // 3. +3 h (ou à 2 h du rendez-vous) : escalade vers tous les relais.
+    // 3. +3 h (ou le délai réglé, ou à 2 h du rendez-vous) : escalade vers tous les relais.
     const followUpAge = t.followUpAt ? now.getTime() - t.followUpAt.getTime() : 0;
-    if (t.followUpAt && !t.escalatedAt && (followUpAge >= ESCALATION_DELAY || remaining <= 2 * HOUR)) {
+    if (t.followUpAt && !t.escalatedAt && (followUpAge >= escalationDelay || remaining <= 2 * HOUR)) {
       await db.update(relayTasks).set({ escalatedAt: now }).where(eq(relayTasks.id, t.id));
       const relays = await relaysOf(m.id);
       if (relays.length === 0) {
@@ -217,7 +241,8 @@ export async function villageTick(now) {
     }
   }
 
-  // 4. Rendez-vous passé de 12 h : présence demandée une fois aux gestionnaires.
+  // 4. Rendez-vous passé de 12 h (« le soir même », par défaut) ou lendemain
+  // 8 h (« le lendemain matin ») : présence demandée une fois aux gestionnaires.
   const past = await db
     .select({ t: relayTasks, a: appointments, m: members })
     .from(relayTasks)
@@ -230,10 +255,11 @@ export async function villageTick(now) {
         isNull(appointments.attendance),
         ne(appointments.status, "cancelled"),
         eq(appointments.appointmentDate, relayTasks.appointmentDate),
-        lte(relayTasks.appointmentDate, new Date(now.getTime() - ATTENDANCE_PROMPT_AFTER))
+        lte(relayTasks.appointmentDate, now)
       )
     );
   for (const { t, a, m } of past) {
+    if (attendancePromptAt(t.appointmentDate, await settingsOf(m.familyId)) > now) continue;
     await db.update(relayTasks).set({ attendancePromptAt: now }).where(eq(relayTasks.id, t.id));
     await notifyMany(
       await managersOf(m.id, m.familyId),

@@ -11,14 +11,17 @@ import { UserCog, Mail, Trash2, Loader2, Clock, Shield, Plus, Link2, AlertTriang
 import { formatDateTime } from "../lib/utils";
 import {
   AGE_ACCESS_HELP,
+  DEFAULT_ROLE_DURATION,
   FAMILY_ROLE_OPTIONS,
   FICHE_ROLE_OPTIONS,
+  ROLE_DURATION_OPTIONS,
   accountLevelLabel,
   familyRoleLabel,
   familyRoleBadgeVariant,
   ficheRoleShortLabel,
 } from "../lib/roles";
 import toast from "react-hot-toast";
+import { ReminderSettingsPanel } from "../components/village/ReminderSettingsPanel";
 
 // Rôles d'un compte dans la famille, et rôles sur une fiche (optionnels,
 // fixés avant l'envoi de l'invitation) : libellés communs dans lib/roles.js.
@@ -53,6 +56,8 @@ export default function FamilySettingsPage() {
   const [inviteLinkedMemberId, setInviteLinkedMemberId] = useState("");
   const [inviteDocumentMemberId, setInviteDocumentMemberId] = useState("");
   const [inviteDocumentRole, setInviteDocumentRole] = useState("");
+  // Lecteur invité (R4) : durée d'accès obligatoire, comptée à l'acceptation.
+  const [inviteRoleDuration, setInviteRoleDuration] = useState(DEFAULT_ROLE_DURATION);
   const [inviting, setInviting] = useState(false);
 
   const [updatingId, setUpdatingId] = useState(null);
@@ -130,6 +135,7 @@ export default function FamilySettingsPage() {
           linkedMemberId: inviteLinkedMemberId || undefined,
           documentMemberId: inviteDocumentMemberId || undefined,
           documentRole: inviteDocumentRole || undefined,
+          documentRoleDuration: inviteDocumentRole === "lecteur_invite" ? inviteRoleDuration : undefined,
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -144,6 +150,7 @@ export default function FamilySettingsPage() {
       setInviteLinkedMemberId("");
       setInviteDocumentMemberId("");
       setInviteDocumentRole("");
+      setInviteRoleDuration(DEFAULT_ROLE_DURATION);
       load();
     } finally {
       setInviting(false);
@@ -208,17 +215,61 @@ export default function FamilySettingsPage() {
     }
   };
 
-  const removeAccess = async (membershipId) => {
-    if (!confirm("Retirer l'accès de cette personne à la famille ?")) return;
-    setRemovingId(membershipId);
+  // Retrait d'un compte (UC-06) : la confirmation se fait dans une fenêtre
+  // qui liste d'abord les dossiers dont il est le SEUL gestionnaire ; pour
+  // chacun, on choisit à qui en confier la gestion (par défaut : soi-même).
+  // removal = { membership, fiches, candidates, choices: { [memberId]: userId } }
+  const [removal, setRemoval] = useState(null);
+
+  const openRemoval = async (membership) => {
+    setRemovingId(membership.id);
     try {
-      const res = await fetch(`/api/family-memberships?id=${membershipId}`, { method: "DELETE" });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        toast.error(err.error || "Échec du retrait de l'accès");
+      const res = await fetch(`/api/family-memberships/${membership.id}/managed-fiches`);
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data) {
+        toast.error(data?.error || "Impossible de préparer le retrait de ce compte");
         return;
       }
-      toast.success("Accès retiré");
+      const choices = Object.fromEntries(data.fiches.map((f) => [f.id, String(data.defaultUserId)]));
+      setRemoval({ membership, fiches: data.fiches, candidates: data.candidates, choices });
+    } catch {
+      toast.error("Impossible de préparer le retrait de ce compte. Vérifiez votre connexion.");
+    } finally {
+      setRemovingId(null);
+    }
+  };
+
+  const confirmRemoval = async () => {
+    if (!removal) return;
+    const { membership, fiches, choices } = removal;
+    if (fiches.some((f) => !choices[f.id])) {
+      toast.error("Choisissez à qui confier chaque dossier");
+      return;
+    }
+    setRemovingId(membership.id);
+    try {
+      const res = await fetch(`/api/family-memberships?id=${membership.id}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reassignments: fiches.map((f) => ({ memberId: f.id, userId: Number(choices[f.id]) })) }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        // Un dossier a pu changer entre-temps : on recharge la liste.
+        if (data.code === "REASSIGNMENT_REQUIRED") {
+          toast.error(data.error);
+          openRemoval(membership);
+          return;
+        }
+        toast.error(data.error || "Échec du retrait de l'accès");
+        return;
+      }
+      toast.success(
+        fiches.length > 0
+          ? `Accès retiré — ${fiches.length} dossier${fiches.length > 1 ? "s" : ""} confié${fiches.length > 1 ? "s" : ""}`
+          : "Accès retiré"
+      );
+      setRemoval(null);
       load();
       reloadMembers();
     } finally {
@@ -395,7 +446,7 @@ export default function FamilySettingsPage() {
 
                     {isParent && (
                       <button
-                        onClick={() => removeAccess(m.id)}
+                        onClick={() => openRemoval(m)}
                         disabled={removingId === m.id || m.userId === user?.id || m.isPrimaryAdmin}
                         title={
                           m.userId === user?.id
@@ -461,6 +512,9 @@ export default function FamilySettingsPage() {
               </div>
             )}
 
+            {/* Règles d'escalade des rappels du Village (UC-08) — parents seulement */}
+            {isParent && <ReminderSettingsPanel familyId={selectedFamily.id} />}
+
             {/* Zone sensible — suppression de l'espace, réservée à l'administrateur familial */}
             {isPrimaryAdmin && (
               <div className="bg-white rounded-2xl shadow-sm border border-red-100 overflow-hidden">
@@ -483,6 +537,56 @@ export default function FamilySettingsPage() {
           </>
         )}
       </div>
+
+      <Modal open={!!removal} onClose={() => setRemoval(null)} title="Retirer ce compte de la famille">
+        {removal && (
+          <div className="space-y-4">
+            <p className="text-sm text-gray-600">
+              <strong>{removal.membership.name}</strong> perdra l&apos;accès à la famille {selectedFamily.name}. Sa fiche
+              sera archivée s&apos;il est majeur ; ses rôles sur les dossiers et ses notifications disparaîtront.
+            </p>
+            {removal.fiches.length > 0 && (
+              <div className="border border-amber-200 bg-amber-50 rounded-xl p-3 space-y-3">
+                <p className="text-sm text-amber-900">
+                  {removal.membership.name} est le seul gestionnaire de{" "}
+                  {removal.fiches.length > 1 ? `ces ${removal.fiches.length} dossiers` : "ce dossier"}. Choisissez à qui
+                  en confier la gestion avant de le retirer :
+                </p>
+                {removal.fiches.map((fiche) => (
+                  <Select
+                    key={fiche.id}
+                    label={`Dossier de ${fiche.firstName} ${fiche.lastName}`}
+                    value={removal.choices[fiche.id] ?? ""}
+                    onChange={(e) =>
+                      setRemoval((prev) => ({ ...prev, choices: { ...prev.choices, [fiche.id]: e.target.value } }))
+                    }
+                  >
+                    {removal.candidates.map((c) => (
+                      <option key={c.userId} value={c.userId}>
+                        {c.name}
+                        {c.userId === user?.id ? " (vous)" : ""}
+                      </option>
+                    ))}
+                  </Select>
+                ))}
+              </div>
+            )}
+            <div className="flex gap-3 pt-2">
+              <Button variant="ghost" onClick={() => setRemoval(null)} className="flex-1">
+                Annuler
+              </Button>
+              <Button
+                variant="danger"
+                onClick={confirmRemoval}
+                loading={removingId === removal.membership.id}
+                className="flex-1"
+              >
+                Retirer
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
 
       <Modal open={showDeleteFamily} onClose={closeDeleteFamily} title="Supprimer l'espace familial">
         <div className="space-y-4">
@@ -593,6 +697,19 @@ export default function FamilySettingsPage() {
                 {FICHE_ROLE_OPTIONS.map((r) => (
                   <option key={r.value} value={r.value}>
                     {r.label}
+                  </option>
+                ))}
+              </Select>
+            )}
+            {inviteDocumentMemberId && inviteDocumentRole === "lecteur_invite" && (
+              <Select
+                label="Durée de l'accès *"
+                value={inviteRoleDuration}
+                onChange={(e) => setInviteRoleDuration(e.target.value)}
+              >
+                {ROLE_DURATION_OPTIONS.map((d) => (
+                  <option key={d.value} value={d.value}>
+                    {d.label} à compter de son arrivée
                   </option>
                 ))}
               </Select>

@@ -22,6 +22,8 @@ import { ADULT_AGE, ageOn } from "../lib/family.js";
 import { documentFilesOf, removeFiles } from "../lib/documentFiles.js";
 import { archiveFicheOfLeavingAccount } from "../lib/archive.js";
 import { logActivity } from "../lib/activityLog.js";
+import { setDocumentRole } from "../lib/documentAccess.js";
+import { soleManagedFiches } from "../lib/management.js";
 import { sendEmailChangeEmail, sendEmailChangeNotice, sendPasswordChangedAlert } from "../lib/mailer.js";
 import { clearFailures, lockedMinutes, recordFailure, tooManyAttemptsMessage } from "../lib/loginThrottle.js";
 
@@ -233,6 +235,7 @@ router.get("/export", async (req, res) => {
 // comptes doit d'abord les retirer ou supprimer l'espace ; seul compte d'un
 // espace, il supprime l'espace avec lui. Un adulte peut aussi faire effacer
 // sa fiche médicale ; sinon elle reste à la famille, archivée (lib/archive.js).
+// Les dossiers dont il était le seul gestionnaire sont confiés à A1 (UC-06).
 router.delete("/", async (req, res) => {
   try {
     const user = await checkPassword(req, res);
@@ -264,10 +267,32 @@ router.delete("/", async (req, res) => {
     // par personne), comme lorsqu'un compte est retiré de l'espace. Le
     // journal de ces familles garde la trace du départ (le nom du compte y
     // reste, suivi de « compte supprimé »).
+    //
+    // Dossiers dont ce compte était le SEUL gestionnaire (UC-06) : confiés
+    // automatiquement à l'Administrateur familial A1, sans lui demander —
+    // la personne part d'elle-même, et un dossier géré ne doit jamais rester
+    // sans gestionnaire. Une entrée de journal par dossier confié.
     for (const { membership } of spaces) {
       if (familiesToDelete.includes(membership.familyId)) continue;
       const actor = { id: user.id, name: user.name };
       await logActivity({ familyId: membership.familyId, actor, action: "account_deleted" });
+      const [a1] = await db
+        .select({ userId: familyMemberships.userId })
+        .from(familyMemberships)
+        .where(and(eq(familyMemberships.familyId, membership.familyId), eq(familyMemberships.isPrimaryAdmin, true)));
+      if (a1 && a1.userId !== user.id) {
+        for (const fiche of await soleManagedFiches(user.id, membership.familyId)) {
+          await setDocumentRole(fiche.id, a1.userId, "gestionnaire");
+          await logActivity({
+            familyId: membership.familyId,
+            actor,
+            action: "management_reassigned",
+            member: fiche.id,
+            target: a1.userId,
+            details: { reason: "account_deleted" },
+          });
+        }
+      }
       if (memberIdsToDelete.includes(membership.linkedMemberId)) {
         await logActivity({
           familyId: membership.familyId,

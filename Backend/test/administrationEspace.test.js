@@ -29,7 +29,12 @@ describe("Retrait d'un membre (UC-06)", () => {
     const member = await createMember(family);
     await db.insert(documentRoles).values({ memberId: member.id, userId: a2.id, role: "gestionnaire" });
 
-    const res = await as(a1).delete(`/api/family-memberships?id=${a2Membership.id}`);
+    // A2 est le seul gestionnaire de cette fiche : elle doit d'abord être confiée (UC-06).
+    const blocked = await as(a1).delete(`/api/family-memberships?id=${a2Membership.id}`);
+    expect(blocked.status).toBe(409);
+    const res = await as(a1)
+      .delete(`/api/family-memberships?id=${a2Membership.id}`)
+      .send({ reassignments: [{ memberId: member.id, userId: a1.id }] });
     expect(res.status).toBe(200);
     const roles = await db.select().from(documentRoles).where(eq(documentRoles.userId, a2.id));
     expect(roles).toHaveLength(0);

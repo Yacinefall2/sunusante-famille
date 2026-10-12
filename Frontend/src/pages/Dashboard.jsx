@@ -29,6 +29,7 @@ import { IntakeAnswerButtons, NOTIFICATIONS_REFRESH_EVENT } from "../components/
 import { format, isToday, parseISO } from "date-fns";
 import toast from "react-hot-toast";
 import ParentDashboard from "./ParentDashboard";
+import { RoleTransferInbox } from "../components/members/RoleTransferInbox";
 
 // Les Parents (administrateurs) ont un tableau de bord dédié, centré sur
 // toute la famille ; les autres membres gardent le tableau de bord ci-dessous.
@@ -321,6 +322,9 @@ function MemberDashboard() {
             );
           })}
         </div>
+
+        {/* Propositions de reprendre la gestion d'un dossier (UC-39), masquée s'il n'y en a aucune */}
+        <RoleTransferInbox />
 
         {/* Prises du jour en attente de réponse (masquée s'il n'y en a aucune) */}
         {pendingToday.length > 0 && (

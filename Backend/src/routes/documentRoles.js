@@ -3,7 +3,15 @@ import { and, eq } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { documentRoles, members, users } from "../db/schema.js";
 import { requireFamilyMembership } from "../middleware/auth.js";
-import { DOCUMENT_ROLES, canManageRoles, membershipOf, setDocumentRole } from "../lib/documentAccess.js";
+import {
+  DOCUMENT_ROLES,
+  DURATION_REQUIRED_ERROR,
+  canManageRoles,
+  expiryFor,
+  isRoleDuration,
+  membershipOf,
+  setDocumentRole,
+} from "../lib/documentAccess.js";
 import { purgeNotificationsWithoutAccess } from "../lib/archive.js";
 import { INVALID_ID, parseId } from "../lib/validation.js";
 import { logActivity } from "../lib/activityLog.js";
@@ -20,18 +28,22 @@ const resolveFamilyIdFromMemberQuery = (req) => familyOfMember(parseId(req.query
 const resolveFamilyIdFromMemberBody = (req) => familyOfMember(parseId(req.body?.memberId));
 
 // Pour DELETE, req.query.id est l'id de la ligne document_roles elle-même
-// (pas un memberId) — on doit remonter jusqu'au memberId pour retrouver la famille.
-async function resolveFamilyIdFromDocumentRoleId(req) {
-  const id = parseId(req.query.id);
+// (pas un memberId) — on doit remonter jusqu'au memberId pour retrouver la
+// famille. Même chose pour la prolongation (/:id/extend).
+async function familyOfDocumentRole(rawId) {
+  const id = parseId(rawId);
   if (!id) return null;
   const [row] = await db.select({ memberId: documentRoles.memberId }).from(documentRoles).where(eq(documentRoles.id, id));
   if (!row) return null;
   return familyOfMember(row.memberId);
 }
+const resolveFamilyIdFromDocumentRoleId = (req) => familyOfDocumentRole(req.query.id);
+const resolveFamilyIdFromDocumentRoleParam = (req) => familyOfDocumentRole(req.params.id);
 
 // Liste des rôles Axe 2 attribués sur une fiche — écran de gestion des
 // accès d'un dossier (UC-04). Visible de qui peut gérer ces rôles : le
 // Titulaire de la fiche ou un Administrateur y ayant un accès complet.
+// expiresAt : fin de l'accès d'un Lecteur invité (NULL pour les autres rôles).
 router.get(
   "/",
   requireFamilyMembership(resolveFamilyIdFromMemberQuery),
@@ -49,6 +61,7 @@ router.get(
           userName: users.name,
           userEmail: users.email,
           createdAt: documentRoles.createdAt,
+          expiresAt: documentRoles.expiresAt,
         })
         .from(documentRoles)
         .innerJoin(users, eq(users.id, documentRoles.userId))
@@ -65,16 +78,21 @@ router.get(
 // membre de l'espace familial sur une fiche donnée — UC-04, et délégation
 // de son propre dossier par le Titulaire (UC-26). On ne s'attribue jamais
 // un rôle à soi-même, et un compte adolescent n'en reçoit aucun (§9.6).
+// Lecteur invité (R4) : durée obligatoire — `duration` parmi "7j", "30j",
+// "3m", "1a" — l'accès prend fin à l'échéance.
 router.post(
   "/",
   requireFamilyMembership(resolveFamilyIdFromMemberBody),
   async (req, res) => {
     try {
-      const { role } = req.body;
+      const { role, duration } = req.body;
       const memberId = parseId(req.body.memberId);
       const userId = parseId(req.body.userId);
       if (!memberId || !userId || !DOCUMENT_ROLES.includes(role)) {
         return res.status(400).json({ error: "Données manquantes ou rôle invalide" });
+      }
+      if (role === "lecteur_invite" && !isRoleDuration(duration)) {
+        return res.status(400).json({ error: DURATION_REQUIRED_ERROR });
       }
       if (!(await canManageRoles(req, memberId))) {
         return res.status(403).json({ error: "Vous ne pouvez pas gérer les accès de ce dossier" });
@@ -100,7 +118,9 @@ router.post(
         .select({ role: documentRoles.role })
         .from(documentRoles)
         .where(and(eq(documentRoles.memberId, memberId), eq(documentRoles.userId, userId)));
-      const created = await setDocumentRole(memberId, userId, role);
+      const expiresAt = role === "lecteur_invite" ? expiryFor(duration) : null;
+      const created = await setDocumentRole(memberId, userId, role, { expiresAt });
+      const durationDetails = expiresAt ? { duration, expiresAt: expiresAt.toISOString() } : {};
       if (previous?.role !== role) {
         await logActivity({
           familyId: req.familyId,
@@ -108,10 +128,58 @@ router.post(
           action: previous ? "document_role_changed" : "document_role_granted",
           member: memberId,
           target: userId,
-          details: previous ? { from: previous.role, to: role } : { role },
+          details: previous ? { from: previous.role, to: role, ...durationDetails } : { role, ...durationDetails },
+        });
+      } else if (expiresAt) {
+        // Même rôle de lecteur invité redonné : c'est une nouvelle durée.
+        await logActivity({
+          familyId: req.familyId,
+          actor: req.user,
+          action: "document_role_extended",
+          member: memberId,
+          target: userId,
+          details: durationDetails,
         });
       }
       res.status(201).json(created);
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: "Erreur serveur" });
+    }
+  }
+);
+
+// Prolonger en un clic l'accès d'un Lecteur invité (R4) — par qui peut gérer
+// les rôles de la fiche. La durée s'ajoute à l'échéance en cours (ou à
+// maintenant si elle est déjà passée).
+router.post(
+  "/:id/extend",
+  requireFamilyMembership(resolveFamilyIdFromDocumentRoleParam),
+  async (req, res) => {
+    try {
+      const id = parseId(req.params.id);
+      const { duration } = req.body ?? {};
+      if (!isRoleDuration(duration)) return res.status(400).json({ error: DURATION_REQUIRED_ERROR });
+      const [row] = await db.select().from(documentRoles).where(eq(documentRoles.id, id));
+      if (!(await canManageRoles(req, row.memberId))) {
+        return res.status(403).json({ error: "Vous ne pouvez pas gérer les accès de ce dossier" });
+      }
+      if (row.role !== "lecteur_invite") {
+        return res.status(400).json({ error: "Seul l'accès d'un lecteur invité est limité dans le temps" });
+      }
+      const now = new Date();
+      const from = row.expiresAt && row.expiresAt > now ? row.expiresAt : now;
+      const expiresAt = expiryFor(duration, from);
+      const [updated] = await db.update(documentRoles).set({ expiresAt }).where(eq(documentRoles.id, id)).returning();
+      await logActivity({
+        familyId: req.familyId,
+        actor: req.user,
+        action: "document_role_extended",
+        member: row.memberId,
+        target: row.userId,
+        details: { duration, expiresAt: expiresAt.toISOString() },
+      });
+      res.json(updated);
     } catch (error) {
       console.error(error);
       res.status(500).json({ error: "Erreur serveur" });

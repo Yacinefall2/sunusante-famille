@@ -88,6 +88,11 @@ export const documentRoles = pgTable("document_roles", {
   // "titulaire" (R1) | "gestionnaire" (R2) | "relais" (R3) | "lecteur_invite" (R4)
   role: varchar("role", { length: 30 }).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
+  // Fin de l'accès — obligatoire pour un Lecteur invité (R4, « consultation
+  // seule, durée limitée »), NULL pour les autres rôles. Un rôle échu est
+  // ignoré par le moteur d'accès, puis supprimé par le worker
+  // (reminders/roles.js) ; prolongeable par qui gère les rôles de la fiche.
+  expiresAt: timestamp("expires_at", { precision: 3 }),
 }, (t) => [uniqueIndex("document_roles_member_user_uq").on(t.memberId, t.userId)]);
 
 // ── Rendez-vous ────────────────────────────────────────────────────────────────
@@ -305,6 +310,9 @@ export const pendingInvitations = pgTable("pending_invitations", {
   // invitation peut ne concerner que le rôle d'espace.
   documentMemberId: integer("document_member_id").references(() => members.id, { onDelete: "set null" }),
   documentRole: varchar("document_role", { length: 30 }),
+  // Durée de l'accès d'un Lecteur invité ("7j" | "30j" | "3m" | "1a") :
+  // l'échéance court à partir de l'acceptation de l'invitation.
+  documentRoleDuration: varchar("document_role_duration", { length: 5 }),
   token: varchar("token", { length: 255 }).notNull().unique(),
   invitedByUserId: integer("invited_by_user_id").references(() => users.id, { onDelete: "set null" }),
   expiresAt: timestamp("expires_at").notNull(),
@@ -596,3 +604,57 @@ export const consentAttestations = pgTable(
   },
   (t) => [index("consent_attestations_member_idx").on(t.memberId, t.createdAt.desc())]
 );
+
+// ── Transferts de gestion d'un dossier (UC-39) ───────────────────────────────
+// Un gestionnaire (ou un parent ayant l'accès complet) propose à un autre
+// compte adulte de la famille de reprendre la gestion d'une fiche ; le
+// destinataire accepte ou refuse. Une seule proposition en attente par fiche.
+// statut : pending | accepted | declined | cancelled | expired
+export const roleTransfers = pgTable(
+  "role_transfers",
+  {
+    id: serial("id").primaryKey(),
+    familyId: integer("family_id")
+      .references(() => families.id, { onDelete: "cascade" })
+      .notNull(),
+    memberId: integer("member_id")
+      .references(() => members.id, { onDelete: "cascade" })
+      .notNull(),
+    fromUserId: integer("from_user_id")
+      .references(() => users.id, { onDelete: "cascade" })
+      .notNull(),
+    toUserId: integer("to_user_id")
+      .references(() => users.id, { onDelete: "cascade" })
+      .notNull(),
+    status: varchar("status", { length: 20 }).default("pending").notNull(),
+    createdAt: timestamp("created_at", { precision: 3 }).defaultNow().notNull(),
+    // Sans réponse 7 jours après : « expired » (reminders/roles.js)
+    expiresAt: timestamp("expires_at", { precision: 3 }).notNull(),
+    respondedAt: timestamp("responded_at", { precision: 3 }),
+  },
+  (t) => [
+    uniqueIndex("role_transfers_pending_member_uq").on(t.memberId).where(sql`${t.status} = 'pending'`),
+    index("role_transfers_to_user_idx").on(t.toUserId, t.status),
+  ]
+);
+
+// ── Règles d'escalade des rappels du Village, par famille (UC-08) ────────────
+// Réglables par les parents (A1/A2), dans des bornes fixes. Sans ligne, les
+// valeurs par défaut de lib/reminderSettings.js — celles du cycle d'origine
+// (J-3, la veille, +3 h, 12 h après le rendez-vous) — s'appliquent.
+export const familyReminderSettings = pgTable("family_reminder_settings", {
+  familyId: integer("family_id")
+    .primaryKey()
+    .references(() => families.id, { onDelete: "cascade" }),
+  // Premier « à relayer » aux gestionnaires : 2 à 7 jours avant le rendez-vous
+  relayFirstDays: integer("relay_first_days").default(3).notNull(),
+  // Relance des gestionnaires : 1 (la veille) ou 2 jours avant
+  followUpDaysBefore: integer("follow_up_days_before").default(1).notNull(),
+  // Escalade vers les relais : 1 à 12 h après la relance sans « Prévenu »
+  escalationDelayHours: integer("escalation_delay_hours").default(3).notNull(),
+  // Demande de présence : "same_evening" (le soir même : 12 h après le
+  // rendez-vous, comme à l'origine) | "next_morning" (le lendemain à 8 h)
+  attendancePrompt: varchar("attendance_prompt", { length: 20 }).default("same_evening").notNull(),
+  updatedByUserId: integer("updated_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  updatedAt: timestamp("updated_at", { precision: 3 }).defaultNow().notNull(),
+});

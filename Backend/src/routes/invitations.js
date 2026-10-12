@@ -10,9 +10,12 @@ import { sendInvitationEmail } from "../lib/mailer.js";
 import {
   ACCESS,
   DOCUMENT_ROLES,
+  DURATION_REQUIRED_ERROR,
   canManageRoles,
   canWriteMember,
   computeFamilyAccess,
+  expiryFor,
+  isRoleDuration,
   membershipOf,
   setDocumentRole,
 } from "../lib/documentAccess.js";
@@ -48,7 +51,7 @@ router.post(
   requireFamilyMembership(familyIdFromBody, { roles: ["parent"] }),
   async (req, res) => {
     try {
-      const { email, linkedMemberId, documentMemberId, documentRole } = req.body;
+      const { email, linkedMemberId, documentMemberId, documentRole, documentRoleDuration } = req.body;
       // « Membre » : son niveau (adolescent ou adulte) se déduit de l'âge de sa fiche.
       const role = req.body.role === "member" ? "adult" : req.body.role;
       const normalizedEmail = String(email ?? "").toLowerCase().trim();
@@ -121,6 +124,10 @@ router.post(
         if (!parsedDocMemberId || !DOCUMENT_ROLES.includes(documentRole)) {
           return res.status(400).json({ error: "Choisissez un dossier ET un rôle de dossier valides" });
         }
+        // Lecteur invité (R4) : accès à durée limitée, durée choisie à l'envoi.
+        if (documentRole === "lecteur_invite" && !isRoleDuration(documentRoleDuration)) {
+          return res.status(400).json({ error: DURATION_REQUIRED_ERROR });
+        }
         if (role !== "parent" && effectiveRole(role, linkedFiche?.dateOfBirth) === "dependent") {
           return res.status(400).json({ error: TEEN_ROLE_ERROR });
         }
@@ -161,6 +168,7 @@ router.post(
           linkedMemberId: validatedLinkedMemberId,
           documentMemberId: validatedDocumentMemberId,
           documentRole: validatedDocumentRole,
+          documentRoleDuration: validatedDocumentRole === "lecteur_invite" ? documentRoleDuration : null,
           // Seule l'empreinte est conservée ; le jeton ne part que par courriel.
           token: hashToken(token),
           invitedByUserId: req.user.id,
@@ -183,6 +191,7 @@ router.post(
           inviterName: req.user.name,
           documentMemberName,
           documentRole: validatedDocumentRole,
+          documentRoleDuration: validatedDocumentRole === "lecteur_invite" ? documentRoleDuration : null,
         });
       } catch (mailError) {
         // Le jeton n'existe que dans ce courriel : sans envoi, l'invitation
@@ -205,6 +214,7 @@ router.post(
           role,
           linkedMemberName: fullName(linkedFiche),
           documentRole: validatedDocumentRole,
+          documentRoleDuration: validatedDocumentRole === "lecteur_invite" ? documentRoleDuration : null,
           documentMemberName,
         },
       });
@@ -266,6 +276,7 @@ router.get("/:token", async (req, res) => {
       linkedMemberName,
       documentMemberName,
       documentRole: invitation.documentRole,
+      documentRoleDuration: invitation.documentRoleDuration,
       expired: invitation.expiresAt < new Date(),
       accepted: !!invitation.acceptedAt,
     });
@@ -426,6 +437,12 @@ router.post("/:token/accept", requireAuth, async (req, res) => {
         return res.status(409).json({ error: `La personne qui vous a invité ne gère plus ce dossier : ${NEW_INVITATION}` });
       }
       grantedRole = { memberId: docFiche.id, role: invitation.documentRole };
+      // Lecteur invité : l'échéance court à partir de l'acceptation (30 jours
+      // pour une invitation antérieure au choix de la durée).
+      if (grantedRole.role === "lecteur_invite") {
+        grantedRole.duration = isRoleDuration(invitation.documentRoleDuration) ? invitation.documentRoleDuration : "30j";
+        grantedRole.expiresAt = expiryFor(grantedRole.duration);
+      }
     }
 
     if (archivedFiche) await restoreArchivedFiche(req.user.id, invitation.familyId);
@@ -467,14 +484,18 @@ router.post("/:token/accept", requireAuth, async (req, res) => {
     // Le rôle de dossier (Axe 2) fixé avant l'envoi est appliqué maintenant
     // que l'invitation est acceptée (§6.2).
     if (grantedRole) {
-      await setDocumentRole(grantedRole.memberId, req.user.id, grantedRole.role);
+      await setDocumentRole(grantedRole.memberId, req.user.id, grantedRole.role, { expiresAt: grantedRole.expiresAt ?? null });
       await logActivity({
         familyId,
         actor: invitation.invitedByUserId,
         action: "document_role_granted",
         member: grantedRole.memberId,
         target: req.user,
-        details: { role: grantedRole.role, via: "invitation" },
+        details: {
+          role: grantedRole.role,
+          via: "invitation",
+          ...(grantedRole.expiresAt ? { duration: grantedRole.duration, expiresAt: grantedRole.expiresAt.toISOString() } : {}),
+        },
       });
     }
 

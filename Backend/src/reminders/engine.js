@@ -16,6 +16,7 @@ import { DELIVERY_FAILURE } from "../lib/notificationPreferences.js";
 import { withAccess } from "../lib/documentAccess.js";
 import { notify } from "./notify.js";
 import { parentsOf, villageTick } from "./village.js";
+import { rolesTick } from "./roles.js";
 import { sendNotificationEmail } from "../lib/mailer.js";
 import { APP_TIMEZONE, addDays, formatDate, formatDateTime, localDate, zonedTime } from "../lib/time.js";
 
@@ -421,6 +422,7 @@ async function dispatchEmails(now, sendMail) {
 export async function runReminderTick({ now = new Date(), sendMail = sendNotificationEmail } = {}) {
   await appointmentReminders(now);
   await villageTick(now);
+  await rolesTick(now);
   await vaccineReminders(now);
   await lateVaccineReminders(now);
   await endFinishedTreatments(now);

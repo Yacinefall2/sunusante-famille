@@ -24,6 +24,8 @@ import emergencyRouter from "./routes/emergency.js";
 import publicRouter from "./routes/public.js";
 import accountRouter from "./routes/account.js";
 import activityRouter from "./routes/activity.js";
+import roleTransfersRouter from "./routes/roleTransfers.js";
+import reminderSettingsRouter from "./routes/reminderSettings.js";
 import { requireAuth, requireVerifiedEmail } from "./middleware/auth.js";
 import { convertLegacyEmergencyTokens } from "./lib/sharing.js";
 
@@ -103,6 +105,9 @@ app.use("/api/dashboard/family", requireAuth, requireVerifiedEmail, familyDashbo
 app.use("/api/dashboard", requireAuth, requireVerifiedEmail, dashboardRouter);
 app.use("/api/family-memberships", requireAuth, requireVerifiedEmail, familyMembershipsRouter);
 app.use("/api/document-roles", requireAuth, requireVerifiedEmail, documentRolesRouter);
+// Transfert de la gestion d'un dossier (UC-39) et règles de rappel du Village (UC-08).
+app.use("/api/role-transfers", requireAuth, requireVerifiedEmail, roleTransfersRouter);
+app.use("/api/reminder-settings", requireAuth, requireVerifiedEmail, reminderSettingsRouter);
 app.use("/api/notifications", requireAuth, requireVerifiedEmail, notificationsRouter);
 app.use("/api/intakes", requireAuth, requireVerifiedEmail, intakesRouter);
 app.use("/api/village", requireAuth, requireVerifiedEmail, villageRouter);

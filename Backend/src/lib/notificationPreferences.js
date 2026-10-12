@@ -18,6 +18,9 @@ export const NOTIFICATION_CATEGORIES = {
   // Partage (phase F) : le titulaire est toujours informé de ce qui sort de son dossier.
   doctor_share: { label: "Partages avec un médecin (lien envoyé, ouvert, refusé ou révoqué)", inApp: true, email: true },
   emergency_view: { label: "Consultations de ma fiche d'urgence", inApp: true, email: true },
+  // Gouvernance des rôles (UC-39, R4).
+  role_transfer: { label: "Propositions de transfert de gestion", inApp: true, email: true },
+  role_expiry: { label: "Fin prochaine d'un accès de lecteur invité (3 jours avant)", inApp: true, email: true },
 };
 
 // Échec de remise d'un courriel : jamais silencieux (§7.3), donc toujours

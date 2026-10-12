@@ -65,7 +65,9 @@ function escapeHtml(value) {
 
 // Contenu du courriel d'invitation (objet + HTML), séparé de l'envoi pour
 // pouvoir être vérifié par les tests.
-export function buildInvitationEmail({ familyName, role, token, inviterName, documentMemberName, documentRole }) {
+const DOCUMENT_ROLE_DURATIONS = { "7j": "7 jours", "30j": "30 jours", "3m": "3 mois", "1a": "1 an" };
+
+export function buildInvitationEmail({ familyName, role, token, inviterName, documentMemberName, documentRole, documentRoleDuration }) {
   const link = `${FRONTEND_URL}/invitations/${token}`;
   const roleLabel = ROLE_LABELS[role] || role;
   const inviter = inviterName ? escapeHtml(inviterName) : null;
@@ -77,7 +79,10 @@ export function buildInvitationEmail({ familyName, role, token, inviterName, doc
     : `Vous avez été invité(e) à rejoindre la famille <strong>${family}</strong> en tant que <strong>${roleLabel}</strong>.`;
   const documentLine =
     phrase && documentMemberName
-      ? `<p>Vous pourrez aussi <strong>${phrase} ${escapeHtml(documentMemberName)}</strong>.</p>`
+      ? `<p>Vous pourrez aussi <strong>${phrase} ${escapeHtml(documentMemberName)}</strong>` +
+        (documentRole === "lecteur_invite" && DOCUMENT_ROLE_DURATIONS[documentRoleDuration]
+          ? `, pendant ${DOCUMENT_ROLE_DURATIONS[documentRoleDuration]} à compter de votre arrivée (consultation seule).</p>`
+          : ".</p>")
       : "";
 
   return {

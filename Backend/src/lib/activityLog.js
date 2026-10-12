@@ -1,7 +1,7 @@
 import { and, eq, gt, inArray, sql } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { activityLog, members, users } from "../db/schema.js";
-import { formatDateTime } from "./time.js";
+import { APP_TIMEZONE, formatDateTime } from "./time.js";
 
 // ── Journal d'activité (UC-10, §10 « Traçabilité », §6.3) ────────────────────
 // Point unique d'écriture (logActivity) et de rédaction (ACTIONS) du journal.
@@ -55,6 +55,16 @@ const spaceRole = (role) => SPACE_ROLE[role] ?? "membre de la famille";
 const docRole = (role) => DOC_ROLE[role] ?? role;
 const plural = (n, word) => `${n} ${word}${n > 1 ? "s" : ""}`;
 const when = (iso) => (iso ? formatDateTime(new Date(iso)) : "date inconnue");
+// « 12/11/2026 » dans le fuseau de l'application.
+const day = (iso) =>
+  iso ? new Intl.DateTimeFormat("fr-FR", { timeZone: APP_TIMEZONE, day: "2-digit", month: "2-digit", year: "numeric" }).format(new Date(iso)) : "date inconnue";
+const ROLE_DURATION = { "7j": "7 jours", "30j": "30 jours", "3m": "3 mois", "1a": "1 an" };
+const until = (d) => (d.expiresAt ? ` (accès jusqu'au ${day(d.expiresAt)})` : "");
+// Règles de rappel du Village (UC-08), en clair.
+const ATTENDANCE_PROMPT = { same_evening: "le soir même", next_morning: "le lendemain matin" };
+const reminderRules = (d) =>
+  `premier « à relayer » ${d.relayFirstDays} jours avant, relance ${d.followUpDaysBefore === 1 ? "la veille" : `${d.followUpDaysBefore} jours avant`}, ` +
+  `escalade vers les relais ${d.escalationDelayHours} h après sans « Prévenu », présence demandée ${ATTENDANCE_PROMPT[d.attendancePrompt] ?? d.attendancePrompt}`;
 const fieldsList = (d) => {
   const names = (d.fields ?? []).map((f) => EMERGENCY_FIELD_LABELS[f]).filter(Boolean);
   if (d.extraInfo) names.push("informations complémentaires");
@@ -125,11 +135,56 @@ export const ACTIONS = {
     category: "roles",
     text: (e, d) =>
       `${e.actor} a attribué le rôle ${docRole(d.role)} à ${e.target} sur le dossier de ${e.member}` +
+      until(d) +
       (d.via === "invitation" ? " (invitation acceptée)" : ""),
   },
   document_role_changed: {
     category: "roles",
-    text: (e, d) => `${e.actor} a changé le rôle de ${e.target} sur le dossier de ${e.member} : ${docRole(d.from)} → ${docRole(d.to)}`,
+    text: (e, d) => `${e.actor} a changé le rôle de ${e.target} sur le dossier de ${e.member} : ${docRole(d.from)} → ${docRole(d.to)}` + until(d),
+  },
+  // ── Lecteur invité : accès à durée limitée (R4) ──
+  document_role_extended: {
+    category: "roles",
+    text: (e, d) =>
+      `${e.actor} a prolongé de ${ROLE_DURATION[d.duration] ?? d.duration} l'accès de lecteur invité de ${e.target} au dossier de ${e.member}` +
+      until(d),
+  },
+  document_role_expired: {
+    category: "roles",
+    text: (e) => `Accès de lecteur invité expiré : ${e.target} ne consulte plus le dossier de ${e.member}`,
+  },
+  // ── Transfert de gestion d'un dossier (UC-39) ──
+  role_transfer_proposed: {
+    category: "roles",
+    text: (e) => `${e.actor} a proposé à ${e.target} de reprendre la gestion du dossier de ${e.member}`,
+  },
+  role_transfer_accepted: {
+    category: "roles",
+    text: (e, d) =>
+      `${e.actor} a accepté de reprendre la gestion du dossier de ${e.member}, proposée par ${e.target}` +
+      (d.proposerWasManager ? ` — ${e.target} n'en est plus gestionnaire` : ""),
+  },
+  role_transfer_declined: {
+    category: "roles",
+    text: (e) => `${e.actor} a refusé de reprendre la gestion du dossier de ${e.member}, proposée par ${e.target}`,
+  },
+  role_transfer_cancelled: {
+    category: "roles",
+    text: (e) => `${e.actor} a annulé sa proposition de transfert de la gestion du dossier de ${e.member} à ${e.target}`,
+  },
+  role_transfer_expired: {
+    category: "roles",
+    text: (e, d) =>
+      `La proposition de transfert de la gestion du dossier de ${e.member} à ${e.target} a expiré sans réponse` +
+      (d.proposerName ? ` (proposée par ${d.proposerName})` : ""),
+  },
+  // ── Réaffectation de la gestion au départ d'un compte (UC-06) ──
+  management_reassigned: {
+    category: "roles",
+    text: (e, d) =>
+      d.reason === "account_deleted"
+        ? `La gestion du dossier de ${e.member} a été confiée à ${e.target} (administrateur familial) : ${e.actor}, qui en était le seul gestionnaire, a supprimé son compte`
+        : `${e.actor} a confié la gestion du dossier de ${e.member} à ${e.target} lors du retrait de ${d.removedName ?? "un compte"}`,
   },
   document_role_revoked: {
     category: "roles",
@@ -230,6 +285,14 @@ export const ACTIONS = {
   relay_unreachable: {
     category: "village",
     text: (e, d) => `${e.actor} n'a pas pu joindre ${e.member} pour son rendez-vous du ${when(d.appointmentDate)}`,
+  },
+  reminder_settings_updated: {
+    category: "village",
+    text: (e, d) => `${e.actor} a modifié les règles de rappel du Village : ${reminderRules(d)}`,
+  },
+  reminder_settings_reset: {
+    category: "village",
+    text: (e, d) => `${e.actor} a rétabli les règles de rappel du Village par défaut : ${reminderRules(d)}`,
   },
   relay_attendance: {
     category: "village",

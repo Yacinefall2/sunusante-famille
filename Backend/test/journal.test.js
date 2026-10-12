@@ -6,6 +6,7 @@ import { db } from "../src/db/index.js";
 import { activityLog, appointments, families, members, relayTasks, users } from "../src/db/schema.js";
 import { hashPassword } from "../src/lib/password.js";
 import { runReminderTick } from "../src/reminders/engine.js";
+import { APP_TIMEZONE } from "../src/lib/time.js";
 import { sendDoctorShareEmail, sendInvitationEmail } from "../src/lib/mailer.js";
 import { resetDatabase, createUser, createFamily, addMembership, createMember, linkMember, grantRole, attest, attestation, as } from "./helpers.js";
 
@@ -18,6 +19,11 @@ vi.mock("../src/lib/mailer.js", async (importOriginal) => ({
 }));
 
 const PASSWORD = "Mon-mdp-123";
+// « JJ/MM/AAAA » dans n jours (fin d'accès d'un lecteur invité, fuseau de l'application).
+const dayIn = (n) =>
+  new Intl.DateTimeFormat("fr-FR", { timeZone: APP_TIMEZONE, day: "2-digit", month: "2-digit", year: "numeric" }).format(
+    new Date(Date.now() + n * 24 * 3600 * 1000)
+  );
 const DOCTOR = "dr.ndiaye@clinique.sn";
 
 // Foyer Fall : Mouhamed (A1) et Dior (A2) avec leurs fiches, Medoune (adulte,
@@ -88,25 +94,29 @@ describe("Journal — ce qui est enregistré", () => {
   it("acceptation : arrivée dans l'espace et rôle de dossier appliqué", async () => {
     await as(f.papa)
       .post("/api/invitations")
-      .send({ familyId: f.family.id, email: "awa@test.local", role: "member", documentMemberId: f.fMamie.id, documentRole: "lecteur_invite" });
+      .send({ familyId: f.family.id, email: "awa@test.local", role: "member", documentMemberId: f.fMamie.id, documentRole: "lecteur_invite", documentRoleDuration: "30j" });
     const token = vi.mocked(sendInvitationEmail).mock.lastCall[0].token;
     const awa = await createUser("Awa Ndiaye");
     await db.update(users).set({ email: "awa@test.local" }).where(eq(users.id, awa.id));
     expect((await as({ ...awa, email: "awa@test.local" }).post(`/api/invitations/${token}/accept`)).status).toBe(200);
     const list = await texts(f.papa);
     expect(list).toContain("Awa Ndiaye a rejoint l'espace familial comme membre de la famille (invitation de Mouhamed Fall)");
-    expect(list).toContain("Mouhamed Fall a attribué le rôle lecteur invité à Awa Ndiaye sur le dossier de Mamie Fall (invitation acceptée)");
+    expect(list).toContain(
+      `Mouhamed Fall a attribué le rôle lecteur invité à Awa Ndiaye sur le dossier de Mamie Fall (accès jusqu'au ${dayIn(30)}) (invitation acceptée)`
+    );
   });
 
   it("rôles de dossier : attribué, modifié, révoqué", async () => {
-    const granted = await as(f.papa).post("/api/document-roles").send({ memberId: f.fMamie.id, userId: f.medoune.id, role: "lecteur_invite" });
+    const granted = await as(f.papa)
+      .post("/api/document-roles")
+      .send({ memberId: f.fMamie.id, userId: f.medoune.id, role: "lecteur_invite", duration: "30j" });
     expect(granted.status).toBe(201);
     const changed = await as(f.papa).post("/api/document-roles").send({ memberId: f.fMamie.id, userId: f.medoune.id, role: "gestionnaire" });
     expect((await as(f.papa).delete(`/api/document-roles?id=${changed.body.id}`)).status).toBe(200);
     expect(await texts(f.papa, "&category=roles")).toEqual([
       "Mouhamed Fall a révoqué le rôle gestionnaire de Medoune Fall sur le dossier de Mamie Fall",
       "Mouhamed Fall a changé le rôle de Medoune Fall sur le dossier de Mamie Fall : lecteur invité → gestionnaire",
-      "Mouhamed Fall a attribué le rôle lecteur invité à Medoune Fall sur le dossier de Mamie Fall",
+      `Mouhamed Fall a attribué le rôle lecteur invité à Medoune Fall sur le dossier de Mamie Fall (accès jusqu'au ${dayIn(30)})`,
     ]);
   });
 
@@ -266,7 +276,7 @@ describe("Journal — qui voit quoi", () => {
 
   it("un adulte ne voit que l'activité sur son dossier ; un relais ou gestionnaire rien d'autre", async () => {
     await share(f.medoune, f.fMedoune.id);
-    await as(f.papa).post("/api/document-roles").send({ memberId: f.fMamie.id, userId: f.medoune.id, role: "lecteur_invite" });
+    await as(f.papa).post("/api/document-roles").send({ memberId: f.fMamie.id, userId: f.medoune.id, role: "lecteur_invite", duration: "7j" });
     await as(f.papa).post("/api/invitations").send({ familyId: f.family.id, email: "x@test.local", role: "member" });
     const medoune = await journal(f.medoune);
     expect(medoune.scope).toBe("mine");

@@ -5,6 +5,7 @@ import toast from "react-hot-toast";
 import { AppShell } from "../components/layout/AppShell";
 import { NotificationItem } from "../components/notifications/NotificationItem";
 import { useNotifications } from "../components/notifications/useNotifications";
+import { RoleTransferInbox } from "../components/members/RoleTransferInbox";
 
 // Case à cocher d'une préférence (canal "Dans l'application" ou "Par courriel").
 function PreferenceCheckbox({ checked, disabled, onChange, label }) {
@@ -84,6 +85,9 @@ export default function NotificationsPage() {
   return (
     <AppShell>
       <div className="space-y-6 max-w-3xl">
+        {/* Propositions de transfert de gestion à accepter ou refuser (UC-39) */}
+        <RoleTransferInbox />
+
         {/* Préférences */}
         <section className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
           <h2 className="font-bold text-gray-800 flex items-center gap-2 mb-1">

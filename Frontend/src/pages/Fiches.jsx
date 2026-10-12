@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { AppShell } from "../components/layout/AppShell";
 import { useFamily } from "../context/FamilyContext";
+import { useAuth } from "../context/AuthContext";
 import { Modal } from "../components/ui/Modal";
 import { Button } from "../components/ui/Button";
 import { Select } from "../components/ui/Input";
@@ -28,10 +29,14 @@ import {
   ShieldPlus,
   ShieldCheck,
   ShieldAlert,
+  ArrowRightLeft,
+  CalendarClock,
 } from "lucide-react";
 import { calculateAge, clickableCardProps, formatDate } from "../lib/utils";
 import {
+  DEFAULT_ROLE_DURATION,
   FICHE_ROLE_OPTIONS,
+  ROLE_DURATION_OPTIONS,
   ficheRoleShortLabel,
   memberStatusLabel,
   myRelationSentence,
@@ -56,6 +61,7 @@ export default function FichesPage() {
     reloadMembers,
     canWriteMember,
   } = useFamily();
+  const { user } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [showForm, setShowForm] = useState(false);
@@ -73,6 +79,16 @@ export default function FichesPage() {
   const [docRolesLoading, setDocRolesLoading] = useState(false);
   const [newRoleUserId, setNewRoleUserId] = useState("");
   const [newRoleType, setNewRoleType] = useState("gestionnaire");
+  // Lecteur invité (R4) : durée d'accès obligatoire, et durée de prolongation
+  // choisie pour chaque rôle de lecteur invité de la liste.
+  const [newRoleDuration, setNewRoleDuration] = useState(DEFAULT_ROLE_DURATION);
+  const [extendChoice, setExtendChoice] = useState({}); // { [roleId]: durée }
+  const [extendingRoleId, setExtendingRoleId] = useState(null);
+  // Transfert de la gestion de la fiche affichée (UC-39) : { canTransfer, pending }
+  const [transferInfo, setTransferInfo] = useState(null);
+  const [showTransfer, setShowTransfer] = useState(false);
+  const [transferTo, setTransferTo] = useState("");
+  const [transferBusy, setTransferBusy] = useState(false);
   const [assigningRole, setAssigningRole] = useState(false);
   const [revokingRoleId, setRevokingRoleId] = useState(null);
   // Consentement oral du proche (UC-29) : fiche à attester, ou dont le proche
@@ -182,7 +198,12 @@ export default function FichesPage() {
       const res = await fetch("/api/document-roles", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ memberId: viewing.id, userId: newRoleUserId, role: newRoleType }),
+        body: JSON.stringify({
+          memberId: viewing.id,
+          userId: newRoleUserId,
+          role: newRoleType,
+          ...(newRoleType === "lecteur_invite" ? { duration: newRoleDuration } : {}),
+        }),
       });
       if (res.ok) {
         toast.success("Rôle attribué sur cette fiche !");
@@ -197,6 +218,95 @@ export default function FichesPage() {
       setAssigningRole(false);
     }
   };
+
+  // Prolonger en un clic l'accès d'un lecteur invité (R4).
+  const extendDocumentRole = async (role) => {
+    const duration = extendChoice[role.id] ?? DEFAULT_ROLE_DURATION;
+    setExtendingRoleId(role.id);
+    try {
+      const res = await fetch(`/api/document-roles/${role.id}/extend`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ duration }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        toast.success(`Accès de ${role.userName} prolongé jusqu'au ${formatDate(data.expiresAt)}`);
+        loadDocumentRoles(viewing.id);
+      } else {
+        toast.error(data.error || "La prolongation n'a pas pu être enregistrée");
+      }
+    } finally {
+      setExtendingRoleId(null);
+    }
+  };
+
+  // Transfert de gestion (UC-39) : état de la fiche affichée.
+  const loadTransferInfo = async (memberId) => {
+    if (!selectedFamily || isDependent) return setTransferInfo(null);
+    try {
+      const res = await fetch(`/api/role-transfers?familyId=${selectedFamily.id}&memberId=${memberId}`);
+      const data = await res.json().catch(() => null);
+      setTransferInfo(res.ok ? data?.member ?? null : null);
+    } catch {
+      setTransferInfo(null);
+    }
+  };
+
+  const proposeTransfer = async () => {
+    if (!transferTo) {
+      toast.error("Choisissez la personne à qui proposer la gestion");
+      return;
+    }
+    setTransferBusy(true);
+    try {
+      const res = await fetch("/api/role-transfers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ memberId: viewing.id, toUserId: Number(transferTo) }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        toast.success(`Proposition envoyée à ${data.toName} : elle a 7 jours pour l'accepter`);
+        setShowTransfer(false);
+        setTransferTo("");
+        loadTransferInfo(viewing.id);
+      } else {
+        toast.error(data.error || "La proposition n'a pas pu être envoyée");
+      }
+    } finally {
+      setTransferBusy(false);
+    }
+  };
+
+  const cancelTransfer = async (transfer) => {
+    if (!confirm(`Annuler la proposition faite à ${transfer.toName} ?`)) return;
+    setTransferBusy(true);
+    try {
+      const res = await fetch(`/api/role-transfers/${transfer.id}/cancel`, { method: "POST" });
+      if (res.ok) {
+        toast.success("Proposition annulée");
+      } else {
+        const err = await res.json().catch(() => ({}));
+        toast.error(err.error || "L'annulation a échoué");
+      }
+      loadTransferInfo(viewing.id);
+    } finally {
+      setTransferBusy(false);
+    }
+  };
+
+  // Comptes à qui proposer la gestion : adultes ou parents, ni soi-même, ni
+  // le titulaire de la fiche, ni un gestionnaire actuel (quand la liste des
+  // rôles est connue). Le serveur revérifie tout.
+  const transferCandidates = (m) =>
+    familyAccounts.filter(
+      (a) =>
+        a.role !== "dependent" &&
+        a.userId !== user?.id &&
+        a.linkedMemberId !== m?.id &&
+        !memberDocRoles.some((r) => r.userId === a.userId && r.role === "gestionnaire")
+    );
 
   const revokeDocumentRole = async (id) => {
     setRevokingRoleId(id);
@@ -221,8 +331,11 @@ export default function FichesPage() {
     setMemberStats(null);
     setNewRoleUserId("");
     setNewRoleType("gestionnaire");
+    setNewRoleDuration(DEFAULT_ROLE_DURATION);
     setMemberDocRoles([]);
+    setTransferInfo(null);
     if (canManageRoles(m)) loadDocumentRoles(m.id);
+    if (m.access === "full") loadTransferInfo(m.id);
     try {
       const [apptsRes, vaccsRes, treatsRes, docsRes] = await Promise.all([
         fetch(`/api/appointments?memberId=${m.id}`),
@@ -666,10 +779,38 @@ export default function FichesPage() {
                       <p className="text-sm text-gray-400 italic">Aucun rôle attribué sur cette fiche pour l'instant.</p>
                     ) : (
                       memberDocRoles.map((r) => (
-                        <div key={r.id} className="flex items-center justify-between bg-gray-50 rounded-xl p-3">
-                          <div>
+                        <div key={r.id} className="flex flex-wrap items-center justify-between gap-2 bg-gray-50 rounded-xl p-3">
+                          <div className="min-w-0">
                             <p className="text-sm font-semibold text-gray-700">{r.userName}</p>
                             <p className="text-xs text-gray-400">{r.userEmail}</p>
+                            {r.role === "lecteur_invite" && r.expiresAt && (
+                              <div className="flex flex-wrap items-center gap-2 mt-1.5">
+                                <p className="flex items-center gap-1 text-xs text-amber-700">
+                                  <CalendarClock size={12} />
+                                  Accès jusqu&apos;au {formatDate(r.expiresAt)}
+                                </p>
+                                <Select
+                                  value={extendChoice[r.id] ?? DEFAULT_ROLE_DURATION}
+                                  onChange={(e) => setExtendChoice((prev) => ({ ...prev, [r.id]: e.target.value }))}
+                                  className="!py-1 !text-xs w-auto"
+                                  aria-label={`Durée de prolongation pour ${r.userName}`}
+                                >
+                                  {ROLE_DURATION_OPTIONS.map((d) => (
+                                    <option key={d.value} value={d.value}>
+                                      + {d.label}
+                                    </option>
+                                  ))}
+                                </Select>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => extendDocumentRole(r)}
+                                  loading={extendingRoleId === r.id}
+                                >
+                                  Prolonger
+                                </Button>
+                              </div>
+                            )}
                           </div>
                           <div className="flex items-center gap-2">
                             <Badge variant={r.role === "relais" ? "warning" : "info"}>{ficheRoleShortLabel(r.role)}</Badge>
@@ -710,12 +851,59 @@ export default function FichesPage() {
                         </option>
                       ))}
                     </Select>
+                    {newRoleType === "lecteur_invite" && (
+                      <Select
+                        label="Durée de l'accès *"
+                        value={newRoleDuration}
+                        onChange={(e) => setNewRoleDuration(e.target.value)}
+                      >
+                        {ROLE_DURATION_OPTIONS.map((d) => (
+                          <option key={d.value} value={d.value}>
+                            {d.label}
+                          </option>
+                        ))}
+                      </Select>
+                    )}
                   </div>
                   <Button onClick={assignDocumentRole} loading={assigningRole} className="w-full">
                     <Plus size={15} />
                     Attribuer
                   </Button>
                 </div>
+              </div>
+            )}
+
+            {/* Gestion de ce dossier : transfert à un autre membre (UC-39) —
+                pour son gestionnaire, ou un parent qui en a l'accès complet */}
+            {transferInfo && (transferInfo.canTransfer || transferInfo.pending) && (
+              <div>
+                <h4 className="text-sm font-bold text-gray-700 uppercase tracking-wide mb-1">Gestion de ce dossier</h4>
+                {transferInfo.pending ? (
+                  <div className="flex flex-col sm:flex-row sm:items-center gap-3 bg-teal-50 border border-teal-100 rounded-xl p-3">
+                    <p className="flex-1 text-sm text-teal-900">
+                      <ArrowRightLeft size={14} className="inline mr-1.5 -mt-0.5" />
+                      Proposition de transfert en attente : {transferInfo.pending.fromName} a proposé à{" "}
+                      <strong>{transferInfo.pending.toName}</strong> de reprendre la gestion du dossier (réponse attendue
+                      avant le {formatDate(transferInfo.pending.expiresAt)}).
+                    </p>
+                    {transferInfo.pending.fromUserId === user?.id && (
+                      <Button size="sm" variant="ghost" onClick={() => cancelTransfer(transferInfo.pending)} loading={transferBusy}>
+                        Annuler
+                      </Button>
+                    )}
+                  </div>
+                ) : (
+                  <div className="flex flex-col sm:flex-row sm:items-center gap-3 bg-gray-50 rounded-xl p-3">
+                    <p className="flex-1 text-xs text-gray-500">
+                      Vous pouvez proposer à un autre membre adulte de la famille de reprendre la gestion du dossier de{" "}
+                      {viewing.firstName}. Il ou elle devra accepter ; vous cesserez alors d&apos;en être gestionnaire.
+                    </p>
+                    <Button size="sm" variant="outline" onClick={() => setShowTransfer(true)}>
+                      <ArrowRightLeft size={14} />
+                      Transférer la gestion
+                    </Button>
+                  </div>
+                )}
               </div>
             )}
 
@@ -737,6 +925,37 @@ export default function FichesPage() {
               )}
               <Button onClick={closeView} className="flex-1">
                 Fermer
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      <Modal open={showTransfer} onClose={() => setShowTransfer(false)} title="Transférer la gestion">
+        {viewing && (
+          <div className="space-y-4">
+            <p className="text-sm text-gray-600">
+              À qui proposer de reprendre la gestion du dossier de{" "}
+              <strong>
+                {viewing.firstName} {viewing.lastName}
+              </strong>{" "}
+              ? La personne recevra une notification et aura 7 jours pour accepter ou refuser. Si elle accepte, elle devient
+              gestionnaire du dossier et vous cessez de l&apos;être.
+            </p>
+            <Select label="Membre de la famille *" value={transferTo} onChange={(e) => setTransferTo(e.target.value)}>
+              <option value="">Choisir un membre adulte</option>
+              {transferCandidates(viewing).map((a) => (
+                <option key={a.userId} value={a.userId}>
+                  {a.name} ({a.email})
+                </option>
+              ))}
+            </Select>
+            <div className="flex gap-3 pt-2">
+              <Button variant="ghost" onClick={() => setShowTransfer(false)} className="flex-1">
+                Annuler
+              </Button>
+              <Button onClick={proposeTransfer} loading={transferBusy} className="flex-1">
+                Envoyer la proposition
               </Button>
             </div>
           </div>

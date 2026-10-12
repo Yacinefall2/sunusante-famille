@@ -5,7 +5,11 @@ import { Input } from "../components/ui/Input";
 import { Button } from "../components/ui/Button";
 import { Heart, Loader2 } from "lucide-react";
 import toast from "react-hot-toast";
-import { familyRoleLabel, ficheRoleLongLabel } from "../lib/roles";
+import { ROLE_DURATION_OPTIONS, familyRoleLabel, ficheRoleLongLabel } from "../lib/roles";
+
+// Durée d'accès d'un lecteur invité prévue par l'invitation (R4), ou null.
+const durationLabel = (inv) =>
+  inv.documentRole === "lecteur_invite" ? ROLE_DURATION_OPTIONS.find((d) => d.value === inv.documentRoleDuration)?.label ?? null : null;
 
 
 export default function AcceptInvitationPage() {
@@ -138,10 +142,11 @@ export default function AcceptInvitationPage() {
           <h1 className="text-lg font-bold text-gray-800 mb-2">Rejoindre {invitation.familyName}</h1>
           <p className="text-sm text-gray-500 mb-6">
             Vous avez été invité(e) en tant que <strong>{roleLabel}</strong>.
-            {invitation.documentMemberId && invitation.documentRole && (
+            {invitation.documentMemberName && invitation.documentRole && (
               <>
                 {" "}Sur la fiche de <strong>{invitation.documentMemberName}</strong>, vous serez{" "}
-                <strong>{ficheRoleLongLabel(invitation.documentRole)}</strong>.
+                <strong>{ficheRoleLongLabel(invitation.documentRole)}</strong>
+                {durationLabel(invitation) && ` (${durationLabel(invitation)} à compter de votre arrivée)`}.
               </>
             )}
           </p>
@@ -182,7 +187,7 @@ export default function AcceptInvitationPage() {
           <h1 className="text-lg font-bold text-gray-800 text-center">Rejoindre {invitation.familyName}</h1>
           <p className="text-sm text-gray-500 text-center mt-1">
             Invitation reçue en tant que <strong>{roleLabel}</strong>
-            {invitation.documentMemberId && invitation.documentRole && (
+            {invitation.documentMemberName && invitation.documentRole && (
               <>
                 {" "}· sur la fiche de {invitation.documentMemberName} :{" "}
                 {ficheRoleLongLabel(invitation.documentRole)}

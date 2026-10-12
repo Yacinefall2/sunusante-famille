@@ -9,6 +9,7 @@ import {
   members,
   notifications,
   pendingInvitations,
+  roleTransfers,
   relayEvents,
   relayTasks,
   treatmentMedications,
@@ -177,6 +178,31 @@ router.get(
         .where(and(eq(pendingInvitations.familyId, req.familyId), isNull(pendingInvitations.acceptedAt), gt(pendingInvitations.expiresAt, now)));
       for (const inv of invitations) {
         push({ type: "invitation", severity: "info", memberId: inv.linkedMemberId, title: `Invitation en attente : ${inv.email}`, detail: `Expire le ${localDate(inv.expiresAt)}`, action: null, link: "/famille" });
+      }
+      // Propositions de transfert de gestion reçues (UC-39), à accepter ou refuser.
+      const transfers = await db
+        .select({ t: roleTransfers, m: members, fromName: users.name })
+        .from(roleTransfers)
+        .innerJoin(members, eq(members.id, roleTransfers.memberId))
+        .innerJoin(users, eq(users.id, roleTransfers.fromUserId))
+        .where(
+          and(
+            eq(roleTransfers.familyId, req.familyId),
+            eq(roleTransfers.toUserId, req.user.id),
+            eq(roleTransfers.status, "pending"),
+            gt(roleTransfers.expiresAt, now)
+          )
+        );
+      for (const { t, m, fromName } of transfers) {
+        push({
+          type: "role_transfer",
+          severity: "warn",
+          memberId: m.id,
+          title: `${fromName} vous propose de reprendre la gestion du dossier de ${fullName(m)}`,
+          detail: `Proposition valable jusqu'au ${localDate(t.expiresAt)}`,
+          action: { kind: "role_transfer", id: t.id },
+          link: "/dashboard",
+        });
       }
       const rank = { alert: 0, warn: 1, info: 2 };
       todo.sort((a, b) => rank[a.severity] - rank[b.severity]);
