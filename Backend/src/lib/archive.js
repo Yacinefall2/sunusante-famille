@@ -95,6 +95,30 @@ export async function afterFicheUnlinked(memberId) {
   await db.update(members).set({ status: "mineur_gere" }).where(eq(members.id, memberId));
 }
 
+// Gel d'une fiche qui vient d'être archivée : rôles de dossier supprimés,
+// notifications effacées, invitations qui la visent annulées, liens médecin
+// révoqués et fiche d'urgence désactivée — plus rien ne doit sortir d'un
+// dossier gelé (rappels et Village ignorent déjà les fiches archivées).
+// Renvoie le nombre de rôles de dossier retirés.
+async function freezeFiche(memberId, now) {
+  const rolesRemoved = await db.delete(documentRoles).where(eq(documentRoles.memberId, memberId)).returning({ id: documentRoles.id });
+  await db.delete(notifications).where(eq(notifications.memberId, memberId));
+  await db
+    .delete(pendingInvitations)
+    .where(
+      and(
+        isNull(pendingInvitations.acceptedAt),
+        or(eq(pendingInvitations.linkedMemberId, memberId), eq(pendingInvitations.documentMemberId, memberId))
+      )
+    );
+  await db
+    .update(doctorShares)
+    .set({ revokedAt: now })
+    .where(and(eq(doctorShares.memberId, memberId), isNull(doctorShares.revokedAt)));
+  await db.update(emergencyCards).set({ active: false }).where(eq(emergencyCards.memberId, memberId));
+  return rolesRemoved.length;
+}
+
 // Un compte quitte la famille : `membership` est sa ligne family_memberships
 // (rôle ENREGISTRÉ dans `role`, ou dans `storedRole` si la ligne vient de
 // requireFamilyMembership). À appeler AVANT de supprimer cette ligne ou le
@@ -124,22 +148,11 @@ export async function archiveFicheOfLeavingAccount(membership, { now = new Date(
     return { memberId, archived: false };
   }
 
-  await db.update(members).set({ archivedAt: now, archivedUserId: membership.userId }).where(eq(members.id, memberId));
-  const rolesRemoved = await db.delete(documentRoles).where(eq(documentRoles.memberId, memberId)).returning({ id: documentRoles.id });
-  await db.delete(notifications).where(eq(notifications.memberId, memberId));
   await db
-    .delete(pendingInvitations)
-    .where(
-      and(
-        isNull(pendingInvitations.acceptedAt),
-        or(eq(pendingInvitations.linkedMemberId, memberId), eq(pendingInvitations.documentMemberId, memberId))
-      )
-    );
-  await db
-    .update(doctorShares)
-    .set({ revokedAt: now })
-    .where(and(eq(doctorShares.memberId, memberId), isNull(doctorShares.revokedAt)));
-  await db.update(emergencyCards).set({ active: false }).where(eq(emergencyCards.memberId, memberId));
+    .update(members)
+    .set({ archivedAt: now, archivedUserId: membership.userId, archivedReason: "departure" })
+    .where(eq(members.id, memberId));
+  const rolesRemoved = await freezeFiche(memberId, now);
   // Entrée toujours visible des parents : rien du dossier lui-même.
   await logActivity({
     familyId: fiche.familyId,
@@ -147,7 +160,7 @@ export async function archiveFicheOfLeavingAccount(membership, { now = new Date(
     action: "member_archived",
     member: fiche,
     target: membership.userId,
-    details: { reason, rolesRemoved: rolesRemoved.length },
+    details: { reason, rolesRemoved },
     at: now,
   });
   return { memberId, archived: true };
@@ -166,11 +179,31 @@ export async function restoreArchivedFiche(userId, familyId) {
   if (!fiche) return null;
   const [restored] = await db
     .update(members)
-    .set({ archivedAt: null, archivedUserId: null })
+    .set({ archivedAt: null, archivedUserId: null, archivedReason: null })
     .where(eq(members.id, fiche.id))
     .returning();
   return restored;
 }
 
+// Le proche SANS compte a retiré son accord oral (UC-29) : sa fiche est
+// archivée — gelée exactement comme celle d'un titulaire parti (aucun accès
+// pour personne, rôles de dossier retirés, rappels et Village coupés, liens
+// médecin révoqués, fiche d'urgence désactivée). Un parent pourra la
+// réactiver par une nouvelle attestation (routes/members.js). Renvoie le
+// nombre de rôles de dossier retirés ; la journalisation (consent_withdrawn)
+// revient à l'appelant.
+export async function archiveFicheWithoutAccount(memberId, { now = new Date(), reason = "consent_withdrawn" } = {}) {
+  await db
+    .update(members)
+    .set({ archivedAt: now, archivedUserId: null, archivedReason: reason })
+    .where(eq(members.id, memberId));
+  return freezeFiche(memberId, now);
+}
+
 export const ARCHIVED_ERROR = "Cette fiche est archivée : son titulaire a quitté la famille, elle ne peut être reliée à aucun autre compte";
+export const ARCHIVED_CONSENT_ERROR =
+  "Cette fiche est archivée : le proche a retiré son accord. Un parent peut la réactiver si le proche redonne son accord";
+
+// Message d'erreur selon le motif d'archivage de la fiche.
+export const archivedErrorOf = (fiche) => (fiche?.archivedReason === "consent_withdrawn" ? ARCHIVED_CONSENT_ERROR : ARCHIVED_ERROR);
 

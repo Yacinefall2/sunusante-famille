@@ -17,10 +17,11 @@ import {
   setDocumentRole,
 } from "../lib/documentAccess.js";
 import { ADULT_AGE, ACCOUNT_MIN_AGE, MINOR_PARENT_ERROR, UNDER_MIN_AGE_ERROR, ageOn, effectiveRole } from "../lib/family.js";
-import { ARCHIVED_ERROR, afterFicheLinked, logRolesAutoRevoked, restoreArchivedFiche } from "../lib/archive.js";
+import { afterFicheLinked, archivedErrorOf, logRolesAutoRevoked, restoreArchivedFiche } from "../lib/archive.js";
 import { familyIdFromBody, familyIdFromQuery } from "../lib/familyResolvers.js";
 import { INVALID_ID, parseId } from "../lib/validation.js";
 import { fullName, logActivity } from "../lib/activityLog.js";
+import { CONSENT_REQUIRED, consentApplies, hasAccount, isAttested } from "../lib/consent.js";
 
 const router = Router();
 
@@ -90,7 +91,7 @@ router.post(
         if (!member || member.familyId !== req.familyId) {
           return res.status(400).json({ error: "Fiche membre introuvable dans cette famille" });
         }
-        if (member.archivedAt) return res.status(409).json({ error: ARCHIVED_ERROR });
+        if (member.archivedAt) return res.status(409).json({ error: archivedErrorOf(member) });
         const [alreadyLinked] = await db
           .select({ id: familyMemberships.id })
           .from(familyMemberships)
@@ -127,12 +128,24 @@ router.post(
         if (!docMember || docMember.familyId !== req.familyId) {
           return res.status(400).json({ error: "Fiche membre introuvable dans cette famille" });
         }
-        if (docMember.archivedAt) return res.status(409).json({ error: ARCHIVED_ERROR });
+        if (docMember.archivedAt) return res.status(409).json({ error: archivedErrorOf(docMember) });
         if (!(await canManageRoles(req, parsedDocMemberId))) {
           return res.status(403).json({ error: "Vous ne pouvez pas gérer les accès de ce dossier" });
         }
         if (parsedDocMemberId === validatedLinkedMemberId) {
           return res.status(400).json({ error: "La personne sera déjà titulaire de ce dossier" });
+        }
+        // UC-02 : donner accès au dossier d'un proche majeur sans compte
+        // suppose que son accord oral a été attesté (lib/consent.js).
+        if (
+          consentApplies(docMember.dateOfBirth) &&
+          !(await hasAccount(parsedDocMemberId)) &&
+          !(await isAttested(parsedDocMemberId))
+        ) {
+          return res.status(409).json({
+            error: `L'accord oral de ${fullName(docMember)} n'a pas encore été attesté : attestez-le depuis sa fiche avant de donner un rôle sur son dossier`,
+            code: CONSENT_REQUIRED,
+          });
         }
         validatedDocumentMemberId = parsedDocMemberId;
         validatedDocumentRole = documentRole;

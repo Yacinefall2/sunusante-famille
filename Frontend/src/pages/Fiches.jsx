@@ -9,6 +9,7 @@ import { Badge } from "../components/ui/Badge";
 import { MemberAvatar } from "../components/members/MemberAvatar";
 import { MemberContactDetails } from "../components/members/MemberContactFields";
 import { MemberFormModal } from "../components/members/MemberFormModal";
+import { ConsentAttestationModal, ConsentWithdrawModal, consentSummary } from "../components/members/ConsentAttestation";
 import {
   Plus,
   Pencil,
@@ -25,6 +26,8 @@ import {
   UserCircle,
   TreePine,
   ShieldPlus,
+  ShieldCheck,
+  ShieldAlert,
 } from "lucide-react";
 import { calculateAge, clickableCardProps, formatDate } from "../lib/utils";
 import {
@@ -72,6 +75,10 @@ export default function FichesPage() {
   const [newRoleType, setNewRoleType] = useState("gestionnaire");
   const [assigningRole, setAssigningRole] = useState(false);
   const [revokingRoleId, setRevokingRoleId] = useState(null);
+  // Consentement oral du proche (UC-29) : fiche à attester, ou dont le proche
+  // retire son accord.
+  const [consentFor, setConsentFor] = useState(null);
+  const [withdrawFor, setWithdrawFor] = useState(null);
 
   // Droits par fiche, calculés par le serveur (champ access) :
   // - lire : accès complet ou lecture ;
@@ -84,6 +91,9 @@ export default function FichesPage() {
   const canEdit = (m) => m?.access === "full";
   const canDelete = (m) => isParent && m?.access === "full" && !m.hasAccount;
   const canManageRoles = (m) => (m?.isMine && !isDependent) || (isParent && m?.access === "full");
+  // - attester (ou retirer) l'accord oral d'un proche sans compte : accès
+  //   complet à la fiche, jamais un adolescent.
+  const canAttest = (m) => m?.access === "full" && !isDependent && !m.hasAccount;
 
   const fiches = members.filter(canRead);
   // Membres dont l'utilisateur est seulement relais (pas d'accès au dossier)
@@ -103,8 +113,14 @@ export default function FichesPage() {
     const m = members.find((mm) => String(mm.id) === id);
     if (m && canRead(m)) {
       openedFromUrl.current = id;
-      // ?modifier=1 (lien « À compléter ») : formulaire de modification directement.
-      if (searchParams.get("modifier") === "1" && canWriteMember(m.id)) {
+      // ?consentement=1 (lien « À traiter ») : fiche ouverte et écran d'engagement.
+      if (searchParams.get("consentement") === "1") {
+        openView(m);
+        if (canAttest(m) && m.consent?.required) setConsentFor(m);
+        searchParams.delete("consentement");
+        setSearchParams(searchParams, { replace: true });
+        // ?modifier=1 (lien « À compléter ») : formulaire de modification directement.
+      } else if (searchParams.get("modifier") === "1" && canWriteMember(m.id)) {
         openEdit(m);
         searchParams.delete("fiche");
         searchParams.delete("modifier");
@@ -350,6 +366,11 @@ export default function FichesPage() {
                             À relayer
                           </Badge>
                         )}
+                        {m.consent?.required && (
+                          <Badge variant="warning" className="px-2 py-0.5 text-[11px]">
+                            <ShieldAlert size={11} /> Consentement à attester
+                          </Badge>
+                        )}
                       </div>
                     </div>
                     <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
@@ -469,6 +490,61 @@ export default function FichesPage() {
                 <p className="text-xs text-teal-700 mt-1">{relation(viewing)}</p>
               </div>
             </div>
+
+            {/* Consentement oral du proche (UC-29) : fiche sans compte d'une
+                personne majeure ou d'âge inconnu */}
+            {viewing.consent && !viewing.hasAccount && (viewing.consent.required || viewing.consent.attested) && (
+              <div>
+                <h4 className="text-sm font-bold text-gray-700 uppercase tracking-wide mb-3">Consentement</h4>
+                {viewing.consent.attested ? (
+                  <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 space-y-2">
+                    <p className="flex items-start gap-2 text-sm text-emerald-900">
+                      <ShieldCheck size={16} className="flex-shrink-0 mt-0.5" />
+                      <span>{consentSummary(viewing.consent.attestation)}</span>
+                    </p>
+                    {canAttest(viewing) && (
+                      <div className="flex justify-end">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-red-600 hover:bg-red-50"
+                          onClick={() => setWithdrawFor(viewing)}
+                        >
+                          Le proche retire son accord
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 space-y-2">
+                    <p className="flex items-start gap-2 text-sm text-amber-900">
+                      <ShieldAlert size={16} className="flex-shrink-0 mt-0.5" />
+                      <span>
+                        <strong>Consentement à attester.</strong> {viewing.firstName} est majeur(e) et n&apos;a pas de compte :
+                        son accord oral pour le suivi de son dossier n&apos;a pas encore été attesté.
+                        {!canAttest(viewing) && " Son gestionnaire ou un parent peut le faire."}
+                      </span>
+                    </p>
+                    {canAttest(viewing) && (
+                      <div className="flex flex-col sm:flex-row sm:justify-end gap-2">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-red-600 hover:bg-red-50"
+                          onClick={() => setWithdrawFor(viewing)}
+                        >
+                          Le proche refuse ou retire son accord
+                        </Button>
+                        <Button size="sm" onClick={() => setConsentFor(viewing)}>
+                          <ShieldCheck size={14} />
+                          Attester le consentement
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Informations personnelles */}
             <div>
@@ -668,6 +744,13 @@ export default function FichesPage() {
       </Modal>
 
       <MemberFormModal open={showForm} onClose={() => setShowForm(false)} editing={editing} />
+      <ConsentAttestationModal open={!!consentFor} onClose={() => setConsentFor(null)} member={consentFor} />
+      <ConsentWithdrawModal
+        open={!!withdrawFor}
+        onClose={() => setWithdrawFor(null)}
+        member={withdrawFor}
+        onDone={closeView}
+      />
     </AppShell>
   );
 }

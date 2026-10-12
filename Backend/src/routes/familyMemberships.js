@@ -5,7 +5,7 @@ import { familyMemberships, users, members, documentRoles, notifications } from 
 import { requireFamilyMembership } from "../middleware/auth.js";
 import { canWriteMember } from "../lib/documentAccess.js";
 import { ADULT_AGE, ACCOUNT_MIN_AGE, MINOR_PARENT_ERROR, UNDER_MIN_AGE_ERROR, ageOn, effectiveRole, statusForLinkedFiche } from "../lib/family.js";
-import { ARCHIVED_ERROR, afterFicheLinked, afterFicheUnlinked, archiveFicheOfLeavingAccount, logRolesAutoRevoked } from "../lib/archive.js";
+import { afterFicheLinked, afterFicheUnlinked, archivedErrorOf, archiveFicheOfLeavingAccount, logRolesAutoRevoked } from "../lib/archive.js";
 import { logActivity } from "../lib/activityLog.js";
 import { familyIdFromQuery } from "../lib/familyResolvers.js";
 import { INVALID_ID, parseId } from "../lib/validation.js";
@@ -129,7 +129,7 @@ router.put("/", requireFamilyMembership(resolveFamilyIdFromMembershipId, { roles
       if (!member || member.familyId !== req.familyId) {
         return res.status(400).json({ error: "Fiche membre introuvable dans cette famille" });
       }
-      if (member.archivedAt) return res.status(409).json({ error: ARCHIVED_ERROR });
+      if (member.archivedAt) return res.status(409).json({ error: archivedErrorOf(member) });
       const [alreadyLinked] = await db
         .select({ id: familyMemberships.id })
         .from(familyMemberships)

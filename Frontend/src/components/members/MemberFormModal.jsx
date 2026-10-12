@@ -7,6 +7,7 @@ import { useFamily } from "../../context/FamilyContext";
 import { AVATAR_COLORS, BLOOD_TYPES } from "../../lib/utils";
 import { MEMBER_STATUS_OPTIONS } from "../../lib/roles";
 import { IDENTITY_FIELDS_DEFAULTS, IdentityFields, identityError, identityPayload } from "./IdentityFields";
+import { ConsentAttestation, consentApplies } from "./ConsentAttestation";
 import toast from "react-hot-toast";
 
 const defaultForm = {
@@ -24,14 +25,24 @@ const defaultForm = {
 // Formulaire d'ajout d'un membre (création de la personne ET de sa fiche
 // médicale, via POST /api/members) ou de modification d'une fiche existante.
 // `editing` : membre à modifier, ou null pour un ajout.
+//
+// Ajout d'un proche majeur (ou dont la date de naissance n'est pas connue) :
+// la fiche n'a pas de compte, son accord oral doit être attesté AVANT
+// l'envoi (UC-29, écran n°6). Le bouton devient « Continuer », puis l'écran
+// d'engagement s'affiche ; la fiche est envoyée avec l'attestation.
 export function MemberFormModal({ open, onClose, editing = null, onSaved }) {
   const { selectedFamily, members, reloadMembers } = useFamily();
   const [form, setForm] = useState(defaultForm);
   const [saving, setSaving] = useState(false);
+  // "form" : saisie de la fiche ; "consent" : écran d'engagement
+  const [step, setStep] = useState("form");
+  const [consentError, setConsentError] = useState("");
 
   // Réinitialise le formulaire à chaque ouverture
   useEffect(() => {
     if (!open) return;
+    setStep("form");
+    setConsentError("");
     if (editing) {
       setForm({
         firstName: editing.firstName,
@@ -58,19 +69,38 @@ export function MemberFormModal({ open, onClose, editing = null, onSaved }) {
   // Fiche d'un administrateur : le lien "parent" est fixé par le serveur
   const isAdminFiche = !!editing && (editing.account?.role === "parent" || editing.kinship === "parent");
 
-  const save = async () => {
+  // Création d'une fiche de proche majeur (ou d'âge inconnu) : attestation requise.
+  const needsConsent = !editing && consentApplies(form.dateOfBirth);
+
+  const validate = () => {
     if (!form.firstName.trim() || !form.lastName.trim()) {
       toast.error("Prénom et nom sont requis");
-      return;
+      return false;
     }
     const identityMsg = identityError(form, { isAdmin: isAdminFiche });
     if (identityMsg) {
       toast.error(identityMsg);
-      return;
+      return false;
     }
+    return true;
+  };
+
+  // « Ajouter » / « Continuer » : enchaîne sur l'engagement si nécessaire.
+  const next = () => {
+    if (!validate()) return;
+    if (needsConsent) {
+      setConsentError("");
+      setStep("consent");
+    } else {
+      save();
+    }
+  };
+
+  const save = async (consent = null) => {
+    if (!validate()) return;
     // Les champs d'identité sont envoyés via identityPayload (lien omis pour un administrateur)
     const { kinship: _k, kinshipRelatedMemberId: _r, ...rest } = form;
-    const body = { ...rest, ...identityPayload(form, { isAdmin: isAdminFiche }) };
+    const body = { ...rest, ...identityPayload(form, { isAdmin: isAdminFiche }), ...(consent ? { consent } : {}) };
     setSaving(true);
     try {
       const res = await fetch("/api/members", {
@@ -85,7 +115,14 @@ export function MemberFormModal({ open, onClose, editing = null, onSaved }) {
         onSaved?.();
       } else {
         const err = await res.json().catch(() => ({}));
-        toast.error(err.error || (editing ? "Erreur lors de la modification" : "Erreur lors de l'ajout"));
+        const message = err.error || (editing ? "Erreur lors de la modification" : "Erreur lors de l'ajout");
+        if (String(err.code ?? "").startsWith("CONSENT_")) {
+          // Attestation refusée par le serveur : on reste (ou on revient) sur l'engagement.
+          setConsentError(message);
+          setStep("consent");
+        } else {
+          toast.error(message);
+        }
       }
     } finally {
       setSaving(false);
@@ -96,10 +133,32 @@ export function MemberFormModal({ open, onClose, editing = null, onSaved }) {
     <Modal
       open={open}
       onClose={onClose}
-      title={editing ? `Modifier la fiche de ${editing.firstName}` : "Ajouter un membre"}
+      title={
+        editing
+          ? `Modifier la fiche de ${editing.firstName}`
+          : step === "consent"
+            ? `Accord de ${form.firstName.trim()} ${form.lastName.trim()}`
+            : "Ajouter un membre"
+      }
       size="lg"
     >
+      {step === "consent" ? (
+        <div className="space-y-4">
+          <p className="text-xs font-semibold text-teal-700 uppercase tracking-wide">Étape 2 sur 2 — Engagement</p>
+          <ConsentAttestation
+            member={{ firstName: form.firstName.trim(), lastName: form.lastName.trim() }}
+            onSubmit={(consent) => save(consent)}
+            onBack={() => setStep("form")}
+            backLabel="Retour à la fiche"
+            submitting={saving}
+            error={consentError}
+          />
+        </div>
+      ) : (
       <div className="space-y-4">
+        {needsConsent && (
+          <p className="text-xs font-semibold text-teal-700 uppercase tracking-wide">Étape 1 sur 2 — La fiche</p>
+        )}
         {!editing && (
           <p className="text-sm text-gray-600 bg-teal-50 border border-teal-100 rounded-xl px-3 py-2">
             Ajoute une personne du foyer (avec ou sans compte) et crée sa fiche médicale.
@@ -167,11 +226,17 @@ export function MemberFormModal({ open, onClose, editing = null, onSaved }) {
           <Button variant="ghost" onClick={onClose} className="flex-1">
             Annuler
           </Button>
-          <Button onClick={save} loading={saving} className="flex-1">
-            {editing ? "Enregistrer" : "Ajouter"}
+          <Button onClick={editing ? () => save() : next} loading={saving} className="flex-1">
+            {editing ? "Enregistrer" : needsConsent ? "Continuer" : "Ajouter"}
           </Button>
         </div>
+        {needsConsent && (
+          <p className="text-xs text-gray-500 text-center">
+            Personne majeure sans compte : vous attesterez ensuite avoir obtenu son accord oral.
+          </p>
+        )}
       </div>
+      )}
     </Modal>
   );
 }

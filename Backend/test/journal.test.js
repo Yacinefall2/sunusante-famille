@@ -7,7 +7,7 @@ import { activityLog, appointments, families, members, relayTasks, users } from 
 import { hashPassword } from "../src/lib/password.js";
 import { runReminderTick } from "../src/reminders/engine.js";
 import { sendDoctorShareEmail, sendInvitationEmail } from "../src/lib/mailer.js";
-import { resetDatabase, createUser, createFamily, addMembership, createMember, linkMember, grantRole, as } from "./helpers.js";
+import { resetDatabase, createUser, createFamily, addMembership, createMember, linkMember, grantRole, attest, attestation, as } from "./helpers.js";
 
 // Journal d'activité (UC-10, §10 « Traçabilité », §6.3) : ce qui est tracé,
 // qui le voit, et l'impossibilité de le modifier.
@@ -54,6 +54,7 @@ beforeEach(async () => {
   const fMamie = await fiche("Mamie", { dateOfBirth: "1940-01-01", status: "non_connecte", phone: "+221770000000" });
   await grantRole(fMamie, cousin, "gestionnaire");
   await grantRole(fMamie, omar, "relais");
+  await attest(fMamie, cousin); // accord oral de Mamie attesté (UC-29)
   f = { family, papa, maman, medoune, toutou, cousin, omar, sm, fPapa, fMaman, fMedoune, fToutou, fMamie };
 });
 
@@ -200,7 +201,7 @@ describe("Journal — ce qui est enregistré", () => {
   it("espace : liaison d'un compte à une fiche (rôles retirés en un récapitulatif), promotion co-administrateur", async () => {
     const x = await as(f.papa)
       .post("/api/members")
-      .send({ familyId: f.family.id, firstName: "Ibou", lastName: "Fall", dateOfBirth: "1990-01-01", gender: "M", kinship: "cousin" });
+      .send({ familyId: f.family.id, firstName: "Ibou", lastName: "Fall", dateOfBirth: "1990-01-01", gender: "M", kinship: "cousin", consent: attestation(f.papa) });
     await as(f.papa).post("/api/document-roles").send({ memberId: x.body.id, userId: f.omar.id, role: "relais" });
     const accounts = (await as(f.papa).get(`/api/family-memberships?familyId=${f.family.id}`)).body;
     const cousin = accounts.find((m) => m.userId === f.cousin.id);
@@ -220,10 +221,11 @@ describe("Journal — ce qui est enregistré", () => {
   it("« Ma fiche » : désigner une fiche que l'on gère comme la sienne", async () => {
     const x = await as(f.cousin)
       .post("/api/members")
-      .send({ familyId: f.family.id, firstName: "Cousin", lastName: "Fall", dateOfBirth: "1990-01-01", gender: "M", kinship: "cousin" });
+      .send({ familyId: f.family.id, firstName: "Cousin", lastName: "Fall", dateOfBirth: "1990-01-01", gender: "M", kinship: "cousin", consent: attestation(f.cousin) });
     expect((await as(f.cousin).post("/api/members/claim").send({ id: x.body.id })).status).toBe(200);
     expect(await texts(f.cousin)).toEqual([
       "Cousin Fall a désigné la fiche de Cousin Fall comme la sienne",
+      expect.stringMatching(/^Cousin Fall a attesté l'accord oral de Cousin Fall \(en personne, accord du \d{2}\/\d{2}\/\d{4}\)$/),
       "Cousin Fall a créé la fiche de Cousin Fall et en est gestionnaire",
     ]);
   });

@@ -43,6 +43,14 @@ export const EMERGENCY_FIELD_LABELS = {
   showDoctor: "médecin traitant",
 };
 
+// Manière dont l'accord oral a été obtenu (même liste que lib/consent.js,
+// recopiée ici : lib/consent.js dépend déjà de ce module).
+const CONSENT_HOW = {
+  en_personne: "en personne",
+  telephone: "par téléphone",
+  intermediaire: "par l'intermédiaire d'un proche",
+};
+
 const spaceRole = (role) => SPACE_ROLE[role] ?? "membre de la famille";
 const docRole = (role) => DOC_ROLE[role] ?? role;
 const plural = (n, word) => `${n} ${word}${n > 1 ? "s" : ""}`;
@@ -228,17 +236,37 @@ export const ACTIONS = {
     text: (e, d) =>
       `${e.actor} a indiqué la présence de ${e.member} au rendez-vous du ${when(d.appointmentDate)} : ${d.attendance === "attended" ? "venu(e)" : "pas venu(e)"}`,
   },
-  // ── Consentement (attestation : prochain lot, type d'action déjà prévu) ──
+  // ── Consentement oral du proche (UC-29, lib/consent.js) ──
   consent_attestation: {
     category: "consentement",
-    text: (e) => `${e.actor} a enregistré une attestation de consentement pour le dossier de ${e.member}`,
+    text: (e, d) => `${e.actor} a attesté l'accord oral de ${e.member}${consentHow(d)}`,
+  },
+  consent_withdrawn: {
+    category: "consentement",
+    text: (e, d) =>
+      `${e.actor} a enregistré le retrait de l'accord de ${e.member} : sa fiche est archivée` +
+      (d.rolesRemoved > 0 ? ` (${plural(d.rolesRemoved, "rôle")} de dossier retiré${d.rolesRemoved > 1 ? "s" : ""})` : ""),
+  },
+  consent_renewed: {
+    category: "consentement",
+    text: (e, d) => `${e.actor} a réactivé la fiche de ${e.member}, qui a redonné son accord oral${consentHow(d)}, et en est gestionnaire`,
   },
 };
+
+// « (en personne, accord du 12/10/2026) »
+function consentHow(d) {
+  const how = CONSENT_HOW[d.method] ?? null;
+  const parts = [
+    d.method === "intermediaire" && d.intermediaryName ? `${how} (${d.intermediaryName})` : how,
+    d.obtainedOn ? `accord du ${d.obtainedOn.split("-").reverse().join("/")}` : null,
+  ].filter(Boolean);
+  return parts.length > 0 ? ` (${parts.join(", ")})` : "";
+}
 
 // Événements de fiche toujours visibles des parents, même sans accès à la
 // fiche (archivée, supprimée, ou fiche de l'autre parent) : ils ne disent
 // rien du dossier lui-même.
-export const ALWAYS_VISIBLE_TO_PARENTS = ["member_archived", "member_restored", "member_deleted"];
+export const ALWAYS_VISIBLE_TO_PARENTS = ["member_archived", "member_restored", "member_deleted", "consent_withdrawn", "consent_renewed"];
 
 export const actionsOfCategory = (category) =>
   Object.entries(ACTIONS)

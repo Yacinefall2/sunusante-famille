@@ -19,6 +19,7 @@ import {
 import { requireFamilyMembership } from "../middleware/auth.js";
 import { canSeeDocument, readableMemberIds } from "../lib/documentAccess.js";
 import { ageOn } from "../lib/family.js";
+import { consentState, latestConsents } from "../lib/consent.js";
 import { APP_TIMEZONE, addDays, localDate, zonedTime } from "../lib/time.js";
 import { boosterStatus } from "./vaccinations.js";
 import { familyIdFromQuery } from "../lib/familyResolvers.js";
@@ -143,6 +144,15 @@ router.get(
       }
       for (const m of all.filter((x) => readable.has(x.id) && (!x.kinship || !x.gender || !x.dateOfBirth))) {
         push({ type: "fiche", severity: "warn", memberId: m.id, title: `Fiche de ${fullName(m)} à compléter`, detail: "Lien, âge ou sexe manquant", action: { kind: "edit", id: m.id }, link: `/fiches?fiche=${m.id}&modifier=1` });
+      }
+      // Consentement oral à attester (UC-29) : fiche de proche majeur (ou
+      // d'âge inconnu) sans compte, créée avant la règle ou mineur devenu
+      // majeur. Rien n'est bloqué, mais l'attestation est attendue.
+      const consents = await latestConsents(ids);
+      for (const m of all.filter((x) => readable.has(x.id))) {
+        if (consentState(m, { linked: accountByFiche.has(m.id), latest: consents.get(m.id) }).required) {
+          push({ type: "consent", severity: "warn", memberId: m.id, title: `Consentement de ${fullName(m)} à attester`, detail: "Accord oral du proche majeur non attesté", action: { kind: "consent", id: m.id }, link: `/fiches?fiche=${m.id}&consentement=1` });
+        }
       }
       const failures = await db
         .select()

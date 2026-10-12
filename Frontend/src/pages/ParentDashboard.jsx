@@ -23,6 +23,7 @@ import {
   Package,
   Pill,
   RefreshCw,
+  ShieldCheck,
   Stethoscope,
   Syringe,
   UserPlus,
@@ -64,6 +65,7 @@ const TODO_ICONS = {
   fiche: ClipboardPen,
   delivery: Package,
   invitation: Mail,
+  consent: ShieldCheck,
 };
 
 // Icône d'une ligne d'activité selon sa nature.
@@ -214,6 +216,13 @@ function TodoActions({ item, busy, onIntake, onBooster, onAttendance }) {
       return (
         <Link to={item.link || "/fiches"} className={neutral}>
           <ClipboardPen size={12} /> Compléter
+        </Link>
+      );
+    case "consent":
+      // Accord oral d'un proche majeur à attester (UC-29) : écran d'engagement.
+      return (
+        <Link to={item.link || "/fiches"} className={neutral}>
+          <ShieldCheck size={12} /> Attester
         </Link>
       );
     default:

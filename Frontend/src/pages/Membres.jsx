@@ -5,8 +5,9 @@ import { Button } from "../components/ui/Button";
 import { Badge } from "../components/ui/Badge";
 import { MemberAvatar } from "../components/members/MemberAvatar";
 import { MemberFormModal } from "../components/members/MemberFormModal";
+import { ConsentAttestationModal } from "../components/members/ConsentAttestation";
 import { Link } from "react-router-dom";
-import { Plus, Loader2, Users, Info, ChevronDown, UserX, UserCircle, AlertCircle, Archive, Trash2 } from "lucide-react";
+import { Plus, Loader2, Users, Info, ChevronDown, UserX, UserCircle, AlertCircle, Archive, Trash2, ShieldAlert, ShieldCheck } from "lucide-react";
 import toast from "react-hot-toast";
 import {
   accountRoleLabel,
@@ -35,6 +36,7 @@ export default function MembresPage() {
     membersLoading: loading,
     reloadMembers,
     archivedMembers,
+    isDependent,
   } = useFamily();
   // Les fiches archivées sont tenues à part par le contexte (FamilyContext).
   const activeMembers = members;
@@ -59,6 +61,9 @@ export default function MembresPage() {
       setDeletingId(null);
     }
   };
+  // Consentement oral (UC-29) : fiche à attester, ou fiche archivée à
+  // réactiver parce que le proche a redonné son accord (`renewal`).
+  const [consentFor, setConsentFor] = useState(null);
   const [household, setHousehold] = useState(null);
   const [showInfo, setShowInfo] = useState(false);
   const [showForm, setShowForm] = useState(false);
@@ -219,6 +224,30 @@ export default function MembresPage() {
                       </p>
                     ))}
 
+                  {m.consent?.required &&
+                    (canWriteMember(m.id) && !isDependent ? (
+                      <div className="flex flex-col gap-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
+                        <p className="flex items-center gap-1.5">
+                          <ShieldAlert size={13} className="flex-shrink-0" />
+                          <span className="flex-1">
+                            <strong>Consentement à attester</strong> : accord oral de ce proche majeur
+                          </span>
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => setConsentFor({ member: m, renewal: false })}
+                          className="self-start inline-flex items-center gap-1 font-semibold text-teal-700 hover:underline"
+                        >
+                          <ShieldCheck size={13} /> Attester le consentement
+                        </button>
+                      </div>
+                    ) : (
+                      <p className="flex items-center gap-1.5 text-xs text-amber-700 bg-amber-50 rounded-xl px-3 py-2">
+                        <ShieldAlert size={13} className="flex-shrink-0" />
+                        <span>Consentement à attester — par son gestionnaire ou un parent.</span>
+                      </p>
+                    ))}
+
                   <div className="space-y-1 text-xs">
                     <p className="flex items-center gap-1.5 text-gray-600">
                       <UserCircle size={13} className="text-gray-400 flex-shrink-0" />
@@ -244,7 +273,8 @@ export default function MembresPage() {
           </div>
         )}
 
-        {/* Fiches archivées : la personne a quitté la famille ; sa fiche est gelée */}
+        {/* Fiches archivées : la personne a quitté la famille, ou le proche a
+            retiré son accord ; sa fiche est gelée */}
         {archivedMembers.length > 0 && (
           <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
             <div className="px-6 py-4 border-b border-gray-100">
@@ -253,8 +283,9 @@ export default function MembresPage() {
                 <h3 className="font-bold text-gray-800 text-sm">Fiches archivées</h3>
               </div>
               <p className="text-xs text-gray-500 mt-1">
-                Ces personnes ont quitté la famille. Leur dossier médical est gelé : personne ne peut le consulter. Elles
-                le retrouveront si elles reviennent dans la famille.
+                Leur dossier médical est gelé : personne ne peut le consulter. Une personne qui a quitté la famille le
+                retrouvera si elle revient ; la fiche d&apos;un proche qui a retiré son accord peut être réactivée par un
+                parent s&apos;il le redonne.
               </p>
             </div>
             <div className="divide-y divide-gray-50">
@@ -267,8 +298,17 @@ export default function MembresPage() {
                     <p className="font-semibold text-gray-700 text-sm">
                       {m.firstName} {m.lastName}
                     </p>
-                    <p className="text-xs text-gray-400 italic">Fiche archivée</p>
+                    <p className="text-xs text-gray-400 italic">
+                      Fiche archivée —{" "}
+                      {m.archivedReason === "consent_withdrawn" ? "Le proche a retiré son accord" : "A quitté la famille"}
+                    </p>
                   </div>
+                  {isParent && m.archivedReason === "consent_withdrawn" && (
+                    <Button variant="outline" size="sm" onClick={() => setConsentFor({ member: m, renewal: true })}>
+                      <ShieldCheck size={15} />
+                      Le proche a redonné son accord
+                    </Button>
+                  )}
                   {isPrimaryAdmin && (
                     <Button
                       variant="ghost"
@@ -312,6 +352,12 @@ export default function MembresPage() {
       </div>
 
       <MemberFormModal open={showForm} onClose={() => setShowForm(false)} />
+      <ConsentAttestationModal
+        open={!!consentFor}
+        onClose={() => setConsentFor(null)}
+        member={consentFor?.member ?? null}
+        renewal={!!consentFor?.renewal}
+      />
     </AppShell>
   );
 }

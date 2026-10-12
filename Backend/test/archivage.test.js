@@ -67,9 +67,9 @@ describe("Un adulte quitte la famille : sa fiche est archivée (gelée)", () => 
     for (const user of [f.awa, f.moussa, f.omar]) {
       const seen = await listed(user, f.family, f.fatouFiche);
       expect(Object.keys(seen).sort()).toEqual(
-        ["access", "account", "archived", "familyId", "firstName", "hasAccount", "id", "isMine", "lastName", "myDocumentRole", "relayPending"].sort()
+        ["access", "account", "archived", "archivedReason", "familyId", "firstName", "hasAccount", "id", "isMine", "lastName", "myDocumentRole", "relayPending"].sort()
       );
-      expect(seen).toMatchObject({ archived: true, firstName: "Fatou", lastName: "Sow", access: null });
+      expect(seen).toMatchObject({ archived: true, archivedReason: "departure", firstName: "Fatou", lastName: "Sow", access: null });
       expect((await as(user).get(`/api/treatments?memberId=${f.fatouFiche.id}`)).status).toBe(403);
       const appts = (await as(user).get(`/api/appointments?familyId=${f.family.id}`)).body;
       expect(appts.some((a) => a.memberId === f.fatouFiche.id)).toBe(false);

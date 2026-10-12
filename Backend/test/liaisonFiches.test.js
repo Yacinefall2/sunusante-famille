@@ -5,7 +5,7 @@ import { appointments, documentRoles, members, notifications, pendingInvitations
 import { sendInvitationEmail } from "../src/lib/mailer.js";
 import { ageOn } from "../src/lib/family.js";
 import { runReminderTick } from "../src/reminders/engine.js";
-import { resetDatabase, createUser, createFamily, addMembership, linkMember, grantRole, as } from "./helpers.js";
+import { resetDatabase, createUser, createFamily, addMembership, linkMember, grantRole, attest, attestation, as } from "./helpers.js";
 
 // Courriels d'invitation interceptés : le jeton est relu dans l'appel.
 vi.mock("../src/lib/mailer.js", async (importOriginal) => ({
@@ -61,7 +61,7 @@ beforeEach(async () => {
 
 describe("Point 1 — le créateur d'une fiche n'en garde pas la gestion une fois reliée", () => {
   it("A1 crée la fiche de son conjoint puis l'invite comme parent : plus aucun accès à son dossier", async () => {
-    const created = await as(f.a1).post("/api/members").send({ familyId: f.family.id, firstName: "Moussa", lastName: "Diallo", dateOfBirth: "1978-06-01", gender: "M", kinship: "autre" });
+    const created = await as(f.a1).post("/api/members").send({ familyId: f.family.id, firstName: "Moussa", lastName: "Diallo", dateOfBirth: "1978-06-01", gender: "M", kinship: "autre", consent: attestation(f.a1) });
     expect(created.status).toBe(201);
     await db.update(members).set({ allergies: "Pénicilline" }).where(eq(members.id, created.body.id));
     expect(await rolesOn(created.body)).toHaveLength(1); // A1 gestionnaire tant que la fiche est sans compte
@@ -83,7 +83,7 @@ describe("Point 1 — le créateur d'une fiche n'en garde pas la gestion une foi
   it("un adulte crée la fiche de son frère ; une fois le frère invité et relié, il ne la gère plus", async () => {
     const fatou = await createUser("Fatou");
     await linkMember(await addMembership(fatou, f.family, "adult"), await fiche(f.family, "Fatou", "1995-01-01"));
-    const created = await as(fatou).post("/api/members").send({ familyId: f.family.id, firstName: "Ibou", lastName: "Diallo", dateOfBirth: "1999-02-02", gender: "M", kinship: "autre", status: "non_connecte" });
+    const created = await as(fatou).post("/api/members").send({ familyId: f.family.id, firstName: "Ibou", lastName: "Diallo", dateOfBirth: "1999-02-02", gender: "M", kinship: "autre", status: "non_connecte", consent: attestation(fatou) });
     expect((await listed(fatou, f.family, created.body)).access).toBe("full");
 
     const ibou = await createUser("Ibou");
@@ -239,7 +239,7 @@ describe("Point 6 — « Ma fiche » (claim)", () => {
   it("une fiche gérée et libre devient « ma fiche » ; les autres rôles posés avant tombent", async () => {
     const omar = await createUser("Omar");
     await addMembership(omar, f.family, "adult");
-    const created = await as(omar).post("/api/members").send({ familyId: f.family.id, firstName: "Omar", lastName: "Diallo", dateOfBirth: "1990-01-01", gender: "M", kinship: "autre" });
+    const created = await as(omar).post("/api/members").send({ familyId: f.family.id, firstName: "Omar", lastName: "Diallo", dateOfBirth: "1990-01-01", gender: "M", kinship: "autre", consent: attestation(omar) });
     const fatou = await createUser("Fatou");
     await addMembership(fatou, f.family, "adult");
     await grantRole(created.body, fatou, "lecteur_invite");
@@ -262,6 +262,7 @@ describe("Points 7, 8, 16, 18 — invitations revérifiées à l'acceptation", (
 
   it("le rôle de dossier prévu n'est plus attribuable : invitation refusée", async () => {
     const grandPere = await fiche(f.family, "Grand-père", "1940-01-01");
+    await attest(grandPere, f.a1);
     const x = await createUser("X");
     const { res, token } = await invite(f.a1, f.family, { email: x.email, role: "adult", documentMemberId: grandPere.id, documentRole: "relais" });
     expect(res.status).toBe(201);

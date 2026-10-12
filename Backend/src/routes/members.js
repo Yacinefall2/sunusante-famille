@@ -3,7 +3,7 @@ import { eq, and, gt, isNull, ne, sql } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { members, familyMemberships, documentRoles, relayTasks, users, appointments } from "../db/schema.js";
 import { requireFamilyMembership } from "../middleware/auth.js";
-import { canRead, canWriteMember, getFamilyAccess, setDocumentRole } from "../lib/documentAccess.js";
+import { canRead, canWriteMember, getFamilyAccess } from "../lib/documentAccess.js";
 import {
   ACCOUNT_MIN_AGE,
   ADULT_AGE,
@@ -16,8 +16,18 @@ import {
   statusForLinkedFiche,
 } from "../lib/family.js";
 import { documentFilesOf, removeFiles } from "../lib/documentFiles.js";
-import { ARCHIVED_ERROR, afterFicheLinked, logRolesAutoRevoked } from "../lib/archive.js";
+import { afterFicheLinked, archiveFicheWithoutAccount, archivedErrorOf, logRolesAutoRevoked } from "../lib/archive.js";
 import { logActivity } from "../lib/activityLog.js";
+import {
+  CONSENT_REQUIRED,
+  CONSENT_REQUIRED_ERROR,
+  TEEN_CONSENT_ERROR,
+  consentApplies,
+  consentState,
+  insertConsent,
+  latestConsents,
+  parseAttestation,
+} from "../lib/consent.js";
 import { familyIdFromBody, familyIdFromQuery } from "../lib/familyResolvers.js";
 import { INVALID_ID, isIsoDate, parseId, tooLong } from "../lib/validation.js";
 import { localDate } from "../lib/time.js";
@@ -213,8 +223,11 @@ async function linkedMemberIdsOfFamily(familyId) {
 //                peut ne pas avoir de compte (enfant, proche au village)
 //   myDocumentRole — rôle de dossier explicite du compte connecté sur la fiche
 //                    ("gestionnaire" | "relais" | "lecteur_invite" | null)
-//   archived   — fiche archivée (titulaire parti) : seuls le prénom et le
-//                nom sont renvoyés, sans aucune autre donnée
+//   consent    — fiches lisibles : consentement oral du proche (UC-29),
+//                { required, attested, attestation } — voir lib/consent.js
+//   archived   — fiche archivée (titulaire parti, ou proche qui a retiré
+//                son accord) : seuls le prénom, le nom et le motif
+//                (archivedReason) sont renvoyés, sans aucune autre donnée
 router.get(
   "/",
   requireFamilyMembership(familyIdFromQuery),
@@ -244,6 +257,8 @@ router.get(
         );
       const relayPending = (memberId, level) =>
         openTasks.some((t) => t.memberId === memberId && (level === "full" || (level === "relay" && t.escalatedAt)));
+      // Consentement oral (UC-29) : état calculé ici pour les fiches lisibles.
+      const consents = await latestConsents(all.filter((m) => !m.archivedAt && canRead(access.get(m.id))).map((m) => m.id));
       const myRoles = new Map(
         (
           await db
@@ -261,6 +276,8 @@ router.get(
               firstName: m.firstName,
               lastName: m.lastName,
               archived: true,
+              // "departure" (titulaire parti) | "consent_withdrawn" (accord retiré)
+              archivedReason: m.archivedReason ?? "departure",
               access: null,
               isMine: false,
               hasAccount: false,
@@ -270,7 +287,7 @@ router.get(
             };
           }
           const level = access.get(m.id) ?? null;
-          const { archivedAt: _a, archivedUserId: _u, ...fiche } = m;
+          const { archivedAt: _a, archivedUserId: _u, archivedReason: _r, ...fiche } = m;
           const visible = canRead(level) ? fiche : Object.fromEntries(IDENTITY_FIELDS.map((k) => [k, m[k]]));
           return {
             ...visible,
@@ -278,6 +295,7 @@ router.get(
             access: level,
             isMine: req.membership.linkedMemberId === m.id,
             hasAccount: accountByFiche.has(m.id),
+            consent: canRead(level) ? consentState(m, { linked: accountByFiche.has(m.id), latest: consents.get(m.id) }) : null,
             // Rôle effectif : un compte de moins de 18 ans est « dependent ».
             account: publicAccount(accountByFiche.get(m.id), m.dateOfBirth),
             myDocumentRole: myRoles.get(m.id) ?? null,
@@ -309,23 +327,38 @@ router.post(
       const invalid = await checkFiche(req, values, { isMine });
       if (invalid) return res.status(400).json({ error: invalid });
 
+      // Proche majeur (ou d'âge inconnu), sans compte : étape BLOQUANTE de
+      // l'attestation de son accord oral (UC-29, écran n°6).
+      let consent = null;
+      if (!isMine && consentApplies(values.dateOfBirth)) {
+        if (!req.body.consent) return res.status(400).json({ error: CONSENT_REQUIRED_ERROR, code: CONSENT_REQUIRED });
+        const parsed = parseAttestation(req.body.consent, req.user);
+        if (parsed.error) return res.status(400).json({ error: parsed.error, code: parsed.code ?? "CONSENT_INVALID" });
+        consent = parsed.values;
+      }
+
       const status = isMine
         ? statusForLinkedFiche(req.membership.storedRole, values.dateOfBirth, values.status)
         : values.status ?? "connecte_autonome";
-      const [created] = await db
-        .insert(members)
-        .values({ ...values, familyId: req.familyId, status })
-        .returning();
-
-      if (isMine) {
-        await db
-          .update(familyMemberships)
-          .set({ linkedMemberId: created.id })
-          .where(eq(familyMemberships.id, req.membership.id));
-      } else {
-        await setDocumentRole(created.id, req.user.id, "gestionnaire");
-      }
+      // Fiche, rôle de gestionnaire et attestation : tout ou rien.
+      const { created, attestation } = await db.transaction(async (tx) => {
+        const [created] = await tx
+          .insert(members)
+          .values({ ...values, familyId: req.familyId, status })
+          .returning();
+        if (isMine) {
+          await tx
+            .update(familyMemberships)
+            .set({ linkedMemberId: created.id })
+            .where(eq(familyMemberships.id, req.membership.id));
+        } else {
+          await tx.insert(documentRoles).values({ memberId: created.id, userId: req.user.id, role: "gestionnaire" });
+        }
+        const attestation = consent ? await insertConsent(tx, created, consent) : null;
+        return { created, attestation };
+      });
       await logActivity({ familyId: req.familyId, actor: req.user, action: "member_created", member: created, details: { self: isMine } });
+      if (attestation) await logConsent(req, created, attestation, "consent_attestation");
 
       res.status(201).json(created);
     } catch (error) {
@@ -356,7 +389,7 @@ router.post(
         return res.status(409).json({ error: "Votre fiche existe déjà" });
       }
       const [fiche] = await db.select().from(members).where(eq(members.id, memberId));
-      if (fiche.archivedAt) return res.status(409).json({ error: ARCHIVED_ERROR });
+      if (fiche.archivedAt) return res.status(409).json({ error: archivedErrorOf(fiche) });
       if ((await linkedMemberIdsOfFamily(req.familyId)).has(memberId)) {
         return res.status(409).json({ error: "Cette fiche est déjà celle d'un autre compte" });
       }
@@ -480,5 +513,126 @@ router.delete(
     }
   }
 );
+
+// ── Consentement oral du proche (UC-28, UC-29, écran n°6, §10) ───────────────
+// Voir lib/consent.js pour les règles. Chaque engagement est horodaté,
+// enregistré dans consent_attestations (insertion seule) et dans le journal.
+
+async function familyIdFromParam(req) {
+  const id = parseId(req.params.id);
+  if (!id) return null;
+  const [member] = await db.select({ familyId: members.familyId }).from(members).where(eq(members.id, id));
+  return member?.familyId ?? null;
+}
+
+// Journal : attestation, retrait ou nouvelle attestation (aucune donnée médicale).
+async function logConsent(req, fiche, row, action, extra = {}) {
+  await logActivity({
+    familyId: req.familyId,
+    actor: req.user,
+    action,
+    member: fiche,
+    details: {
+      attestationId: row.id,
+      method: row.method,
+      obtainedOn: row.obtainedOn,
+      intermediaryName: row.intermediaryName,
+      ...extra,
+    },
+  });
+}
+
+const fullNameOf = (m) => `${m.firstName} ${m.lastName}`.trim();
+const OWN_ACCOUNT_CONSENT = (m) =>
+  `${fullNameOf(m)} a son propre compte : il ou elle décide seul(e) de l'accès à son dossier, aucune attestation n'est nécessaire`;
+const MINOR_CONSENT = "Fiche d'un mineur : l'autorité parentale s'applique, aucune attestation de consentement n'est requise";
+
+// Attester l'accord oral du proche pour une fiche EXISTANTE (fiche créée
+// avant cette règle, ou mineur devenu majeur sans compte) — accès complet à
+// la fiche requis, jamais un adolescent. Sur une fiche archivée parce que le
+// proche avait retiré son accord, c'est la RÉACTIVATION : réservée aux
+// parents (A1 ou A2), elle désarchive la fiche, et le parent qui atteste en
+// devient gestionnaire. Une fiche archivée pour départ de son titulaire ne
+// se réactive pas ainsi (elle lui est rendue s'il revient, lib/archive.js).
+router.post("/:id/consent", requireFamilyMembership(familyIdFromParam), async (req, res) => {
+  try {
+    const memberId = parseId(req.params.id);
+    if (req.membership.role === "dependent") return res.status(403).json({ error: TEEN_CONSENT_ERROR });
+    const [fiche] = await db.select().from(members).where(eq(members.id, memberId));
+
+    if (fiche.archivedAt) {
+      if (req.membership.role !== "parent") {
+        return res.status(403).json({ error: "Seul un parent peut réactiver une fiche archivée" });
+      }
+      if (fiche.archivedReason !== "consent_withdrawn") {
+        return res.status(409).json({
+          error: "Cette fiche est archivée parce que son titulaire a quitté la famille : elle ne se réactive pas ainsi, elle lui sera rendue s'il revient",
+        });
+      }
+      const parsed = parseAttestation(req.body, req.user);
+      if (parsed.error) return res.status(400).json({ error: parsed.error, code: parsed.code ?? "CONSENT_INVALID" });
+      const row = await db.transaction(async (tx) => {
+        await tx
+          .update(members)
+          .set({ archivedAt: null, archivedUserId: null, archivedReason: null })
+          .where(eq(members.id, memberId));
+        await tx.delete(documentRoles).where(and(eq(documentRoles.memberId, memberId), eq(documentRoles.userId, req.user.id)));
+        await tx.insert(documentRoles).values({ memberId, userId: req.user.id, role: "gestionnaire" });
+        return insertConsent(tx, fiche, parsed.values);
+      });
+      await logConsent(req, fiche, row, "consent_renewed");
+      return res.json({ success: true, reactivated: true });
+    }
+
+    if (!(await canWriteMember(req, memberId))) {
+      return res.status(403).json({ error: "Seul un compte qui gère ce dossier peut attester le consentement du proche" });
+    }
+    if ((await linkedMemberIdsOfFamily(req.familyId)).has(memberId)) {
+      return res.status(409).json({ error: OWN_ACCOUNT_CONSENT(fiche) });
+    }
+    if (!consentApplies(fiche.dateOfBirth)) return res.status(400).json({ error: MINOR_CONSENT });
+    const parsed = parseAttestation(req.body, req.user);
+    if (parsed.error) return res.status(400).json({ error: parsed.error, code: parsed.code ?? "CONSENT_INVALID" });
+    const row = await insertConsent(db, fiche, parsed.values);
+    await logConsent(req, fiche, row, "consent_attestation");
+    res.status(201).json({ success: true, reactivated: false });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Le proche retire son accord (UC-29) : le retrait est enregistré (engagement
+// horodaté du déclarant), puis la fiche est ARCHIVÉE — gelée, plus aucun
+// accès pour personne, rôles de dossier retirés, rappels et Village coupés,
+// liens médecin révoqués, fiche d'urgence désactivée (lib/archive.js).
+// Accès complet à la fiche requis, jamais un adolescent.
+router.post("/:id/consent/withdraw", requireFamilyMembership(familyIdFromParam), async (req, res) => {
+  try {
+    const memberId = parseId(req.params.id);
+    if (req.membership.role === "dependent") return res.status(403).json({ error: TEEN_CONSENT_ERROR });
+    const [fiche] = await db.select().from(members).where(eq(members.id, memberId));
+    if (fiche.archivedAt) return res.status(409).json({ error: archivedErrorOf(fiche) });
+    if (!(await canWriteMember(req, memberId))) {
+      return res.status(403).json({ error: "Seul un compte qui gère ce dossier peut enregistrer le retrait de l'accord" });
+    }
+    if ((await linkedMemberIdsOfFamily(req.familyId)).has(memberId)) {
+      return res.status(409).json({ error: OWN_ACCOUNT_CONSENT(fiche) });
+    }
+    if (!consentApplies(fiche.dateOfBirth)) return res.status(400).json({ error: MINOR_CONSENT });
+
+    const row = await insertConsent(db, fiche, {
+      kind: "withdrawal",
+      declarantUserId: req.user.id,
+      declarantName: req.user.name,
+    });
+    const rolesRemoved = await archiveFicheWithoutAccount(memberId);
+    await logConsent(req, fiche, row, "consent_withdrawn", { rolesRemoved });
+    res.json({ success: true, archived: true });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
 
 export default router;

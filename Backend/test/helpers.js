@@ -12,9 +12,12 @@ import {
   vaccinations,
   documents,
   documentRoles,
+  consentAttestations,
 } from "../src/db/schema.js";
 import { signAccessToken } from "../src/lib/jwt.js";
 import { resetLoginThrottle } from "../src/lib/loginThrottle.js";
+import { CONSENT_TEXT_VERSION } from "../src/lib/consent.js";
+import { localDate } from "../src/lib/time.js";
 
 export async function resetDatabase() {
   await db.execute(sql`
@@ -23,7 +26,7 @@ export async function resetDatabase() {
       family_memberships, refresh_tokens, pending_invitations, notifications,
       medication_intakes, notification_preferences, relay_tasks, relay_events,
       doctor_shares, emergency_cards, emergency_card_views, password_reset_tokens, email_change_tokens,
-      activity_log
+      activity_log, consent_attestations
     restart identity cascade
   `);
   resetLoginThrottle();
@@ -71,6 +74,36 @@ export async function createMember(family, firstName = "Fiche") {
 export async function linkMember(membership, member) {
   await db.update(familyMemberships).set({ linkedMemberId: member.id }).where(eq(familyMemberships.id, membership.id));
   membership.linkedMemberId = member.id;
+}
+
+// Attestation de consentement oral valide pour le compte `user` (UC-29) : à
+// joindre (champ `consent`) à la création, par l'API, de la fiche d'un
+// proche majeur sans compte.
+export const attestation = (user, extra = {}) => ({
+  method: "en_personne",
+  obtainedOn: localDate(),
+  signedName: user.name,
+  ...extra,
+});
+
+// Attestation enregistrée directement en base pour une fiche de test.
+export async function attest(member, user) {
+  const [row] = await db
+    .insert(consentAttestations)
+    .values({
+      familyId: member.familyId,
+      memberId: member.id,
+      memberName: `${member.firstName} ${member.lastName}`,
+      kind: "attestation",
+      declarantUserId: user.id,
+      declarantName: user.name,
+      signedName: user.name,
+      method: "en_personne",
+      obtainedOn: localDate(),
+      textVersion: CONSENT_TEXT_VERSION,
+    })
+    .returning();
+  return row;
 }
 
 export async function grantRole(member, user, role) {

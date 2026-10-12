@@ -14,6 +14,7 @@ import {
   grantRole,
   seedMedicalData,
   as,
+  attestation,
 } from "./helpers.js";
 
 // Foyer de référence (personas de la spécification) :
@@ -209,7 +210,7 @@ describe("Ma fiche (Titulaire)", () => {
   it("peut désigner comme sienne une fiche qu'il gère, pas une autre", async () => {
     const omar = await createUser("Omar");
     await addMembership(omar, f.family, "adult");
-    const created = await as(omar).post("/api/members").send({ familyId: f.family.id, firstName: "Omar", lastName: "N", ...IDENTITE });
+    const created = await as(omar).post("/api/members").send({ familyId: f.family.id, firstName: "Omar", lastName: "N", ...IDENTITE, consent: attestation(omar) });
     expect((await as(omar).post("/api/members/claim").send({ id: f.fiches.ibou.id })).status).toBe(403);
     expect((await as(omar).post("/api/members/claim").send({ id: created.body.id })).status).toBe(200);
     expect((await as(omar).post("/api/members/claim").send({ id: created.body.id })).status).toBe(409);

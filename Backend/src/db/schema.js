@@ -64,6 +64,11 @@ export const members = pgTable("members", {
   // (lib/archive.js).
   archivedAt: timestamp("archived_at"),
   archivedUserId: integer("archived_user_id").references(() => users.id, { onDelete: "set null" }),
+  // Motif de l'archivage : "departure" (le titulaire a quitté la famille) |
+  // "consent_withdrawn" (le proche sans compte a retiré son accord oral, UC-29).
+  // Seule une fiche archivée pour retrait d'accord peut être réactivée par
+  // un parent, au moyen d'une nouvelle attestation.
+  archivedReason: varchar("archived_reason", { length: 30 }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -546,4 +551,48 @@ export const activityLog = pgTable(
     index("activity_log_family_occurred_idx").on(t.familyId, t.occurredAt.desc(), t.id.desc()),
     index("activity_log_member_idx").on(t.memberId),
   ]
+);
+
+// ── Attestations de consentement oral (UC-28, UC-29, écran n°6, §10) ────────
+// À la création du dossier d'un proche majeur sans compte, le déclarant
+// (gestionnaire, parent) atteste sur l'honneur avoir obtenu l'accord oral de
+// ce proche. Chaque ligne est un ENGAGEMENT horodaté : une attestation, ou le
+// retrait de l'accord signalé par la famille (la fiche est alors archivée).
+//
+// Insertion seule : un déclencheur PostgreSQL (migration 0016) refuse toute
+// modification. Les lignes ne disparaissent qu'avec la fiche ou la famille
+// (ON DELETE CASCADE). Les noms sont des INSTANTANÉS pris au moment de
+// l'engagement : un compte supprimé depuis reste nommé.
+export const consentAttestations = pgTable(
+  "consent_attestations",
+  {
+    id: serial("id").primaryKey(),
+    familyId: integer("family_id")
+      .references(() => families.id, { onDelete: "cascade" })
+      .notNull(),
+    memberId: integer("member_id")
+      .references(() => members.id, { onDelete: "cascade" })
+      .notNull(),
+    // Nom du proche au moment de l'engagement
+    memberName: varchar("member_name", { length: 210 }).notNull(),
+    // "attestation" (accord obtenu) | "withdrawal" (accord retiré)
+    kind: varchar("kind", { length: 20 }).notNull(),
+    // Déclarant : compte connecté (NULL si ce compte a été supprimé depuis)
+    // et nom de ce compte au moment de l'engagement
+    declarantUserId: integer("declarant_user_id").references(() => users.id, { onDelete: "set null" }),
+    declarantName: varchar("declarant_name", { length: 150 }).notNull(),
+    // Signature : nom complet retapé par le déclarant (attestation seulement)
+    signedName: varchar("signed_name", { length: 150 }),
+    // Manière dont l'accord a été obtenu : en_personne | telephone | intermediaire
+    method: varchar("method", { length: 20 }),
+    // Proche par l'intermédiaire de qui l'accord a été recueilli
+    intermediaryName: varchar("intermediary_name", { length: 150 }),
+    // Date de l'accord oral, déclarée par le déclarant
+    obtainedOn: date("obtained_on"),
+    // Version du texte d'engagement affiché (lib/consent.js)
+    textVersion: varchar("text_version", { length: 30 }),
+    // Horodatage serveur (date ET heure) de l'engagement
+    createdAt: timestamp("created_at", { precision: 3 }).defaultNow().notNull(),
+  },
+  (t) => [index("consent_attestations_member_idx").on(t.memberId, t.createdAt.desc())]
 );
