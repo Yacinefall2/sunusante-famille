@@ -1,5 +1,5 @@
 import { LogOut } from "lucide-react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
 import { NotificationBell } from "../notifications/NotificationBell";
 
@@ -14,6 +14,7 @@ const pageTitles = {
   "/famille": { title: "Comptes & invitations", subtitle: "Comptes de la famille, rôles et invitations" },
   "/village": { title: "Village", subtitle: "Proches non connectés et rappels relayés" },
   "/partage": { title: "Partage & urgence", subtitle: "Lien médecin et fiche d'urgence" },
+  "/compte": { title: "Mon compte", subtitle: "Nom, adresse, mot de passe et données" },
   "/notifications": { title: "Notifications", subtitle: "Rappels et préférences" },
 };
 
@@ -46,12 +47,12 @@ export function Topbar() {
       </div>
       <div className="flex items-center gap-3">
         <NotificationBell />
-        <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl">
+        <Link to="/compte" title="Mon compte" className="flex items-center gap-2 px-3 py-1.5 rounded-xl hover:bg-gray-50 transition-colors">
           <div className="w-8 h-8 bg-gradient-to-br from-teal-400 to-blue-500 rounded-full flex items-center justify-center text-white text-sm font-bold">
             {initials}
           </div>
           <span className="text-sm font-medium text-gray-700 hidden sm:block">{user?.name}</span>
-        </div>
+        </Link>
         <button
           onClick={handleLogout}
           title="Se déconnecter"

@@ -137,6 +137,98 @@ export async function sendPasswordResetEmail({ to, ...details }) {
   await transporter.sendMail({ from: FROM, to, ...buildPasswordResetEmail(details) });
 }
 
+// Inscription avec une adresse déjà enregistrée : la personne est prévenue
+// par courriel plutôt qu'à l'écran (qui ne doit pas révéler les inscrits).
+export function buildAccountExistsEmail({ name }) {
+  return {
+    subject: "Vous avez déjà un compte SunuSanté Famille",
+    html: accessButtonTemplate({
+      heading: `Bonjour ${escapeHtml(name)}`,
+      bodyHtml: `<p>Quelqu'un (vous, sans doute) a voulu créer un compte avec cette adresse, mais elle est déjà
+        enregistrée. Connectez-vous avec votre mot de passe habituel, ou choisissez-en un nouveau si vous l'avez oublié.</p>`,
+      link: `${FRONTEND_URL}/mot-de-passe-oublie`,
+      buttonLabel: "Mot de passe oublié",
+      validityLabel: "",
+      footer: "Si vous n'êtes pas à l'origine de cette demande, ignorez ce courriel : votre compte n'a pas changé.",
+    }),
+  };
+}
+
+export async function sendAccountExistsEmail({ to, name }) {
+  await transporter.sendMail({ from: FROM, to, ...buildAccountExistsEmail({ name }) });
+}
+
+// Alerte de sécurité : le mot de passe vient d'être changé. Permet de
+// repérer un changement qu'on n'a pas fait soi-même.
+export function buildPasswordChangedAlert({ name }) {
+  return {
+    subject: "Votre mot de passe SunuSanté Famille a été modifié",
+    html: accessButtonTemplate({
+      heading: `Bonjour ${escapeHtml(name)}`,
+      bodyHtml: `<p>Le mot de passe de votre compte SunuSanté Famille vient d'être modifié, et toutes vos sessions
+        ouvertes ont été fermées.</p>
+        <p><strong>Si ce n'est pas vous</strong>, choisissez immédiatement un nouveau mot de passe avec le bouton
+        ci-dessous : quelqu'un d'autre connaît peut-être l'ancien.</p>`,
+      link: `${FRONTEND_URL}/mot-de-passe-oublie`,
+      buttonLabel: "Ce n'est pas moi : sécuriser mon compte",
+      validityLabel: "Si c'est bien vous, aucune action n'est nécessaire.",
+      footer: "",
+    }),
+  };
+}
+
+export async function sendPasswordChangedAlert({ email, name }) {
+  // Une alerte non remise ne doit pas faire échouer le changement lui-même.
+  try {
+    await transporter.sendMail({ from: FROM, to: email, ...buildPasswordChangedAlert({ name }) });
+  } catch (error) {
+    console.error(error);
+  }
+}
+
+// Changement d'adresse : le lien part vers la NOUVELLE adresse, qui ne
+// remplace l'ancienne qu'une fois ce lien suivi.
+export function buildEmailChangeEmail({ name, token }) {
+  return {
+    subject: "Confirmez votre nouvelle adresse SunuSanté Famille",
+    html: accessButtonTemplate({
+      heading: `Bonjour ${escapeHtml(name)}`,
+      bodyHtml: `<p>Vous avez demandé à utiliser cette adresse pour votre compte SunuSanté Famille. Confirmez-la
+        avec le bouton ci-dessous : elle remplacera alors l'ancienne pour la connexion et les courriels.</p>`,
+      link: `${FRONTEND_URL}/confirmer-email/${token}`,
+      buttonLabel: "Confirmer cette adresse",
+      validityLabel: "Ce lien expire dans 24 heures et ne sert qu'une fois.",
+    }),
+  };
+}
+
+export async function sendEmailChangeEmail({ to, ...details }) {
+  await transporter.sendMail({ from: FROM, to, ...buildEmailChangeEmail(details) });
+}
+
+// Avis envoyé à l'ANCIENNE adresse quand le changement est demandé.
+export async function sendEmailChangeNotice({ to, name, newEmail }) {
+  try {
+    await transporter.sendMail({
+      from: FROM,
+      to,
+      subject: "Demande de changement d'adresse sur SunuSanté Famille",
+      html: accessButtonTemplate({
+        heading: `Bonjour ${escapeHtml(name)}`,
+        bodyHtml: `<p>Un changement d'adresse courriel a été demandé pour votre compte, vers
+          <strong>${escapeHtml(newEmail)}</strong>. Il ne prendra effet que si ce lien de confirmation est suivi.</p>
+          <p><strong>Si ce n'est pas vous</strong>, changez votre mot de passe dès maintenant.</p>`,
+        link: `${FRONTEND_URL}/mot-de-passe-oublie`,
+        buttonLabel: "Ce n'est pas moi : sécuriser mon compte",
+        validityLabel: "Si c'est bien vous, aucune action n'est nécessaire.",
+        footer: "",
+      }),
+    });
+  } catch (error) {
+    console.error(error);
+  }
+}
+
 // Courriel au médecin avec qui un dossier est partagé : le lien n'est transmis
 // que par ce canal, jamais affiché à la famille.
 export function buildDoctorShareEmail({ link, memberName, senderName, expiresAtLabel }) {

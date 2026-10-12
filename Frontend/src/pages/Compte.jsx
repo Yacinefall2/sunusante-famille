@@ -1,0 +1,315 @@
+import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { AppShell } from "../components/layout/AppShell";
+import { Modal } from "../components/ui/Modal";
+import { Button } from "../components/ui/Button";
+import { Input } from "../components/ui/Input";
+import { useAuth } from "../context/AuthContext";
+import { UserRound, Mail, KeyRound, Download, Trash2, Loader2, AlertTriangle, Clock } from "lucide-react";
+import { formatDate } from "../lib/utils";
+import toast from "react-hot-toast";
+
+const MIN_PASSWORD_LENGTH = 8;
+
+function Section({ icon: Icon, title, hint, children, danger }) {
+  return (
+    <section className={`bg-white rounded-2xl shadow-sm border p-6 ${danger ? "border-red-100" : "border-gray-100"}`}>
+      <div className="flex items-start gap-3 mb-4">
+        <div className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 ${danger ? "bg-red-50" : "bg-teal-50"}`}>
+          <Icon size={18} className={danger ? "text-red-500" : "text-teal-600"} />
+        </div>
+        <div>
+          <h3 className="font-bold text-gray-800">{title}</h3>
+          {hint && <p className="text-xs text-gray-500 mt-0.5">{hint}</p>}
+        </div>
+      </div>
+      {children}
+    </section>
+  );
+}
+
+async function send(url, method, body) {
+  const res = await fetch(url, {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || "Erreur");
+  return data;
+}
+
+export default function ComptePage() {
+  const { refreshUser } = useAuth();
+  const navigate = useNavigate();
+  const [account, setAccount] = useState(null);
+  const [name, setName] = useState("");
+  const [savingName, setSavingName] = useState(false);
+  const [emailForm, setEmailForm] = useState({ newEmail: "", password: "" });
+  const [savingEmail, setSavingEmail] = useState(false);
+  const [pwForm, setPwForm] = useState({ password: "", newPassword: "", confirm: "" });
+  const [savingPw, setSavingPw] = useState(false);
+  const [showDelete, setShowDelete] = useState(false);
+  const [deleteForm, setDeleteForm] = useState({ password: "", deleteMyFiche: false, confirmText: "" });
+  const [deleting, setDeleting] = useState(false);
+
+  const load = async () => {
+    const res = await fetch("/api/account");
+    if (res.ok) {
+      const data = await res.json();
+      setAccount(data);
+      setName(data.name);
+    }
+  };
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const saveName = async () => {
+    setSavingName(true);
+    try {
+      await send("/api/account/profile", "PUT", { name });
+      toast.success("Nom enregistré");
+      refreshUser();
+      load();
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setSavingName(false);
+    }
+  };
+
+  const changeEmail = async () => {
+    setSavingEmail(true);
+    try {
+      const data = await send("/api/account/email", "POST", emailForm);
+      toast.success(`Lien de confirmation envoyé à ${data.pendingEmail}`);
+      setEmailForm({ newEmail: "", password: "" });
+      load();
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setSavingEmail(false);
+    }
+  };
+
+  const pwTooShort = pwForm.newPassword.length > 0 && pwForm.newPassword.length < MIN_PASSWORD_LENGTH;
+  const pwMismatch = pwForm.confirm.length > 0 && pwForm.confirm !== pwForm.newPassword;
+  const pwReady = pwForm.password && pwForm.newPassword.length >= MIN_PASSWORD_LENGTH && pwForm.newPassword === pwForm.confirm;
+
+  const changePassword = async () => {
+    setSavingPw(true);
+    try {
+      await send("/api/account/password", "POST", { password: pwForm.password, newPassword: pwForm.newPassword });
+      toast.success("Mot de passe modifié : vos autres appareils ont été déconnectés");
+      setPwForm({ password: "", newPassword: "", confirm: "" });
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setSavingPw(false);
+    }
+  };
+
+  const deleteAccount = async () => {
+    setDeleting(true);
+    try {
+      await send("/api/account", "DELETE", { password: deleteForm.password, deleteMyFiche: deleteForm.deleteMyFiche });
+      toast.success("Votre compte a été supprimé");
+      await refreshUser();
+      navigate("/login");
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  if (!account) {
+    return (
+      <AppShell>
+        <div className="flex justify-center py-20">
+          <Loader2 className="animate-spin text-teal-600" size={36} />
+        </div>
+      </AppShell>
+    );
+  }
+
+  const blocking = account.families.filter((f) => f.isPrimaryAdmin && f.otherAccounts > 0);
+  const soleAdminOf = account.families.filter((f) => f.isPrimaryAdmin && f.otherAccounts === 0);
+
+  return (
+    <AppShell>
+      <div className="max-w-2xl space-y-5">
+        <div>
+          <h2 className="text-xl font-bold text-gray-800">Mon compte</h2>
+          <p className="text-sm text-gray-500">Compte créé le {formatDate(account.createdAt)}</p>
+        </div>
+
+        <Section icon={UserRound} title="Mon nom" hint="Affiché aux autres membres de la famille.">
+          <div className="flex flex-col sm:flex-row gap-3 sm:items-end">
+            <div className="flex-1">
+              <Input label="Nom" value={name} onChange={(e) => setName(e.target.value)} />
+            </div>
+            <Button onClick={saveName} loading={savingName} disabled={!name.trim() || name.trim() === account.name}>
+              Enregistrer
+            </Button>
+          </div>
+        </Section>
+
+        <Section icon={Mail} title="Adresse courriel" hint="Pour vous connecter et recevoir les rappels.">
+          <p className="text-sm text-gray-700 mb-3">
+            Adresse actuelle : <strong className="break-all">{account.email}</strong>
+          </p>
+          {account.pendingEmail && (
+            <p className="text-sm text-amber-800 bg-amber-50 border border-amber-100 rounded-xl px-3 py-2 mb-3 flex items-start gap-2">
+              <Clock size={15} className="mt-0.5 flex-shrink-0" />
+              <span>
+                En attente de confirmation : <strong className="break-all">{account.pendingEmail}</strong>. Cliquez sur le
+                lien reçu à cette adresse pour terminer le changement.
+              </span>
+            </p>
+          )}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Input
+              label="Nouvelle adresse"
+              type="email"
+              value={emailForm.newEmail}
+              onChange={(e) => setEmailForm((p) => ({ ...p, newEmail: e.target.value }))}
+              placeholder="vous@exemple.com"
+            />
+            <Input
+              label="Mot de passe actuel"
+              type="password"
+              autoComplete="current-password"
+              value={emailForm.password}
+              onChange={(e) => setEmailForm((p) => ({ ...p, password: e.target.value }))}
+            />
+          </div>
+          <p className="text-xs text-gray-500 mt-2">
+            Un lien de confirmation part vers la nouvelle adresse ; l'ancienne reste active jusqu'à ce qu'il soit suivi.
+          </p>
+          <Button
+            className="mt-3"
+            onClick={changeEmail}
+            loading={savingEmail}
+            disabled={!emailForm.newEmail.trim() || !emailForm.password}
+          >
+            Changer d'adresse
+          </Button>
+        </Section>
+
+        <Section icon={KeyRound} title="Mot de passe" hint="Changer de mot de passe déconnecte vos autres appareils.">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <Input
+              label="Mot de passe actuel"
+              type="password"
+              autoComplete="current-password"
+              value={pwForm.password}
+              onChange={(e) => setPwForm((p) => ({ ...p, password: e.target.value }))}
+            />
+            <Input
+              label="Nouveau"
+              type="password"
+              autoComplete="new-password"
+              value={pwForm.newPassword}
+              onChange={(e) => setPwForm((p) => ({ ...p, newPassword: e.target.value }))}
+              error={pwTooShort ? `${MIN_PASSWORD_LENGTH} caractères minimum` : undefined}
+            />
+            <Input
+              label="Confirmer"
+              type="password"
+              autoComplete="new-password"
+              value={pwForm.confirm}
+              onChange={(e) => setPwForm((p) => ({ ...p, confirm: e.target.value }))}
+              error={pwMismatch ? "Ne correspond pas" : undefined}
+            />
+          </div>
+          <Button className="mt-3" onClick={changePassword} loading={savingPw} disabled={!pwReady}>
+            Changer le mot de passe
+          </Button>
+        </Section>
+
+        <Section icon={Download} title="Mes données" hint="Une copie de votre compte et de votre fiche médicale, au format JSON.">
+          <a href="/api/account/export" download className="inline-block">
+            <Button variant="outline">
+              <Download size={15} />
+              Télécharger mes données
+            </Button>
+          </a>
+        </Section>
+
+        <Section icon={Trash2} title="Supprimer mon compte" hint="Action définitive." danger>
+          {blocking.length > 0 ? (
+            <p className="text-sm text-gray-700 bg-gray-50 rounded-xl p-3">
+              Vous administrez <strong>{blocking.map((f) => f.name).join(", ")}</strong>, qui compte d'autres comptes.
+              Retirez-les depuis « Comptes & invitations », ou supprimez l'espace, avant de supprimer votre compte.
+            </p>
+          ) : (
+            <Button variant="ghost" className="text-red-600 hover:bg-red-50" onClick={() => setShowDelete(true)}>
+              <Trash2 size={15} />
+              Supprimer mon compte
+            </Button>
+          )}
+        </Section>
+      </div>
+
+      <Modal open={showDelete} onClose={() => setShowDelete(false)} title="Supprimer mon compte">
+        <div className="space-y-4">
+          <div className="flex items-start gap-3 bg-red-50 border border-red-200 rounded-xl p-4 text-sm text-red-800">
+            <AlertTriangle size={18} className="flex-shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <p className="font-semibold">Votre compte sera supprimé définitivement.</p>
+              {soleAdminOf.length > 0 && (
+                <p>
+                  Vous êtes le seul compte de <strong>{soleAdminOf.map((f) => f.name).join(", ")}</strong> : l'espace, toutes
+                  ses fiches et tous ses documents seront supprimés aussi.
+                </p>
+              )}
+            </div>
+          </div>
+
+          <label className="flex items-start gap-3 p-3 rounded-xl border border-gray-200 cursor-pointer">
+            <input
+              type="checkbox"
+              className="mt-1 w-4 h-4"
+              checked={deleteForm.deleteMyFiche}
+              onChange={(e) => setDeleteForm((p) => ({ ...p, deleteMyFiche: e.target.checked }))}
+            />
+            <span className="text-sm text-gray-700">
+              <span className="font-semibold block">Effacer aussi ma fiche médicale</span>
+              Sinon, elle reste à la famille comme celle d'un proche sans compte. Possible seulement si vous êtes majeur(e).
+            </span>
+          </label>
+
+          <Input
+            label="Mot de passe actuel"
+            type="password"
+            autoComplete="current-password"
+            value={deleteForm.password}
+            onChange={(e) => setDeleteForm((p) => ({ ...p, password: e.target.value }))}
+          />
+          <Input
+            label="Tapez SUPPRIMER pour confirmer"
+            value={deleteForm.confirmText}
+            onChange={(e) => setDeleteForm((p) => ({ ...p, confirmText: e.target.value }))}
+          />
+
+          <div className="flex gap-3 pt-2">
+            <Button variant="ghost" onClick={() => setShowDelete(false)} className="flex-1">
+              Annuler
+            </Button>
+            <Button
+              onClick={deleteAccount}
+              loading={deleting}
+              disabled={!deleteForm.password || deleteForm.confirmText.trim().toUpperCase() !== "SUPPRIMER"}
+              className="flex-1 bg-red-600 hover:bg-red-700"
+            >
+              Supprimer définitivement
+            </Button>
+          </div>
+        </div>
+      </Modal>
+    </AppShell>
+  );
+}

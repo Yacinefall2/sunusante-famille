@@ -5,6 +5,7 @@ import { members, familyMemberships, documentRoles, relayTasks, users } from "..
 import { requireFamilyMembership } from "../middleware/auth.js";
 import { canRead, canWriteMember, getFamilyAccess, setDocumentRole } from "../lib/documentAccess.js";
 import { ACCOUNT_MIN_AGE, GENDERS, KINSHIPS, ageOn, effectiveRole } from "../lib/family.js";
+import { documentFilesOf, removeFiles } from "../lib/documentFiles.js";
 
 // Axe 3 du modèle d'acteurs — statuts valides pour une fiche membre.
 const VALID_STATUSES = ["connecte_autonome", "connecte_assiste", "adolescent", "mineur_gere", "non_connecte"];
@@ -335,7 +336,9 @@ router.delete(
           error: "Cette fiche est celle d'un compte de la famille : retirez d'abord ce compte de l'espace",
         });
       }
+      const files = await documentFilesOf([id]);
       await db.delete(members).where(eq(members.id, id));
+      await removeFiles(files);
       res.json({ success: true });
     } catch (error) {
       console.error(error);

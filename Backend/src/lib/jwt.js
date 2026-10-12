@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import jwt from "jsonwebtoken";
 
 const ACCESS_SECRET = process.env.JWT_ACCESS_SECRET;
@@ -20,15 +21,17 @@ export function signAccessToken(user) {
 }
 
 export function signRefreshToken(user) {
-  return jwt.sign({ sub: user.id }, REFRESH_SECRET, {
+  // jti aléatoire : deux sessions ouvertes dans la même seconde ont des
+  // jetons distincts (sinon identiques, donc révoqués ensemble).
+  return jwt.sign({ sub: user.id, jti: crypto.randomUUID() }, REFRESH_SECRET, {
     expiresIn: Math.floor(REFRESH_TOKEN_TTL_MS / 1000),
   });
 }
 
 export function verifyAccessToken(token) {
-  return jwt.verify(token, ACCESS_SECRET);
+  return jwt.verify(token, ACCESS_SECRET, { algorithms: ["HS256"] });
 }
 
 export function verifyRefreshToken(token) {
-  return jwt.verify(token, REFRESH_SECRET);
+  return jwt.verify(token, REFRESH_SECRET, { algorithms: ["HS256"] });
 }

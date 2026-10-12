@@ -4,6 +4,8 @@ import { db } from "../db/index.js";
 import { families, familyMemberships, pendingInvitations, members, users } from "../db/schema.js";
 import { requireAuth, requireFamilyMembership, requireVerifiedEmail } from "../middleware/auth.js";
 import { generateToken } from "../lib/token.js";
+import { hashToken } from "../lib/session.js";
+import { QUOTA_MESSAGE, overDailyQuota } from "../lib/sendQuota.js";
 import { sendInvitationEmail } from "../lib/mailer.js";
 import { DOCUMENT_ROLES, canManageRoles, canWriteMember, setDocumentRole } from "../lib/documentAccess.js";
 import { ACCOUNT_MIN_AGE, ageOn } from "../lib/family.js";
@@ -12,6 +14,7 @@ const router = Router();
 
 const INVITATION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 jours
 const ALLOWED_ROLES = ["parent", "adult", "dependent"];
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const MAX_PARENTS = 2;
 
 // Créer une invitation — réservé aux Parents. Le rôle d'espace ET le rôle de
@@ -26,11 +29,13 @@ router.post(
       const { email, linkedMemberId, documentMemberId, documentRole } = req.body;
       // « Membre » : son niveau (adolescent ou adulte) se déduit de l'âge de sa fiche.
       const role = req.body.role === "member" ? "adult" : req.body.role;
-      if (!email?.trim() || !ALLOWED_ROLES.includes(role)) {
+      const normalizedEmail = String(email ?? "").toLowerCase().trim();
+      if (!EMAIL_RE.test(normalizedEmail) || normalizedEmail.length > 255 || !ALLOWED_ROLES.includes(role)) {
         return res.status(400).json({ error: "Email et rôle valides requis" });
       }
-
-      const normalizedEmail = email.toLowerCase().trim();
+      if (await overDailyQuota(pendingInvitations, pendingInvitations.invitedByUserId, req.user.id)) {
+        return res.status(429).json({ error: QUOTA_MESSAGE });
+      }
 
       const [family] = await db.select().from(families).where(eq(families.id, req.familyId));
       if (!family) return res.status(404).json({ error: "Famille introuvable" });
@@ -115,7 +120,8 @@ router.post(
           linkedMemberId: validatedLinkedMemberId,
           documentMemberId: validatedDocumentMemberId,
           documentRole: validatedDocumentRole,
-          token,
+          // Seule l'empreinte est conservée ; le jeton ne part que par courriel.
+          token: hashToken(token),
           invitedByUserId: req.user.id,
           expiresAt: new Date(Date.now() + INVITATION_TTL_MS),
         })
@@ -137,7 +143,8 @@ router.post(
         documentRole: validatedDocumentRole,
       });
 
-      res.status(201).json(invitation);
+      const { token: _token, ...publicInvitation } = invitation;
+      res.status(201).json(publicInvitation);
     } catch (error) {
       console.error(error);
       res.status(500).json({ error: "Erreur serveur" });
@@ -157,7 +164,7 @@ router.get(
         .select()
         .from(pendingInvitations)
         .where(and(eq(pendingInvitations.familyId, req.familyId), isNull(pendingInvitations.acceptedAt)));
-      res.json(rows);
+      res.json(rows.map(({ token: _token, ...rest }) => rest));
     } catch (error) {
       console.error(error);
       res.status(500).json({ error: "Erreur serveur" });
@@ -169,7 +176,7 @@ router.get(
 router.get("/:token", async (req, res) => {
   try {
     const { token } = req.params;
-    const [invitation] = await db.select().from(pendingInvitations).where(eq(pendingInvitations.token, token));
+    const [invitation] = await db.select().from(pendingInvitations).where(eq(pendingInvitations.token, hashToken(token)));
     if (!invitation) return res.status(404).json({ error: "Invitation introuvable" });
 
     const [family] = await db.select().from(families).where(eq(families.id, invitation.familyId));
@@ -238,7 +245,7 @@ router.delete("/", requireAuth, requireVerifiedEmail, async (req, res) => {
 router.post("/:token/accept", requireAuth, async (req, res) => {
   try {
     const { token } = req.params;
-    const [invitation] = await db.select().from(pendingInvitations).where(eq(pendingInvitations.token, token));
+    const [invitation] = await db.select().from(pendingInvitations).where(eq(pendingInvitations.token, hashToken(token)));
     if (!invitation) return res.status(404).json({ error: "Invitation introuvable" });
     if (invitation.acceptedAt) return res.status(409).json({ error: "Invitation déjà utilisée" });
     if (invitation.expiresAt < new Date()) return res.status(410).json({ error: "Invitation expirée" });

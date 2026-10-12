@@ -1,8 +1,9 @@
 import { Router } from "express";
 import { eq, inArray, and } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { families, familyMemberships } from "../db/schema.js";
+import { families, familyMemberships, members } from "../db/schema.js";
 import { requireFamilyMembership } from "../middleware/auth.js";
+import { documentFilesOf, removeFiles } from "../lib/documentFiles.js";
 
 const router = Router();
 
@@ -77,7 +78,10 @@ router.delete(
           error: "Seul l'administrateur qui a créé l'espace familial peut le supprimer",
         });
       }
+      const memberIds = (await db.select({ id: members.id }).from(members).where(eq(members.familyId, req.familyId))).map((m) => m.id);
+      const files = await documentFilesOf(memberIds);
       await db.delete(families).where(eq(families.id, req.familyId));
+      await removeFiles(files);
       res.json({ success: true });
     } catch (error) {
       console.error(error);

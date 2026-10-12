@@ -181,6 +181,9 @@ export const users = pgTable("users", {
   // cette adresse n'a pas été vérifiée via le lien reçu par courriel —
   // règle transverse §10, sans exception (inscription comme invitation).
   emailVerified: boolean("email_verified").default(false).notNull(),
+  // Dernier changement de mot de passe : toute session ouverte avant est
+  // refusée (requireAuth), y compris un jeton d'accès encore valide.
+  passwordChangedAt: timestamp("password_changed_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -236,6 +239,22 @@ export const passwordResetTokens = pgTable("password_reset_tokens", {
   userId: integer("user_id")
     .references(() => users.id, { onDelete: "cascade" })
     .notNull(),
+  tokenHash: varchar("token_hash", { length: 64 }).notNull().unique(),
+  expiresAt: timestamp("expires_at").notNull(),
+  consumedAt: timestamp("consumed_at"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+// ── Changement d'adresse courriel ────────────────────────────────────────────
+// La nouvelle adresse ne remplace l'ancienne qu'une fois le lien envoyé à
+// celle-ci suivi (preuve qu'elle appartient bien à la personne). Valable
+// 24 heures, à usage unique, empreinte seule conservée.
+export const emailChangeTokens = pgTable("email_change_tokens", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id")
+    .references(() => users.id, { onDelete: "cascade" })
+    .notNull(),
+  newEmail: varchar("new_email", { length: 255 }).notNull(),
   tokenHash: varchar("token_hash", { length: 64 }).notNull().unique(),
   expiresAt: timestamp("expires_at").notNull(),
   consumedAt: timestamp("consumed_at"),

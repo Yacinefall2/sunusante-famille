@@ -183,9 +183,16 @@ describe("Fichiers téléversés", () => {
     });
 
     expect((await as(f.fatou).get(`/uploads/${filename}`)).status).toBe(403);
-    const ok = await as(f.awa).get(`/uploads/${filename}`);
+    const ok = await as(f.awa)
+      .get(`/uploads/${filename}`)
+      .buffer(true)
+      .parse((res, cb) => {
+        let data = "";
+        res.on("data", (c) => (data += c));
+        res.on("end", () => cb(null, data));
+      });
     expect(ok.status).toBe(200);
-    expect(ok.text).toBe("ordonnance");
+    expect(ok.body).toBe("ordonnance");
   });
 });
 

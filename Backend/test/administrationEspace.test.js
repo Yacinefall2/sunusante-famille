@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../src/db/index.js";
 import { documentRoles, familyMemberships, pendingInvitations } from "../src/db/schema.js";
+import { hashToken } from "../src/lib/session.js";
 import {
   resetDatabase,
   createUser,
@@ -103,7 +104,7 @@ describe("Invitations", () => {
       familyId: familyB.id,
       email: user.email,
       role: "adult",
-      token: "jeton-invitation-test",
+      token: hashToken("jeton-invitation-test"),
       expiresAt: new Date(Date.now() + 60_000),
     });
 
@@ -120,7 +121,7 @@ describe("Invitations", () => {
       familyId: family.id,
       email: user.email,
       role: "adult",
-      token: "jeton-invitation-ok",
+      token: hashToken("jeton-invitation-ok"),
       expiresAt: new Date(Date.now() + 60_000),
     });
 

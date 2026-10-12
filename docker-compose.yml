@@ -9,8 +9,10 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-santefamille}
     volumes:
       - db_data:/var/lib/postgresql/data
+    # Accessible depuis cette machine seulement (outils de débogage) : jamais
+    # depuis le réseau, où le mot de passe par défaut serait une porte ouverte.
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-santefamille}"]
       interval: 5s
@@ -31,11 +33,14 @@ services:
     tmpfs:
       - /var/lib/postgresql/data
     ports:
-      - "15432:5432"
+      - "127.0.0.1:15432:5432"
 
+  # Outils de développement, démarrés seulement avec le profil « dev » :
+  # docker compose --profile dev up. Accessibles depuis cette machine seulement.
   pgadmin:
     image: dpage/pgadmin4
     container_name: santefamille-pgadmin
+    profiles: ["dev"]
     restart: unless-stopped
     environment:
       PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@santefamille.com}
@@ -44,15 +49,18 @@ services:
       db:
         condition: service_healthy
     ports:
-      - "5050:80"
+      - "127.0.0.1:5050:80"
 
+  # Boîte de test : elle montre tous les liens envoyés (réinitialisation,
+  # invitations...), d'où le profil « dev » et l'accès local uniquement.
   mailhog:
     image: mailhog/mailhog
     container_name: santefamille-mailhog
+    profiles: ["dev"]
     restart: unless-stopped
     ports:
-      - "1025:1025" # serveur SMTP (utilisé par le backend)
-      - "8025:8025" # interface web pour consulter les emails "envoyés"
+      - "127.0.0.1:1025:1025" # serveur SMTP (utilisé par le backend)
+      - "127.0.0.1:8025:8025" # interface web pour consulter les emails "envoyés"
 
   backend:
     build: ./Backend
@@ -77,10 +85,10 @@ services:
     depends_on:
       db:
         condition: service_healthy
-      mailhog:
-        condition: service_started
+    # Le navigateur passe par le frontend (/api) : l'API n'est ouverte
+    # directement que sur cette machine.
     ports:
-      - "4000:4000"
+      - "127.0.0.1:4000:4000"
     volumes:
       - uploads_data:/app/uploads
 
