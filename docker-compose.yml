@@ -10,7 +10,7 @@ services:
     volumes:
       - db_data:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "${DB_HOST_PORT:-5432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-santefamille}"]
       interval: 5s
@@ -44,15 +44,15 @@ services:
       db:
         condition: service_healthy
     ports:
-      - "5050:80"
+      - "${PGADMIN_PORT:-5050}:80"
 
   mailhog:
     image: mailhog/mailhog
     container_name: santefamille-mailhog
     restart: unless-stopped
     ports:
-      - "1025:1025" # serveur SMTP (utilisé par le backend)
-      - "8025:8025" # interface web pour consulter les emails "envoyés"
+      - "${MAILHOG_SMTP_PORT:-1025}:1025" # serveur SMTP (utilisé par le backend)
+      - "${MAILHOG_UI_PORT:-8025}:8025" # interface web pour consulter les emails "envoyés"
 
   backend:
     build: ./Backend
@@ -80,7 +80,7 @@ services:
       mailhog:
         condition: service_started
     ports:
-      - "4000:4000"
+      - "${BACKEND_PORT:-4000}:4000"
     volumes:
       - uploads_data:/app/uploads
 
@@ -110,7 +110,7 @@ services:
     depends_on:
       - backend
     ports:
-      - "8080:80"
+      - "${FRONTEND_PORT:-8080}:80"
 
 volumes:
   db_data:
