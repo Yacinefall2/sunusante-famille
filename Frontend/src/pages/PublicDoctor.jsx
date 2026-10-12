@@ -1,9 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
-import { Heart, Loader2, Printer, Droplets, AlertTriangle, Stethoscope, Pill, Syringe, FileText, ExternalLink, Lock, ShieldX, Download } from "lucide-react";
+import { Heart, Loader2, Printer, Droplets, AlertTriangle, Stethoscope, Pill, Syringe, FileText, ExternalLink, Lock, ShieldX } from "lucide-react";
 import { DOCUMENT_TYPES, formatDate, formatDateTime } from "../lib/utils";
-import { downloadDoctorPdf } from "../lib/doctorPdf";
-import toast from "react-hot-toast";
 
 // Vue publique, en lecture seule, du dossier partagé avec un professionnel
 // de santé (lien à usage unique). Accessible sans compte.
@@ -55,19 +53,6 @@ export default function PublicDoctorPage() {
   // Un seul appel au chargement : le lien est à usage unique (garde contre
   // le double montage de React.StrictMode en développement).
   const requested = useRef(false);
-  const [exporting, setExporting] = useState(false);
-
-  const exportPdf = async () => {
-    setExporting(true);
-    try {
-      await downloadDoctorPdf(data);
-    } catch (e) {
-      console.error(e);
-      toast.error("Le PDF n'a pas pu être généré");
-    } finally {
-      setExporting(false);
-    }
-  };
 
   useEffect(() => {
     if (requested.current) return;
@@ -155,18 +140,10 @@ export default function PublicDoctorPage() {
           <div className="mt-4 flex flex-wrap gap-2 print:hidden">
             <button
               onClick={() => window.print()}
-              className="inline-flex items-center gap-2 bg-white border border-teal-600 text-teal-700 hover:bg-teal-50 font-semibold rounded-xl px-4 py-2.5 text-sm"
+              className="inline-flex items-center gap-2 bg-teal-600 hover:bg-teal-700 text-white font-semibold rounded-xl px-4 py-2.5 text-sm shadow-sm"
             >
               <Printer size={16} />
               Imprimer
-            </button>
-            <button
-              onClick={exportPdf}
-              disabled={exporting}
-              className="inline-flex items-center gap-2 bg-teal-600 hover:bg-teal-700 disabled:opacity-60 text-white font-semibold rounded-xl px-4 py-2.5 text-sm shadow-sm"
-            >
-              {exporting ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
-              Télécharger en PDF
             </button>
           </div>
         </section>

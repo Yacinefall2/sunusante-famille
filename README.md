@@ -43,10 +43,12 @@ personne et à l'administrateur familial. Fuseau de référence : `APP_TIMEZONE`
 
 Page « Partage & urgence » (`/partage`) :
 
-- **Lien médecin** (2 h, 24 h ou 7 jours, révocable) : à usage unique, la
-  première ouverture le réserve à l'appareil du médecin jusqu'à l'expiration ;
-  une ouverture depuis un autre appareil est refusée et signalée. Vue en
-  lecture seule `/medecin/:jeton`, imprimable et téléchargeable en PDF.
+- **Lien médecin** (2 h, 24 h ou 7 jours) : envoyé par courriel à l'adresse
+  du médecin saisie à la création, avec un bouton d'accès ; il n'est jamais
+  affiché à la famille. Si le courriel ne part pas, le lien est supprimé. À
+  usage unique : la première ouverture le réserve à l'appareil du médecin
+  jusqu'à l'expiration ; une ouverture depuis un autre appareil est refusée et
+  signalée. Vue en lecture seule `/medecin/:jeton`, imprimable (pas d'export PDF).
 - **Fiche d'urgence** : rien n'est publié par défaut, le titulaire coche chaque
   information. QR code vers `/urgence/:jeton` (régénérable : l'ancien cesse de
   fonctionner), carte imprimable et image d'écran de verrouillage avec les

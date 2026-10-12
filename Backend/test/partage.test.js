@@ -1,14 +1,23 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import request from "supertest";
 import { eq } from "drizzle-orm";
 import app from "../src/app.js";
 import { db } from "../src/db/index.js";
 import { doctorShares, documents, emergencyCardViews, members, notifications, treatmentMedications, treatments, vaccinations } from "../src/db/schema.js";
 import { resetDatabase, createUser, createFamily, addMembership, createMember, linkMember, grantRole, as } from "./helpers.js";
+import { buildDoctorShareEmail, sendDoctorShareEmail } from "../src/lib/mailer.js";
+
+// Le lien médecin ne part que par courriel : l'envoi est intercepté pour
+// récupérer le lien comme le ferait le médecin.
+vi.mock("../src/lib/mailer.js", async (importOriginal) => ({
+  ...(await importOriginal()),
+  sendDoctorShareEmail: vi.fn(async () => {}),
+}));
 
 // Phase F : lien médecin à usage unique et fiche d'urgence.
 let f;
 beforeEach(async () => {
+  vi.mocked(sendDoctorShareEmail).mockClear();
   await resetDatabase();
   const family = await createFamily("Fall");
   const [papa, maman, medoune, toutou, cousin] = await Promise.all(
@@ -49,8 +58,10 @@ beforeEach(async () => {
 const notifsOf = async (user, category) =>
   (await db.select().from(notifications).where(eq(notifications.userId, user.id))).filter((n) => !category || n.category === category);
 
-const createShare = (user, body) => as(user).post("/api/doctor-shares").send(body);
-const tokenOf = (url) => url.split("/medecin/")[1];
+const DOCTOR = "dr.ndiaye@clinique.sn";
+const createShare = (user, body) => as(user).post("/api/doctor-shares").send({ doctorEmail: DOCTOR, ...body });
+// Jeton du dernier lien envoyé par courriel.
+const sentToken = () => vi.mocked(sendDoctorShareEmail).mock.lastCall[0].link.split("/medecin/")[1];
 
 describe("Lien médecin — création", () => {
   it("titulaire, parent et gestionnaire peuvent créer ; pas l'adolescente ni un autre adulte", async () => {
@@ -63,6 +74,45 @@ describe("Lien médecin — création", () => {
     expect((await createShare(f.papa, { memberId: f.fMaman.id })).status).toBe(403);
   });
 
+  it("le lien part par courriel au médecin et n'est jamais renvoyé à la famille", async () => {
+    const res = await createShare(f.papa, { memberId: f.fMedoune.id, doctorEmail: "  Dr.Ndiaye@Clinique.SN " });
+    expect(res.status).toBe(201);
+    expect(res.body).not.toHaveProperty("url");
+    expect(res.body.doctorEmail).toBe(DOCTOR);
+    expect(JSON.stringify(res.body)).not.toContain(sentToken());
+    const mail = vi.mocked(sendDoctorShareEmail).mock.lastCall[0];
+    expect(mail).toMatchObject({ to: DOCTOR, memberName: "Medoune Test", senderName: "Mouhamed" });
+    expect((await as(f.papa).get(`/api/doctor-shares?memberId=${f.fMedoune.id}`)).body[0].doctorEmail).toBe(DOCTOR);
+  });
+
+  it("adresse du médecin absente ou invalide : refusé, rien n'est envoyé", async () => {
+    expect((await createShare(f.papa, { memberId: f.fMedoune.id, doctorEmail: "" })).status).toBe(400);
+    expect((await createShare(f.papa, { memberId: f.fMedoune.id, doctorEmail: "pas-une-adresse" })).status).toBe(400);
+    expect(sendDoctorShareEmail).not.toHaveBeenCalled();
+    expect(await db.select().from(doctorShares)).toHaveLength(0);
+  });
+
+  it("courriel non envoyé : le lien est supprimé et la famille est prévenue", async () => {
+    vi.mocked(sendDoctorShareEmail).mockRejectedValueOnce(new Error("SMTP indisponible"));
+    const res = await createShare(f.papa, { memberId: f.fMedoune.id });
+    expect(res.status).toBe(502);
+    expect(await db.select().from(doctorShares)).toHaveLength(0);
+    expect(await notifsOf(f.medoune, "doctor_share")).toHaveLength(0);
+  });
+
+  it("courriel : bouton d'accès, nom du patient échappé", () => {
+    const mail = buildDoctorShareEmail({
+      link: "https://app/medecin/abc",
+      memberName: "<b>Medoune</b> Fall",
+      senderName: "Mouhamed",
+      expiresAtLabel: "13/10/2026 à 10:00",
+    });
+    expect(mail.html).toContain('href="https://app/medecin/abc"');
+    expect(mail.html).toContain("Consulter le dossier");
+    expect(mail.html).toContain("13/10/2026 à 10:00");
+    expect(mail.html).not.toContain("<b>Medoune</b>");
+  });
+
   it("durées 2 h, 24 h, 7 j ; le titulaire est prévenu ; seule l'empreinte est stockée", async () => {
     const res = await createShare(f.papa, { memberId: f.fMedoune.id, duration: "24h" });
     expect(res.body.state).toBe("pending");
@@ -71,9 +121,10 @@ describe("Lien médecin — création", () => {
     expect(hours).toBeLessThanOrEqual(24);
     expect((await createShare(f.papa, { memberId: f.fMedoune.id, duration: "1an" })).status).toBe(400);
     const [row] = await db.select().from(doctorShares);
-    expect(row.tokenHash).not.toBe(tokenOf(res.body.url));
+    expect(row.tokenHash).not.toBe(sentToken());
     const n = await notifsOf(f.medoune, "doctor_share");
-    expect(n[0].title).toContain("Lien médecin créé");
+    expect(n[0].title).toContain("Lien médecin envoyé");
+    expect(n[0].body).toContain(DOCTOR);
   });
 
   it("pour un proche sans compte, ce sont ses gestionnaires qui sont prévenus", async () => {
@@ -96,8 +147,8 @@ describe("Lien médecin — ouverture à usage unique", () => {
     const [t] = await db.insert(treatments).values({ memberId: f.fMedoune.id, disease: "Asthme", isActive: true }).returning();
     await db.insert(treatmentMedications).values({ treatmentId: t.id, name: "Ventoline" });
     await db.insert(vaccinations).values({ memberId: f.fMedoune.id, vaccineName: "BCG", dateAdministered: "2005-01-01" });
-    const { body } = await createShare(f.papa, { memberId: f.fMedoune.id, includeTreatments: true });
-    const token = tokenOf(body.url);
+    await createShare(f.papa, { memberId: f.fMedoune.id, includeTreatments: true });
+    const token = sentToken();
 
     const medecin = request.agent(app);
     const first = await medecin.get(`/api/public/doctor/${token}`);
@@ -118,20 +169,16 @@ describe("Lien médecin — ouverture à usage unique", () => {
     expect(titles.some((x) => x.includes("Ouverture refusée"))).toBe(true);
   });
 
-  it("révocation : le médecin perd l'accès immédiatement", async () => {
+  it("plus de révocation depuis l'application", async () => {
     const { body } = await createShare(f.medoune, { memberId: f.fMedoune.id });
-    const medecin = request.agent(app);
-    expect((await medecin.get(`/api/public/doctor/${tokenOf(body.url)}`)).status).toBe(200);
-    expect((await as(f.medoune).post(`/api/doctor-shares/${body.id}/revoke`)).body.state).toBe("revoked");
-    const after = await medecin.get(`/api/public/doctor/${tokenOf(body.url)}`);
-    expect(after.status).toBe(410);
-    expect(after.body.reason).toBe("revoked");
+    expect((await as(f.medoune).post(`/api/doctor-shares/${body.id}/revoke`)).status).toBe(404);
+    expect((await request.agent(app).get(`/api/public/doctor/${sentToken()}`)).status).toBe(200);
   });
 
   it("expiration et lien inconnu", async () => {
-    const { body } = await createShare(f.medoune, { memberId: f.fMedoune.id });
+    await createShare(f.medoune, { memberId: f.fMedoune.id });
     await db.update(doctorShares).set({ expiresAt: new Date(Date.now() - 1000) });
-    expect((await request(app).get(`/api/public/doctor/${tokenOf(body.url)}`)).body.reason).toBe("expired");
+    expect((await request(app).get(`/api/public/doctor/${sentToken()}`)).body.reason).toBe("expired");
     expect((await request(app).get(`/api/public/doctor/inconnu`)).status).toBe(404);
   });
 

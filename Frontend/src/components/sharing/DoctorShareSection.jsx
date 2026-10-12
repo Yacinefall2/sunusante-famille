@@ -2,13 +2,16 @@ import { useEffect, useState } from "react";
 import { Modal } from "../ui/Modal";
 import { Button } from "../ui/Button";
 import { Badge } from "../ui/Badge";
-import { QrImage } from "./QrImage";
-import { Stethoscope, Plus, Loader2, Copy, Share2, AlertTriangle, Ban, Clock, User, FileText } from "lucide-react";
+import { Input } from "../ui/Input";
+import { Stethoscope, Plus, Loader2, MailCheck, Mail, Clock, User, FileText } from "lucide-react";
 import { SHARE_DURATIONS, shareContentsLabel, shareStateInfo } from "../../lib/partage";
 import { formatDate, formatDateTime } from "../../lib/utils";
 import toast from "react-hot-toast";
 
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 const defaultForm = {
+  doctorEmail: "",
   duration: "2h",
   includeEssentials: true,
   includeTreatments: false,
@@ -36,9 +39,8 @@ export function DoctorShareSection({ member, canManage }) {
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState(defaultForm);
   const [saving, setSaving] = useState(false);
-  // Lien tout juste créé : renvoyé une seule fois par le serveur.
+  // Lien tout juste envoyé au médecin (le lien lui-même n'est jamais affiché).
   const [created, setCreated] = useState(null);
-  const [revoking, setRevoking] = useState(null);
 
   const load = async () => {
     setLoading(true);
@@ -90,7 +92,13 @@ export function DoctorShareSection({ member, canManage }) {
 
   const nothingChecked = !form.includeEssentials && !form.includeTreatments && !form.includeVaccinations && form.documentIds.length === 0;
 
+  const emailValid = EMAIL_RE.test(form.doctorEmail.trim());
+
   const create = async () => {
+    if (!emailValid) {
+      toast.error("Renseignez l'adresse courriel du médecin");
+      return;
+    }
     if (nothingChecked) {
       toast.error("Cochez au moins un élément à partager");
       return;
@@ -100,12 +108,12 @@ export function DoctorShareSection({ member, canManage }) {
       const res = await fetch("/api/doctor-shares", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ memberId: member.id, ...form }),
+        body: JSON.stringify({ memberId: member.id, ...form, doctorEmail: form.doctorEmail.trim() }),
       });
       if (res.ok) {
         const data = await res.json();
         setCreated(data);
-        toast.success("Lien médecin créé");
+        toast.success("Lien envoyé au médecin");
         load();
       } else {
         const err = await res.json().catch(() => ({}));
@@ -118,45 +126,6 @@ export function DoctorShareSection({ member, canManage }) {
     }
   };
 
-  const copyLink = async () => {
-    try {
-      await navigator.clipboard.writeText(created.url);
-      toast.success("Lien copié");
-    } catch {
-      toast.error("Copie impossible : sélectionnez le lien manuellement");
-    }
-  };
-
-  const shareLink = async () => {
-    const text = `Dossier médical de ${member.firstName} ${member.lastName} (SunuSanté Famille) — lien à usage unique, à ouvrir par le médecin :`;
-    if (navigator.share) {
-      try {
-        await navigator.share({ title: "Dossier médical partagé", text, url: created.url });
-        return;
-      } catch (e) {
-        if (e?.name === "AbortError") return;
-      }
-    }
-    window.open(`https://wa.me/?text=${encodeURIComponent(`${text} ${created.url}`)}`, "_blank", "noopener");
-  };
-
-  const revoke = async (share) => {
-    if (!confirm("Révoquer ce lien ? Le médecin ne pourra plus consulter le dossier avec ce lien.")) return;
-    setRevoking(share.id);
-    try {
-      const res = await fetch(`/api/doctor-shares/${share.id}/revoke`, { method: "POST" });
-      if (res.ok) {
-        toast.success("Lien révoqué");
-        load();
-      } else {
-        const err = await res.json().catch(() => ({}));
-        toast.error(err.error || "Erreur lors de la révocation");
-      }
-    } finally {
-      setRevoking(null);
-    }
-  };
-
   return (
     <section className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
       <div className="px-6 py-4 bg-gradient-to-r from-blue-50 to-teal-50 border-b border-blue-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -166,13 +135,13 @@ export function DoctorShareSection({ member, canManage }) {
           </div>
           <div>
             <h3 className="font-bold text-gray-800">Partager avec un médecin</h3>
-            <p className="text-xs text-gray-500">Un lien temporaire, à usage unique, en lecture seule.</p>
+            <p className="text-xs text-gray-500">Un lien temporaire, à usage unique, en lecture seule, envoyé par courriel au médecin.</p>
           </div>
         </div>
         {canManage && (
           <Button onClick={openForm}>
             <Plus size={16} />
-            Créer un lien médecin
+            Envoyer un lien médecin
           </Button>
         )}
       </div>
@@ -193,7 +162,6 @@ export function DoctorShareSection({ member, canManage }) {
           <div className="space-y-3">
             {shares.map((s) => {
               const st = shareStateInfo(s);
-              const active = s.state === "pending" || s.state === "opened";
               return (
                 <div key={s.id} className="flex flex-col sm:flex-row sm:items-center gap-3 bg-gray-50 rounded-xl p-4">
                   <div className="flex-1 min-w-0 space-y-1">
@@ -201,6 +169,12 @@ export function DoctorShareSection({ member, canManage }) {
                       <Badge variant={st.variant}>{st.label}</Badge>
                       <span className="text-xs text-gray-500">Créé le {formatDateTime(s.createdAt)}</span>
                     </div>
+                    {s.doctorEmail && (
+                      <p className="text-sm font-semibold text-gray-800 flex items-center gap-1.5 min-w-0">
+                        <Mail size={13} className="text-blue-500 flex-shrink-0" />
+                        <span className="truncate">{s.doctorEmail}</span>
+                      </p>
+                    )}
                     <p className="text-sm text-gray-700">{shareContentsLabel(s)}</p>
                     <div className="flex flex-wrap gap-3 text-xs text-gray-500">
                       <span className="flex items-center gap-1">
@@ -217,18 +191,6 @@ export function DoctorShareSection({ member, canManage }) {
                       {s.revokedAt && <span>Révoqué le {formatDateTime(s.revokedAt)}</span>}
                     </div>
                   </div>
-                  {active && (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="text-red-600 hover:bg-red-50 flex-shrink-0"
-                      loading={revoking === s.id}
-                      onClick={() => revoke(s)}
-                    >
-                      <Ban size={14} />
-                      Révoquer
-                    </Button>
-                  )}
                 </div>
               );
             })}
@@ -236,49 +198,32 @@ export function DoctorShareSection({ member, canManage }) {
         )}
       </div>
 
-      <Modal open={showForm} onClose={closeForm} title={created ? "Lien médecin créé" : "Créer un lien médecin"} size="lg">
+      <Modal open={showForm} onClose={closeForm} title={created ? "Lien envoyé au médecin" : "Envoyer un lien médecin"} size="lg">
         {created ? (
           <div className="space-y-5">
-            <div className="flex items-start gap-3 bg-red-50 border border-red-200 rounded-xl p-4 text-sm text-red-800">
-              <AlertTriangle size={18} className="flex-shrink-0 mt-0.5" />
-              <p className="font-semibold">
-                Ce lien ne s'ouvre qu'une seule fois, sur un seul appareil : celui du médecin. Ne l'ouvrez pas vous-même.
-                Il ne sera plus affiché ensuite.
+            <div className="flex flex-col items-center text-center gap-3 py-2">
+              <div className="w-16 h-16 bg-emerald-50 rounded-2xl flex items-center justify-center">
+                <MailCheck size={30} className="text-emerald-600" />
+              </div>
+              <p className="text-sm text-gray-700">
+                Un courriel avec un bouton d'accès au dossier de <strong>{member.firstName}</strong> a été envoyé à
               </p>
+              <p className="text-base font-bold text-gray-900 break-all">{created.doctorEmail}</p>
             </div>
 
-            <div className="flex flex-col items-center gap-2">
-              <QrImage value={created.url} size={220} className="rounded-xl border border-gray-200 p-2" alt="QR code du lien médecin" />
-              <p className="text-xs text-gray-500 text-center">Le médecin peut scanner ce QR code avec son téléphone.</p>
-            </div>
-
-            <div>
-              <p className="text-sm font-semibold text-gray-700 mb-1.5">Lien à transmettre au médecin</p>
-              <input
-                readOnly
-                value={created.url}
-                onFocus={(e) => e.target.select()}
-                className="w-full px-3 py-2.5 rounded-xl border border-gray-200 bg-gray-50 text-xs text-gray-700 font-mono"
-              />
+            <div className="bg-blue-50 border border-blue-100 rounded-xl p-4 text-sm text-blue-900 space-y-1">
+              <p>Le lien ne s'ouvre qu'une seule fois, sur un seul appareil : celui du médecin.</p>
+              <p>Valable jusqu'au {formatDateTime(created.expiresAt)} · {shareContentsLabel(created)}</p>
             </div>
 
             <p className="text-xs text-gray-500">
-              Valable jusqu'au {formatDateTime(created.expiresAt)} · {shareContentsLabel(created)}
+              Vous serez prévenu(e) quand le médecin ouvrira le dossier. S'il ne reçoit rien, vérifiez ses courriels
+              indésirables ou envoyez un nouveau lien.
             </p>
 
-            <div className="flex flex-col sm:flex-row gap-3">
-              <Button variant="outline" onClick={copyLink} className="flex-1">
-                <Copy size={15} />
-                Copier
-              </Button>
-              <Button variant="secondary" onClick={shareLink} className="flex-1">
-                <Share2 size={15} />
-                Partager
-              </Button>
-              <Button onClick={closeForm} className="flex-1">
-                Terminé
-              </Button>
-            </div>
+            <Button onClick={closeForm} className="w-full">
+              Terminé
+            </Button>
           </div>
         ) : (
           <div className="space-y-5">
@@ -286,6 +231,21 @@ export function DoctorShareSection({ member, canManage }) {
               Dossier de <strong>{member.firstName} {member.lastName}</strong>. Le médecin ne verra que ce que vous cochez,
               en lecture seule, jusqu'à l'expiration du lien.
             </p>
+
+            <div>
+              <Input
+                label="Adresse courriel du médecin *"
+                type="email"
+                inputMode="email"
+                autoComplete="email"
+                placeholder="dr.ndiaye@clinique.sn"
+                value={form.doctorEmail}
+                onChange={(e) => setForm((p) => ({ ...p, doctorEmail: e.target.value }))}
+              />
+              <p className="text-xs text-gray-500 mt-1.5">
+                Le lien est envoyé directement au médecin par courriel : il n'est affiché à personne d'autre.
+              </p>
+            </div>
 
             <div>
               <p className="text-sm font-semibold text-gray-700 mb-2">Durée de validité</p>
@@ -356,8 +316,9 @@ export function DoctorShareSection({ member, canManage }) {
               <Button variant="ghost" onClick={closeForm} className="flex-1">
                 Annuler
               </Button>
-              <Button onClick={create} loading={saving} disabled={nothingChecked} className="flex-1">
-                Créer le lien
+              <Button onClick={create} loading={saving} disabled={nothingChecked || !emailValid} className="flex-1">
+                <Mail size={15} />
+                Envoyer le lien
               </Button>
             </div>
           </div>

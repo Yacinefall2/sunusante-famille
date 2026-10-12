@@ -1,12 +1,13 @@
 import { Router } from "express";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { desc, eq, inArray } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { doctorShares, documents, members, users } from "../db/schema.js";
 import { requireFamilyMembership } from "../middleware/auth.js";
-import { familyIdFromMemberId, familyIdFromResource } from "../lib/familyResolvers.js";
+import { familyIdFromMemberId } from "../lib/familyResolvers.js";
 import { canSeeDocument, canWriteMember, isHolder } from "../lib/documentAccess.js";
 import { DOCTOR_SHARE_DURATIONS, frontendUrl, hashToken, newToken, recipientsFor, shareState } from "../lib/sharing.js";
 import { formatDateTime } from "../lib/time.js";
+import { sendDoctorShareEmail } from "../lib/mailer.js";
 import { notify } from "../reminders/notify.js";
 
 // Partage avec un professionnel de santé (A4) : UC-22 (titulaire), UC-37
@@ -34,6 +35,8 @@ export async function notifyShareEvent(share, member, { key, title, body }) {
 
 const DURATION_LABEL = { "2h": "2 heures", "24h": "24 heures", "7j": "7 jours" };
 
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 function present(share, authorName) {
   return {
     id: share.id,
@@ -42,6 +45,7 @@ function present(share, authorName) {
     includeTreatments: share.includeTreatments,
     includeVaccinations: share.includeVaccinations,
     documentIds: share.documentIds,
+    doctorEmail: share.doctorEmail ?? null,
     expiresAt: share.expiresAt,
     consumedAt: share.consumedAt,
     revokedAt: share.revokedAt,
@@ -76,6 +80,11 @@ router.post("/", requireFamilyMembership((req) => familyIdFromMemberId(req.body.
     if (!(await canWriteMember(req, memberId))) {
       return res.status(403).json({ error: "Vous ne pouvez pas partager ce dossier" });
     }
+    // Le lien part par courriel au médecin : la famille ne le voit jamais.
+    const doctorEmail = String(req.body.doctorEmail ?? "").trim().toLowerCase();
+    if (!EMAIL_RE.test(doctorEmail) || doctorEmail.length > 255) {
+      return res.status(400).json({ error: "Adresse courriel du médecin invalide" });
+    }
     const duration = req.body.duration || "2h";
     if (!DOCTOR_SHARE_DURATIONS[duration]) return res.status(400).json({ error: "Durée invalide (2h, 24h ou 7j)" });
 
@@ -104,51 +113,39 @@ router.post("/", requireFamilyMembership((req) => familyIdFromMemberId(req.body.
         includeTreatments,
         includeVaccinations,
         documentIds,
+        doctorEmail,
         expiresAt: new Date(Date.now() + DOCTOR_SHARE_DURATIONS[duration]),
       })
       .returning();
 
     const [member] = await db.select().from(members).where(eq(members.id, memberId));
+    try {
+      await sendDoctorShareEmail({
+        to: doctorEmail,
+        link: `${frontendUrl()}/medecin/${token}`,
+        memberName: `${member.firstName} ${member.lastName}`,
+        senderName: req.user.name,
+        expiresAtLabel: formatDateTime(share.expiresAt),
+      });
+    } catch (mailError) {
+      // Le lien n'existe que dans ce courriel : sans envoi, il est inutilisable.
+      console.error(mailError);
+      await db.delete(doctorShares).where(eq(doctorShares.id, share.id));
+      return res.status(502).json({ error: "Le courriel n'a pas pu être envoyé au médecin. Vérifiez l'adresse et réessayez." });
+    }
+
     await notifyShareEvent(share, member, {
       key: "created",
-      title: `Lien médecin créé pour ${member.firstName}`,
-      body: `${req.user.name} a créé un lien de consultation valable ${DURATION_LABEL[duration]} (jusqu'au ${formatDateTime(share.expiresAt)}). Il ne peut être ouvert qu'une fois, sur un seul appareil.`,
+      title: `Lien médecin envoyé pour ${member.firstName}`,
+      body: `${req.user.name} a envoyé à ${doctorEmail} un lien de consultation valable ${DURATION_LABEL[duration]} (jusqu'au ${formatDateTime(share.expiresAt)}). Il ne peut être ouvert qu'une fois, sur un seul appareil.`,
     });
 
-    // Le lien en clair n'est renvoyé qu'ici : seule son empreinte est conservée.
-    res.status(201).json({ ...present(share, req.user.name), url: `${frontendUrl()}/medecin/${token}` });
+    // Seule l'empreinte du lien est conservée ; il n'est jamais renvoyé ici.
+    res.status(201).json(present(share, req.user.name));
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Erreur serveur" });
   }
 });
-
-router.post(
-  "/:id/revoke",
-  requireFamilyMembership((req) => familyIdFromResource(doctorShares, req.params.id)),
-  async (req, res) => {
-    try {
-      const [share] = await db.select().from(doctorShares).where(eq(doctorShares.id, parseInt(req.params.id)));
-      if (!share) return res.status(404).json({ error: "Partage introuvable" });
-      if (!(await canManageShares(req, share.memberId))) return res.status(403).json({ error: "Accès refusé" });
-      if (share.revokedAt) return res.json(present(share));
-      const [revoked] = await db
-        .update(doctorShares)
-        .set({ revokedAt: new Date(), sessionHash: null })
-        .where(and(eq(doctorShares.id, share.id)))
-        .returning();
-      const [member] = await db.select().from(members).where(eq(members.id, share.memberId));
-      await notifyShareEvent(share, member, {
-        key: "revoked",
-        title: `Lien médecin révoqué pour ${member.firstName}`,
-        body: `${req.user.name} a révoqué le lien de consultation créé le ${formatDateTime(share.createdAt)}.`,
-      });
-      res.json(present(revoked));
-    } catch (error) {
-      console.error(error);
-      res.status(500).json({ error: "Erreur serveur" });
-    }
-  }
-);
 
 export default router;
