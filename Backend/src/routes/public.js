@@ -26,6 +26,7 @@ async function openShare(req, res) {
     return null;
   }
   const now = new Date();
+  // Liens révoqués avant le retrait de la révocation : ils le restent.
   if (share.revokedAt) {
     res.status(410).json({ error: "Ce lien a été révoqué par la famille", reason: "revoked" });
     return null;
@@ -42,7 +43,7 @@ async function openShare(req, res) {
     await notifyShareEvent(share, member, {
       key: `refused:${Math.floor(now.getTime() / 3600e3)}`,
       title: `Ouverture refusée du lien médecin de ${member.firstName}`,
-      body: `Quelqu'un a tenté d'ouvrir depuis un autre appareil le lien déjà ouvert le ${formatDateTime(share.consumedAt)}. Si ce n'est pas le médecin, révoquez le lien.`,
+      body: `Quelqu'un a tenté d'ouvrir depuis un autre appareil le lien déjà ouvert le ${formatDateTime(share.consumedAt)}. L'accès a été bloqué : le dossier reste lisible uniquement sur l'appareil du médecin.`,
     });
     res.status(410).json({ error: "Ce lien a déjà été ouvert sur un autre appareil", reason: "already_opened" });
     return null;

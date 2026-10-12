@@ -117,6 +117,31 @@ export async function sendVerificationEmail({ to, name, token }) {
   });
 }
 
+// Courriel au médecin avec qui un dossier est partagé : le lien n'est transmis
+// que par ce canal, jamais affiché à la famille.
+export function buildDoctorShareEmail({ link, memberName, senderName, expiresAtLabel }) {
+  const member = escapeHtml(memberName);
+  const sender = senderName ? escapeHtml(senderName) : null;
+  return {
+    subject: `Dossier médical de ${memberName} partagé avec vous — SunuSanté Famille`,
+    html: accessButtonTemplate({
+      heading: "Un dossier médical est partagé avec vous",
+      bodyHtml: `<p>${sender ? `<strong>${sender}</strong> vous donne` : "Vous avez reçu"} accès, en lecture seule, au
+        dossier médical de <strong>${member}</strong>.</p>
+        <p>Ce lien ne s'ouvre qu'une seule fois, sur un seul appareil : ouvrez-le sur celui où vous consulterez le
+        dossier. Il ne fonctionnera plus ensuite sur un autre appareil.</p>`,
+      link,
+      buttonLabel: "Consulter le dossier",
+      validityLabel: `Ce lien expire le ${escapeHtml(expiresAtLabel)}.`,
+      footer: "Si vous n'attendiez pas ce courriel, ne l'ouvrez pas et supprimez-le.",
+    }),
+  };
+}
+
+export async function sendDoctorShareEmail({ to, ...details }) {
+  await transporter.sendMail({ from: FROM, to, ...buildDoctorShareEmail(details) });
+}
+
 // Courriel d'une notification (rappel de rendez-vous, de prise, de vaccin).
 // Renvoie l'identifiant du message, qui permet de rattacher un rebond signalé
 // plus tard par le service d'envoi à cette notification.

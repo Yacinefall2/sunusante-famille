@@ -1,0 +1,1 @@
+ALTER TABLE "doctor_shares" ADD COLUMN "doctor_email" varchar(255);

@@ -404,7 +404,11 @@ export const doctorShares = pgTable("doctor_shares", {
   includeTreatments: boolean("include_treatments").default(false).notNull(),
   includeVaccinations: boolean("include_vaccinations").default(false).notNull(),
   documentIds: integer("document_ids").array().default(sql`'{}'::integer[]`).notNull(),
+  // Adresse du médecin : le lien lui est envoyé par courriel, il n'est
+  // jamais affiché à la famille. Vide pour les liens créés avant ce choix.
+  doctorEmail: varchar("doctor_email", { length: 255 }),
   expiresAt: timestamp("expires_at").notNull(),
+  // Plus de révocation depuis l'application ; conservé pour les anciens liens.
   revokedAt: timestamp("revoked_at"),
   consumedAt: timestamp("consumed_at"),
   sessionHash: varchar("session_hash", { length: 64 }),
