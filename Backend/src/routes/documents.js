@@ -28,7 +28,9 @@ export const FAMILY_STORAGE_QUOTA_BYTES = 500 * 1024 * 1024; // 500 Mo
 const QUOTA_MESSAGE = "Espace de stockage de la famille plein (500 Mo) : supprimez des documents avant d'en ajouter.";
 
 // Taille totale des fichiers des documents d'une famille, mesurée sur le
-// disque (la base ne conserve pas la taille des fichiers).
+// disque (la base ne conserve pas la taille des fichiers). C'est la taille
+// chiffrée qui compte : contenu + en-tête de chiffrement de 101 octets par
+// fichier (lib/fileEncryption.js), soit ce qu'occupe réellement le disque.
 export async function familyStorageBytes(familyId) {
   const rows = await db
     .select({ fileUrl: documents.fileUrl })
@@ -196,7 +198,7 @@ router.post(
         return res.status(403).json({ error: "Seul le titulaire du dossier peut marquer un document confidentiel" });
       }
       // Quota de la famille, nouveau fichier compris (il n'est pas encore en base).
-      if (req.file && (await familyStorageBytes(req.familyId)) + req.file.size > FAMILY_STORAGE_QUOTA_BYTES) {
+      if (req.file && (await familyStorageBytes(req.familyId)) + (req.file.storedSize ?? req.file.size) > FAMILY_STORAGE_QUOTA_BYTES) {
         fs.unlink(req.file.path, () => {});
         return res.status(413).json({ error: QUOTA_MESSAGE });
       }

@@ -202,7 +202,7 @@ router.get("/doctor/:token/documents/:documentId", async (req, res) => {
     // titulaire : plus accessible (même règle que la synthèse).
     const [member] = await db.select().from(members).where(eq(members.id, share.memberId));
     if (!(await sharedDocumentFilter(share, member))(doc)) return res.status(403).json({ error: "Document non partagé" });
-    sendStoredFile(res, doc.fileUrl, doc.originalName);
+    await sendStoredFile(res, doc.fileUrl, doc.originalName);
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Erreur serveur" });

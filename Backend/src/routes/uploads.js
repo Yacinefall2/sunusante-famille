@@ -37,7 +37,7 @@ router.get(
       if (!(await canReadMember(req, req.document.memberId)) || !canSeeDocument(req, req.document)) {
         return res.status(403).json({ error: "Accès refusé à ce dossier" });
       }
-      sendStoredFile(res, req.document.fileUrl, req.document.originalName);
+      await sendStoredFile(res, req.document.fileUrl, req.document.originalName);
     } catch (error) {
       console.error(error);
       res.status(500).json({ error: "Erreur serveur" });

@@ -1,4 +1,3 @@
-import fs from "node:fs";
 import { Router } from "express";
 import { and, desc, eq, gt, ne } from "drizzle-orm";
 import { db } from "../db/index.js";
@@ -21,6 +20,7 @@ import {
   prepareFamilyExport,
 } from "../lib/familyExport.js";
 import { parseId } from "../lib/validation.js";
+import { openVerifiedFile, pipeStoredFile } from "../lib/fileEncryption.js";
 
 // ── Exports (UC-27 dossier en PDF, UC-09 archive de la famille) ──────────────
 
@@ -196,6 +196,7 @@ const STATE_ERRORS = {
   expired: "Ce lien a expiré : demandez une nouvelle archive depuis « Comptes & invitations »",
   failed: "La préparation de cette archive a échoué : demandez-en une nouvelle",
   pending: "L'archive est encore en préparation",
+  missing: "L'archive n'est plus disponible sur le serveur : demandez-en une nouvelle",
 };
 
 // État du lien (sans le consommer), pour la page /export/<jeton>.
@@ -218,47 +219,48 @@ exportDownloadRouter.get("/:token/download", async (req, res) => {
     const now = new Date();
     const state = exportLinkState(row, now);
     if (state !== "ready") return res.status(state === "pending" ? 409 : 410).json({ error: STATE_ERRORS[state] ?? "Lien invalide" });
-    if (!row.filePath || !fs.existsSync(exportFilePath(row.filePath))) {
-      return res.status(410).json({ error: "L'archive n'est plus disponible sur le serveur : demandez-en une nouvelle" });
+    if (!row.filePath) return res.status(410).json({ error: STATE_ERRORS.missing });
+
+    // Archive chiffrée sur le disque : ouverte et vérifiée (authenticité)
+    // AVANT de consommer le lien ; une archive altérée n'est jamais envoyée.
+    let file;
+    try {
+      file = await openVerifiedFile(exportFilePath(row.filePath));
+    } catch (error) {
+      if (error.code === "ENOENT") return res.status(410).json({ error: STATE_ERRORS.missing });
+      console.error("Archive de la famille illisible :", error.message ?? error);
+      return res.status(500).json({ error: "L'archive est illisible sur le serveur : demandez-en une nouvelle" });
     }
 
-    // Usage unique : le lien est consommé AVANT l'envoi (une seule requête gagne).
-    const [consumed] = await db
-      .update(familyExports)
-      .set({ status: "downloaded", downloadedAt: now })
-      .where(and(eq(familyExports.id, row.id), eq(familyExports.status, "ready"), gt(familyExports.expiresAt, now)))
-      .returning();
-    if (!consumed) return res.status(410).json({ error: STATE_ERRORS.downloaded });
-    await logActivity({ familyId: row.familyId, actor: req.user, action: "family_export_downloaded", at: now });
+    let consumed, family;
+    try {
+      // Usage unique : le lien est consommé AVANT l'envoi (une seule requête gagne).
+      [consumed] = await db
+        .update(familyExports)
+        .set({ status: "downloaded", downloadedAt: now })
+        .where(and(eq(familyExports.id, row.id), eq(familyExports.status, "ready"), gt(familyExports.expiresAt, now)))
+        .returning();
+      if (consumed) await logActivity({ familyId: row.familyId, actor: req.user, action: "family_export_downloaded", at: now });
+      [family] = await db.select({ name: families.name }).from(families).where(eq(families.id, row.familyId));
+    } catch (error) {
+      await file.close();
+      throw error;
+    }
+    if (!consumed) {
+      await file.close();
+      return res.status(410).json({ error: STATE_ERRORS.downloaded });
+    }
 
-    const [family] = await db.select({ name: families.name }).from(families).where(eq(families.id, row.familyId));
     res.set("Cache-Control", "private, no-store");
     res.set("X-Content-Type-Options", "nosniff");
     res.attachment(`sunusante-famille-${slugify(family?.name, "famille").toLowerCase()}-${localDate(now)}.zip`);
     res.type("application/zip");
-    if (consumed.sizeBytes) res.set("Content-Length", String(consumed.sizeBytes));
 
-    const stream = fs.createReadStream(exportFilePath(row.filePath));
-    let finished = false;
-    const cleanUp = () => {
-      if (finished) return;
-      finished = true;
-      finishDownload(row).catch((error) => console.error(error));
-    };
-    stream.on("error", (error) => {
-      console.error(error);
-      if (!res.headersSent) res.status(500).json({ error: "Erreur serveur" });
-      else res.destroy();
-      cleanUp();
-    });
-    // Fichier effacé une fois l'envoi terminé (ou interrompu).
-    stream.on("close", cleanUp);
-    res.on("close", () => {
-      if (!stream.destroyed) stream.destroy();
-    });
-    stream.pipe(res);
+    // Déchiffrée en flux (Content-Length = taille du ZIP en clair) ; fichier
+    // effacé une fois l'envoi terminé (ou interrompu).
+    await pipeStoredFile(res, file, { onDone: () => finishDownload(row).catch((error) => console.error(error)) });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: "Erreur serveur" });
+    if (!res.headersSent) res.status(500).json({ error: "Erreur serveur" });
   }
 });

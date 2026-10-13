@@ -2,6 +2,8 @@ import multer from "multer";
 import path from "node:path";
 import fs from "node:fs";
 import crypto from "node:crypto";
+import { Transform } from "node:stream";
+import { encryptToFile, openVerifiedFile, pipeStoredFile } from "../lib/fileEncryption.js";
 
 const UPLOAD_DIR = path.join(process.cwd(), "uploads");
 
@@ -35,11 +37,6 @@ const SIGNATURES = {
   ".docx": (b) => startsWith(b, [0x50, 0x4b, 0x03, 0x04]),
 };
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, UPLOAD_DIR),
-  filename: (req, file, cb) => cb(null, `${crypto.randomUUID()}${ALLOWED_TYPES[file.mimetype]}`),
-});
-
 // Erreur de téléversement avec son code HTTP, renvoyée telle quelle en JSON.
 export class UploadRefused extends Error {
   constructor(status, message) {
@@ -47,6 +44,63 @@ export class UploadRefused extends Error {
     this.status = status;
   }
 }
+
+const SIGNATURE_MESSAGE = "Le contenu du fichier ne correspond pas à son type (PDF, image ou document Word)";
+const SIGNATURE_LENGTH = 16;
+
+// Contrôle de la signature binaire sur le flux EN CLAIR, avant chiffrement :
+// les premiers octets sont retenus le temps de la vérification, puis tout
+// passe tel quel. Un contenu qui ne correspond pas à son type arrête
+// l'écriture (le fichier partiel est effacé).
+function signatureCheck(ext) {
+  let head = Buffer.alloc(0);
+  let checked = false;
+  const check = (transform) => {
+    checked = true;
+    const padded = Buffer.concat([head, Buffer.alloc(Math.max(0, SIGNATURE_LENGTH - head.length))]);
+    if (!(SIGNATURES[ext]?.(padded) ?? false)) return new UploadRefused(400, SIGNATURE_MESSAGE);
+    transform.push(head);
+    return null;
+  };
+  return new Transform({
+    transform(chunk, encoding, callback) {
+      if (checked) return callback(null, chunk);
+      head = Buffer.concat([head, chunk]);
+      if (head.length < SIGNATURE_LENGTH) return callback();
+      callback(check(this));
+    },
+    flush(callback) {
+      callback(checked ? null : check(this));
+    },
+  });
+}
+
+// Moteur de stockage Multer : le fichier est chiffré en flux pendant sa
+// réception (lib/fileEncryption.js) — le contenu en clair ne touche jamais
+// le disque. file.size = taille en clair ; file.storedSize = taille sur le
+// disque (en-tête de chiffrement compris).
+const writing = new WeakMap(); // écriture en cours, attendue avant un effacement
+const encryptedStorage = {
+  _handleFile(req, file, cb) {
+    const ext = ALLOWED_TYPES[file.mimetype];
+    const filename = `${crypto.randomUUID()}${ext}`;
+    const finalPath = path.join(UPLOAD_DIR, filename);
+    file.path = finalPath;
+    const done = encryptToFile([file.stream, signatureCheck(ext)], finalPath);
+    writing.set(file, done.catch(() => {}));
+    done.then(
+      ({ plainSize, storedSize }) => cb(null, { destination: UPLOAD_DIR, filename, path: finalPath, size: plainSize, storedSize }),
+      (error) => cb(error)
+    );
+  },
+  _removeFile(req, file, cb) {
+    const filePath = file.path;
+    delete file.destination;
+    delete file.filename;
+    delete file.path;
+    Promise.resolve(writing.get(file)).then(() => fs.unlink(filePath, () => cb(null)));
+  },
+};
 
 // Contrôle du type, puis contrôle d'accès éventuel (option `authorize` de
 // uploadSingle) AVANT que le fichier ne soit écrit sur le disque. Multer lit
@@ -88,24 +142,13 @@ const LIMIT_MESSAGES = {
   LIMIT_FIELD_VALUE: "Un champ du formulaire est trop long",
 };
 
-function matchesSignature(file) {
-  const head = Buffer.alloc(16);
-  const fd = fs.openSync(file.path, "r");
-  try {
-    fs.readSync(fd, head, 0, 16, 0);
-  } finally {
-    fs.closeSync(fd);
-  }
-  return SIGNATURES[path.extname(file.filename)]?.(head) ?? false;
-}
-
 // Téléversement d'un fichier (champ `field`) : erreurs renvoyées en JSON,
-// contenu vérifié, et fichier effacé si la requête n'aboutit pas (refus
+// contenu vérifié (signature) puis chiffré sur le disque, et fichier effacé si la requête n'aboutit pas (refus
 // d'accès, données manquantes...) pour ne pas laisser d'orphelins sur le disque.
 // Option `authorize(req, file)` : contrôle (accès, quota) fait avant
 // l'écriture du fichier ; renvoie { status, error } pour refuser, ou rien.
 export function uploadSingle(field, { authorize } = {}) {
-  const handler = multer({ storage, fileFilter: fileFilterWith(authorize), limits: LIMITS }).single(field);
+  const handler = multer({ storage: encryptedStorage, fileFilter: fileFilterWith(authorize), limits: LIMITS }).single(field);
   return (req, res, next) => {
     res.on("finish", () => {
       if (req.file && res.statusCode >= 300) fs.unlink(req.file.path, () => {});
@@ -124,9 +167,6 @@ export function uploadSingle(field, { authorize } = {}) {
         // Formulaire tronqué ou mal formé (erreur du lecteur multipart).
         return res.status(400).json({ error: "Formulaire de téléversement invalide" });
       }
-      if (req.file && !matchesSignature(req.file)) {
-        return res.status(400).json({ error: "Le contenu du fichier ne correspond pas à son type (PDF, image ou document Word)" });
-      }
       next();
     });
   };
@@ -144,8 +184,20 @@ const DOWNLOAD_TYPES = {
 // Envoie un fichier téléversé avec un type imposé par le serveur (jamais
 // deviné) : un ancien fichier à l'extension inattendue part en
 // téléchargement brut et ne peut pas s'exécuter dans la page.
-export function sendStoredFile(res, fileUrl, downloadName) {
+// Point de passage unique de la restitution des documents (UC-58) : le
+// fichier est déchiffré en flux (ou lu tel quel s'il est encore en clair,
+// avant sa conversion), son authenticité vérifiée AVANT l'envoi ; un fichier
+// altéré n'est jamais servi (erreur 500, journalisée).
+export async function sendStoredFile(res, fileUrl, downloadName) {
   const filename = path.basename(fileUrl);
+  let file;
+  try {
+    file = await openVerifiedFile(path.join(UPLOAD_DIR, filename));
+  } catch (error) {
+    if (error.code === "ENOENT") return res.status(404).json({ error: "Fichier introuvable" });
+    console.error("Document illisible :", error.message ?? error);
+    return res.status(500).json({ error: "Ce fichier est illisible sur le serveur" });
+  }
   const ext = path.extname(filename).toLowerCase();
   const inline = INLINE_TYPES[ext];
   res.set("X-Content-Type-Options", "nosniff");
@@ -167,9 +219,7 @@ export function sendStoredFile(res, fileUrl, downloadName) {
     res.attachment(downloadName || filename);
     res.type(DOWNLOAD_TYPES[ext] ?? "application/octet-stream");
   }
-  res.sendFile(path.join(UPLOAD_DIR, filename), (err) => {
-    if (err && !res.headersSent) res.status(404).json({ error: "Fichier introuvable" });
-  });
+  await pipeStoredFile(res, file);
 }
 
 export const UPLOAD_DIR_PATH = UPLOAD_DIR;

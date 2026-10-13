@@ -29,6 +29,7 @@ import reminderSettingsRouter from "./routes/reminderSettings.js";
 import { exportDownloadRouter, familyExportRouter, memberExportRouter } from "./routes/exports.js";
 import { requireAuth, requireVerifiedEmail } from "./middleware/auth.js";
 import { convertLegacyEmergencyTokens } from "./lib/sharing.js";
+import { encryptLegacyDocuments } from "./lib/documentFiles.js";
 
 const app = express();
 
@@ -134,6 +135,16 @@ if (!process.env.VITEST) {
   convertLegacyEmergencyTokens()
     .then((n) => n > 0 && console.log(`🔐 ${n} jeton(s) de fiche d'urgence chiffré(s)`))
     .catch((error) => console.error("Conversion des jetons de fiche d'urgence impossible :", error));
+
+  // Documents téléversés avant le chiffrement au repos : chiffrés un à un,
+  // en arrière-plan, sans interruption (lib/documentFiles.js).
+  encryptLegacyDocuments()
+    .then(({ encrypted, alreadyEncrypted, missing, errors }) => {
+      if (encrypted + alreadyEncrypted + missing + errors === 0) return;
+      const absents = missing > 0 ? `, ${missing} fichier(s) introuvable(s)` : "";
+      console.log(`🔐 ${encrypted} document(s) chiffré(s), ${alreadyEncrypted} déjà chiffré(s), ${errors} erreur(s)${absents}`);
+    })
+    .catch((error) => console.error("Chiffrement des anciens documents impossible :", error));
 }
 
 // Erreurs non rattrapées (JSON mal formé, corps trop gros...) : réponse JSON

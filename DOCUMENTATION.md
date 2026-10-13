@@ -173,6 +173,8 @@ refuse de démarrer sans elle.
 | `JWT_REFRESH_SECRET` | Signature des renouvellements (30 j) — **obligatoire**, ≥ 32 caractères, différent du précédent | chaîne aléatoire |
 | `COOKIE_SECURE` | Cookies envoyés en HTTPS uniquement — `true` obligatoire en production | `true` (Docker) |
 | `EMERGENCY_TOKEN_KEY` | Clé de chiffrement des jetons de fiche d'urgence (facultative ; dérivée de `JWT_ACCESS_SECRET` à défaut) | chaîne aléatoire |
+| `DOCUMENTS_ENCRYPTION_KEY` | Clé maîtresse du chiffrement des documents et des archives d'export (32 octets, base64 ou hexadécimal) — **obligatoire en production** ; en développement, dérivée de `JWT_ACCESS_SECRET` à défaut. **Sa perte rend les documents irrécupérables** : la sauvegarder à part (§9) | `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"` |
+| `DOCUMENTS_ENCRYPTION_KEY_PREVIOUS` | Ancienne clé maîtresse, pour relire les fichiers chiffrés avant une rotation (facultative, §9.1) | — |
 | `FRONTEND_URL` | Adresse publique de l'application : liens des courriels, seule origine autorisée (CORS, contrôle d'origine) | `http://localhost:8080` |
 | `APP_TIMEZONE` | Fuseau des rappels (« aujourd'hui », heures de prise) | `Africa/Dakar` |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_SECURE` | Serveur d'envoi des courriels | `mailhog` / `1025` / `false` |
@@ -401,9 +403,68 @@ optionnelles pour une mise en ligne.
    `127.0.0.1` comme dans `docker-compose.yml`. Si un reverse proxy HTTPS est ajouté
    devant Nginx, il y a deux proxys : adapter `app.set("trust proxy", …)` dans
    `Backend/src/app.js`.
-7. **Rebonds de courriel.** Si `MAIL_WEBHOOK_SECRET` est défini, le transmettre de
+7. **Chiffrement des documents (`DOCUMENTS_ENCRYPTION_KEY`).** Les fichiers des
+   documents et les archives d'export sont chiffrés sur le disque (§9.1).
+   Générer la clé (32 octets) :
+   `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`
+   (ou 64 caractères hexadécimaux : `openssl rand -hex 32`). Sans elle, ou avec une
+   valeur invalide, le backend et le worker refusent de démarrer en production.
+   ⚠️ **La perte de cette clé rend tous les documents irrécupérables** : la conserver
+   à part, **hors du serveur et hors des sauvegardes de fichiers** (gestionnaire de
+   mots de passe, coffre-fort), et vérifier qu'elle est bien sauvegardée avant la
+   mise en ligne. Ne jamais la ranger à côté d'une copie du volume `uploads_data`.
+8. **Rebonds de courriel.** Si `MAIL_WEBHOOK_SECRET` est défini, le transmettre de
    préférence dans l'en-tête `X-Webhook-Secret` (`POST /api/webhooks/mail`) plutôt
    que dans l'adresse, qui finit dans les journaux d'accès.
+
+### 9.1 Chiffrement des documents au repos
+
+Code : `Backend/src/lib/fileEncryption.js` (format, clés, lecture et écriture en
+flux), `middleware/upload.js` (chiffrement à la réception, `sendStoredFile` pour
+toute restitution), `lib/familyExport.js` et `routes/exports.js` (archives),
+`lib/documentFiles.js` (`encryptLegacyDocuments`, conversion des anciens fichiers).
+
+- **Chiffrement d'enveloppe.** Chaque fichier est chiffré en AES-256-GCM avec sa
+  propre clé de données (32 octets aléatoires) ; cette clé est chiffrée
+  (AES-256-GCM) par la clé maîtresse et rangée dans l'en-tête du fichier. Le fichier
+  se suffit donc à lui-même (avec la clé maîtresse) : aucune colonne en base, et une
+  sauvegarde du volume reste cohérente.
+- **Format** (en-tête de 101 octets, puis le contenu chiffré, de même taille que le
+  contenu en clair) : `SSF1` (magic) · version du format (1 octet) · identifiant de la
+  clé maîtresse (8 octets, empreinte SHA-256) · IV de l'enveloppe (12) · clé de
+  données chiffrée (32) · tag de l'enveloppe (16) · IV du contenu (12) · tag du
+  contenu (16, écrit en fin de chiffrement). Un fichier sans le magic `SSF1` est un
+  ancien fichier en clair, lu tel quel.
+- **En flux.** Chiffrement pendant la réception du téléversement (le contenu en clair
+  ne touche jamais le disque ; la signature binaire est contrôlée avant, sur le flux
+  en clair) et déchiffrement en flux à la restitution. Avant tout envoi, le fichier
+  est relu une première fois pour vérifier son tag GCM : un fichier altéré (ou chiffré
+  avec une clé inconnue) n'est jamais servi, même partiellement — réponse 500 et
+  erreur dans les journaux. `Content-Length` = taille en clair. Les requêtes
+  partielles (`Range`) ne sont plus prises en charge : le fichier est toujours envoyé
+  en entier.
+- **Quota de 500 Mo par famille** : mesuré sur le disque, donc taille chiffrée
+  (contenu + 101 octets par fichier).
+- **Anciens fichiers.** Au démarrage du backend (pas du worker), chaque document
+  encore en clair est chiffré dans un fichier temporaire, vérifié (relu, déchiffré,
+  SHA-256 comparé à l'original), puis substitué à l'original par `rename` ; en cas
+  d'erreur l'original reste intact. Idempotent ; les documents restent lisibles
+  pendant la conversion. Les archives d'export en clair d'avant la mise à jour
+  restent téléchargeables jusqu'à leur expiration (1 h).
+- **Rotation de la clé maîtresse.** L'identifiant de clé de l'en-tête désigne la clé à
+  utiliser pour relire un fichier :
+  1. générer une nouvelle clé (et la sauvegarder à part) ;
+  2. dans `.env` : `DOCUMENTS_ENCRYPTION_KEY_PREVIOUS=<ancienne clé>` et
+     `DOCUMENTS_ENCRYPTION_KEY=<nouvelle clé>` ; redémarrer backend et worker
+     (`docker compose up -d`) ;
+  3. les nouveaux fichiers sont chiffrés avec la nouvelle clé, les anciens restent
+     lisibles grâce à `…_PREVIOUS`. **Garder l'ancienne clé** (et sa sauvegarde) tant
+     que des fichiers chiffrés avec elle existent.
+
+  Le réenveloppement des anciens fichiers (pour pouvoir retirer `…_PREVIOUS`) n'est
+  pas encore automatisé : le format le permet sans rechiffrer le contenu (seule
+  l'enveloppe, dans l'en-tête, dépend de la clé maîtresse) — à faire par un script
+  dédié le jour où il sera nécessaire.
 
 Déjà en place : conteneur backend non root, dépendances de production seulement dans
 l'image, réponses de l'API en `Cache-Control: no-store`, limites par adresse IP sur les

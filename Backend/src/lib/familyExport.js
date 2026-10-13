@@ -1,4 +1,3 @@
-import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -19,7 +18,9 @@ import {
   users,
   vaccinations,
 } from "../db/schema.js";
+import { Readable } from "node:stream";
 import { UPLOAD_DIR_PATH } from "../middleware/upload.js";
+import { encryptToFile, openVerifiedFile, plainContent } from "./fileEncryption.js";
 import { canRead, getFamilyAccess, membershipOf } from "./documentAccess.js";
 import { CATEGORIES, logActivity, presentEntries } from "./activityLog.js";
 import { journalScope } from "./journalScope.js";
@@ -52,7 +53,10 @@ import {
 // Les archives sont écrites dans uploads/exports/ (volume des fichiers) :
 // ce dossier n'est jamais servi par /uploads (qui ne sert que les fichiers
 // rattachés à un document). Fichier effacé après le téléchargement, à
-// l'expiration du lien, ou en cas d'échec.
+// l'expiration du lien, ou en cas d'échec. Comme les documents, l'archive est
+// chiffrée sur le disque (lib/fileEncryption.js) et déchiffrée en flux au
+// téléchargement ; les fichiers des documents y sont ajoutés en clair,
+// déchiffrés à la volée.
 
 export const EXPORT_DIR = path.join(UPLOAD_DIR_PATH, "exports");
 export const EXPORT_LINK_TTL_MS = 60 * 60 * 1000; // 1 heure
@@ -127,8 +131,8 @@ function readme({ familyName, exportedBy, exportedAt, fiches, filesCount, missin
   return `${lines.join("\r\n")}\r\n`;
 }
 
-// Écrit l'archive ZIP de la famille, vue par `ctx`, dans `outPath`.
-// Renvoie { sizeBytes, fichesCount, filesCount }.
+// Écrit l'archive ZIP de la famille, vue par `ctx`, chiffrée, dans `outPath`.
+// Renvoie { sizeBytes (taille du ZIP en clair), fichesCount, filesCount }.
 export async function buildFamilyArchive(ctx, outPath, now = new Date()) {
   const [family] = await db.select().from(families).where(eq(families.id, ctx.familyId));
   const access = await getFamilyAccess(ctx);
@@ -139,226 +143,234 @@ export async function buildFamilyArchive(ctx, outPath, now = new Date()) {
   const exportedBy = ctx.user.name;
 
   const archive = new ZipArchive({ zlib: { level: 6 } });
-  const output = fs.createWriteStream(outPath, { mode: 0o600 });
-  const closed = new Promise((resolve, reject) => {
-    output.on("close", resolve);
-    output.on("error", reject);
-    archive.on("error", reject);
-  });
-  archive.pipe(output);
+  // Le ZIP est chiffré en flux pendant sa construction : jamais en clair sur le disque.
+  const written = encryptToFile(archive, outPath);
+  // En cas d'échec (construction ou écriture), le flux est détruit et le
+  // fichier partiel effacé par encryptToFile.
+  try {
+    const takenPdf = new Set();
+    const takenDirs = new Set();
+    const ficheNames = [];
+    const fichesJson = [];
+    let filesCount = 0;
+    let missingFiles = 0;
 
-  const takenPdf = new Set();
-  const takenDirs = new Set();
-  const ficheNames = [];
-  const fichesJson = [];
-  let filesCount = 0;
-  let missingFiles = 0;
-
-  // Prises des 12 derniers mois, par médicament.
-  const intakes = readableIds.length
-    ? await db
-        .select()
-        .from(medicationIntakes)
-        .where(
-          and(
-            inArray(medicationIntakes.memberId, readableIds),
-            gte(medicationIntakes.scheduledAt, new Date(now.getTime() - INTAKE_HISTORY_DAYS * DAY_MS))
+    // Prises des 12 derniers mois, par médicament.
+    const intakes = readableIds.length
+      ? await db
+          .select()
+          .from(medicationIntakes)
+          .where(
+            and(
+              inArray(medicationIntakes.memberId, readableIds),
+              gte(medicationIntakes.scheduledAt, new Date(now.getTime() - INTAKE_HISTORY_DAYS * DAY_MS))
+            )
           )
-        )
-        .orderBy(medicationIntakes.scheduledAt)
-    : [];
-  // Rôles sur les dossiers lisibles.
-  const roles = readableIds.length
-    ? await db
-        .select({ memberId: documentRoles.memberId, role: documentRoles.role, expiresAt: documentRoles.expiresAt, name: users.name })
-        .from(documentRoles)
-        .innerJoin(users, eq(users.id, documentRoles.userId))
-        .where(inArray(documentRoles.memberId, readableIds))
-    : [];
-  // Comptes de la famille (rôle effectif), sans mot de passe ni jeton.
-  const accounts = await db
-    .select({
-      userId: users.id,
-      name: users.name,
-      email: users.email,
-      role: familyMemberships.role,
-      isPrimaryAdmin: familyMemberships.isPrimaryAdmin,
-      linkedMemberId: familyMemberships.linkedMemberId,
-      joinedAt: familyMemberships.createdAt,
-    })
-    .from(familyMemberships)
-    .innerJoin(users, eq(users.id, familyMemberships.userId))
-    .where(eq(familyMemberships.familyId, ctx.familyId))
-    .orderBy(familyMemberships.id);
-  const allFiches = await db
-    .select({ id: members.id, firstName: members.firstName, lastName: members.lastName, dateOfBirth: members.dateOfBirth })
-    .from(members)
-    .where(eq(members.familyId, ctx.familyId));
-  const ficheById = new Map(allFiches.map((m) => [m.id, m]));
+          .orderBy(medicationIntakes.scheduledAt)
+      : [];
+    // Rôles sur les dossiers lisibles.
+    const roles = readableIds.length
+      ? await db
+          .select({ memberId: documentRoles.memberId, role: documentRoles.role, expiresAt: documentRoles.expiresAt, name: users.name })
+          .from(documentRoles)
+          .innerJoin(users, eq(users.id, documentRoles.userId))
+          .where(inArray(documentRoles.memberId, readableIds))
+      : [];
+    // Comptes de la famille (rôle effectif), sans mot de passe ni jeton.
+    const accounts = await db
+      .select({
+        userId: users.id,
+        name: users.name,
+        email: users.email,
+        role: familyMemberships.role,
+        isPrimaryAdmin: familyMemberships.isPrimaryAdmin,
+        linkedMemberId: familyMemberships.linkedMemberId,
+        joinedAt: familyMemberships.createdAt,
+      })
+      .from(familyMemberships)
+      .innerJoin(users, eq(users.id, familyMemberships.userId))
+      .where(eq(familyMemberships.familyId, ctx.familyId))
+      .orderBy(familyMemberships.id);
+    const allFiches = await db
+      .select({ id: members.id, firstName: members.firstName, lastName: members.lastName, dateOfBirth: members.dateOfBirth })
+      .from(members)
+      .where(eq(members.familyId, ctx.familyId));
+    const ficheById = new Map(allFiches.map((m) => [m.id, m]));
 
-  for (const fiche of fiches) {
-    const record = await loadMemberRecord(ctx, fiche.id, now);
-    const base = slugify(fullName(fiche));
-    const pdfName = uniqueName(takenPdf, `dossiers/${base}`, ".pdf");
-    archive.append(await renderMemberRecordPdf(record, { exportedBy, exportedAt: now }), { name: pdfName, date: now });
-    ficheNames.push(fullName(fiche));
+    for (const fiche of fiches) {
+      const record = await loadMemberRecord(ctx, fiche.id, now);
+      const base = slugify(fullName(fiche));
+      const pdfName = uniqueName(takenPdf, `dossiers/${base}`, ".pdf");
+      archive.append(await renderMemberRecordPdf(record, { exportedBy, exportedAt: now }), { name: pdfName, date: now });
+      ficheNames.push(fullName(fiche));
 
-    // Fichiers des documents (ceux que ce compte peut voir : record.documents).
-    const dir = uniqueName(takenDirs, `documents/${base}`);
-    const takenFiles = new Set();
-    const documentsJson = [];
-    for (const d of record.documents) {
-      let fichier = null;
-      if (d.fileUrl) {
-        const source = path.join(UPLOAD_DIR_PATH, path.basename(d.fileUrl));
-        const exists = await fsp.stat(source).then((s) => s.isFile()).catch(() => false);
-        if (exists) {
-          const ext = path.extname(d.fileUrl).toLowerCase();
-          fichier = uniqueName(takenFiles, `${dir}/${localDate(d.uploadedAt)}-${slugify(d.title, "document").toLowerCase()}`, ext);
-          archive.file(source, { name: fichier, date: d.uploadedAt });
-          filesCount += 1;
-        } else {
-          missingFiles += 1;
+      // Fichiers des documents (ceux que ce compte peut voir : record.documents).
+      const dir = uniqueName(takenDirs, `documents/${base}`);
+      const takenFiles = new Set();
+      const documentsJson = [];
+      for (const d of record.documents) {
+        let fichier = null;
+        if (d.fileUrl) {
+          const source = path.join(UPLOAD_DIR_PATH, path.basename(d.fileUrl));
+          // Fichier vérifié (authenticité) avant d'entrer dans l'archive ; un
+          // fichier absent ou altéré est signalé manquant, jamais copié abîmé.
+          const readable = await openVerifiedFile(source)
+            .then(async (file) => (await file.close(), true))
+            .catch((error) => {
+              if (error.code !== "ENOENT") console.error("Export de la famille, document illisible :", error.message ?? error);
+              return false;
+            });
+          if (readable) {
+            const ext = path.extname(d.fileUrl).toLowerCase();
+            fichier = uniqueName(takenFiles, `${dir}/${localDate(d.uploadedAt)}-${slugify(d.title, "document").toLowerCase()}`, ext);
+            // Déchiffré en flux, à son tour d'être écrit dans l'archive.
+            archive.append(Readable.from(plainContent(source)), { name: fichier, date: d.uploadedAt });
+            filesCount += 1;
+          } else {
+            missingFiles += 1;
+          }
         }
+        documentsJson.push({
+          titre: d.title,
+          type: DOCUMENT_TYPE_LABELS[d.documentType] ?? d.documentType,
+          description: d.description,
+          ajouteLe: d.uploadedAt,
+          confidentiel: d.isConfidential,
+          fichierOriginal: d.originalName,
+          fichierDansArchive: fichier,
+          fichierManquant: Boolean(d.fileUrl) && !fichier,
+        });
       }
-      documentsJson.push({
-        titre: d.title,
-        type: DOCUMENT_TYPE_LABELS[d.documentType] ?? d.documentType,
-        description: d.description,
-        ajouteLe: d.uploadedAt,
-        confidentiel: d.isConfidential,
-        fichierOriginal: d.originalName,
-        fichierDansArchive: fichier,
-        fichierManquant: Boolean(d.fileUrl) && !fichier,
+
+      // Données structurées du dossier.
+      const treatmentRows = await db.select().from(treatments).where(eq(treatments.memberId, fiche.id)).orderBy(treatments.id);
+      const meds = treatmentRows.length
+        ? await db
+            .select()
+            .from(treatmentMedications)
+            .where(inArray(treatmentMedications.treatmentId, treatmentRows.map((t) => t.id)))
+            .orderBy(treatmentMedications.id)
+        : [];
+      const adherence = new Map([...record.treatments.active, ...record.treatments.finished].map((t) => [t.id, t.adherence]));
+      fichesJson.push({
+        identite: {
+          prenom: fiche.firstName,
+          nom: fiche.lastName,
+          dateDeNaissance: fiche.dateOfBirth,
+          age: record.member.age,
+          sexe: fiche.gender,
+          lienDeParente: fiche.kinship,
+          statut: fiche.status,
+          telephone: fiche.phone,
+          creeeLe: fiche.createdAt,
+        },
+        donneesMedicales: {
+          groupeSanguin: fiche.bloodType,
+          allergies: fiche.allergies,
+          notes: fiche.notes,
+          medecinTraitant: { nom: fiche.doctorName, telephone: fiche.doctorPhone },
+          contactUrgence: {
+            nom: fiche.emergencyContactName,
+            lien: fiche.emergencyContactRelation,
+            telephone: fiche.emergencyContactPhone,
+          },
+        },
+        traitements: treatmentRows.map((t) => ({
+          maladie: t.disease,
+          debut: t.startDate,
+          fin: t.endDate,
+          prescritPar: t.prescribedBy,
+          enCours: t.isActive,
+          notes: t.notes,
+          observance30Jours: adherence.get(t.id) ?? null,
+          medicaments: meds
+            .filter((x) => x.treatmentId === t.id)
+            .map((x) => ({
+              nom: x.name,
+              dosage: x.dosage,
+              frequence: x.frequency,
+              duree: x.duration,
+              heuresDePrise: x.intakeTimes,
+              prises12DerniersMois: intakes
+                .filter((i) => i.medicationId === x.id)
+                .map((i) => ({ prevueLe: i.scheduledAt, statut: i.status, reponduLe: i.respondedAt })),
+            })),
+        })),
+        vaccinations: (await db.select().from(vaccinations).where(eq(vaccinations.memberId, fiche.id)).orderBy(vaccinations.dateAdministered)).map(
+          (v) => ({
+            vaccin: v.vaccineName,
+            date: v.dateAdministered,
+            rappelPrevu: v.nextDoseDate,
+            statutRappel: boosterStatus(v, localDate(now)),
+            administrePar: v.administeredBy,
+            lot: v.lotNumber,
+            notes: v.notes,
+          })
+        ),
+        rendezVous: (await db.select().from(appointments).where(eq(appointments.memberId, fiche.id)).orderBy(appointments.appointmentDate)).map(
+          (a) => ({
+            titre: a.title,
+            date: a.appointmentDate,
+            medecin: a.doctorName,
+            lieu: a.location,
+            statut: a.status,
+            presence: a.attendance,
+            notes: a.notes,
+          })
+        ),
+        documents: documentsJson,
+        rolesSurLeDossier: roles
+          .filter((r) => r.memberId === fiche.id)
+          .map((r) => ({ compte: r.name, role: DOC_ROLE_LABELS[r.role] ?? r.role, expireLe: r.expiresAt })),
       });
     }
 
-    // Données structurées du dossier.
-    const treatmentRows = await db.select().from(treatments).where(eq(treatments.memberId, fiche.id)).orderBy(treatments.id);
-    const meds = treatmentRows.length
+    // Journal d'activité, tel que ce compte peut le voir.
+    const { condition } = await journalScope(ctx);
+    const journalRows = condition
       ? await db
           .select()
-          .from(treatmentMedications)
-          .where(inArray(treatmentMedications.treatmentId, treatmentRows.map((t) => t.id)))
-          .orderBy(treatmentMedications.id)
+          .from(activityLog)
+          .where(and(...condition))
+          .orderBy(desc(activityLog.occurredAt), desc(activityLog.id))
       : [];
-    const adherence = new Map([...record.treatments.active, ...record.treatments.finished].map((t) => [t.id, t.adherence]));
-    fichesJson.push({
-      identite: {
-        prenom: fiche.firstName,
-        nom: fiche.lastName,
-        dateDeNaissance: fiche.dateOfBirth,
-        age: record.member.age,
-        sexe: fiche.gender,
-        lienDeParente: fiche.kinship,
-        statut: fiche.status,
-        telephone: fiche.phone,
-        creeeLe: fiche.createdAt,
-      },
-      donneesMedicales: {
-        groupeSanguin: fiche.bloodType,
-        allergies: fiche.allergies,
-        notes: fiche.notes,
-        medecinTraitant: { nom: fiche.doctorName, telephone: fiche.doctorPhone },
-        contactUrgence: {
-          nom: fiche.emergencyContactName,
-          lien: fiche.emergencyContactRelation,
-          telephone: fiche.emergencyContactPhone,
-        },
-      },
-      traitements: treatmentRows.map((t) => ({
-        maladie: t.disease,
-        debut: t.startDate,
-        fin: t.endDate,
-        prescritPar: t.prescribedBy,
-        enCours: t.isActive,
-        notes: t.notes,
-        observance30Jours: adherence.get(t.id) ?? null,
-        medicaments: meds
-          .filter((x) => x.treatmentId === t.id)
-          .map((x) => ({
-            nom: x.name,
-            dosage: x.dosage,
-            frequence: x.frequency,
-            duree: x.duration,
-            heuresDePrise: x.intakeTimes,
-            prises12DerniersMois: intakes
-              .filter((i) => i.medicationId === x.id)
-              .map((i) => ({ prevueLe: i.scheduledAt, statut: i.status, reponduLe: i.respondedAt })),
-          })),
-      })),
-      vaccinations: (await db.select().from(vaccinations).where(eq(vaccinations.memberId, fiche.id)).orderBy(vaccinations.dateAdministered)).map(
-        (v) => ({
-          vaccin: v.vaccineName,
-          date: v.dateAdministered,
-          rappelPrevu: v.nextDoseDate,
-          statutRappel: boosterStatus(v, localDate(now)),
-          administrePar: v.administeredBy,
-          lot: v.lotNumber,
-          notes: v.notes,
-        })
-      ),
-      rendezVous: (await db.select().from(appointments).where(eq(appointments.memberId, fiche.id)).orderBy(appointments.appointmentDate)).map(
-        (a) => ({
-          titre: a.title,
-          date: a.appointmentDate,
-          medecin: a.doctorName,
-          lieu: a.location,
-          statut: a.status,
-          presence: a.attendance,
-          notes: a.notes,
-        })
-      ),
-      documents: documentsJson,
-      rolesSurLeDossier: roles
-        .filter((r) => r.memberId === fiche.id)
-        .map((r) => ({ compte: r.name, role: DOC_ROLE_LABELS[r.role] ?? r.role, expireLe: r.expiresAt })),
+    const journal = await presentEntries(journalRows);
+    archive.append(await renderJournalPdf({ familyName: family.name, entries: journal, categories: CATEGORIES, exportedBy, exportedAt: now }), {
+      name: "journal-activite.pdf",
+      date: now,
     });
+
+    const data = {
+      exporteLe: now.toISOString(),
+      exportePar: { nom: ctx.user.name, email: ctx.user.email },
+      famille: { nom: family.name, creeeLe: family.createdAt },
+      comptes: accounts.map((a) => {
+        const linked = a.linkedMemberId ? ficheById.get(a.linkedMemberId) : null;
+        return {
+          nom: a.name,
+          email: a.email,
+          role: ROLE_LABELS[effectiveRole(a.role, linked?.dateOfBirth)] ?? a.role,
+          administrateurFamilial: a.isPrimaryAdmin,
+          fiche: linked ? fullName(linked) : null,
+          membreDepuis: a.joinedAt,
+        };
+      }),
+      fiches: fichesJson,
+      journal: journal.map((e) => ({ date: e.occurredAt, categorie: CATEGORIES[e.category] ?? null, texte: e.text, fiche: e.memberName })),
+    };
+    archive.append(JSON.stringify(data, null, 2), { name: "donnees-famille.json", date: now });
+    archive.append(readme({ familyName: family.name, exportedBy, exportedAt: now, fiches: ficheNames, filesCount, missingFiles }), {
+      name: "LISEZMOI.txt",
+      date: now,
+    });
+
+    const [, { plainSize }] = await Promise.all([archive.finalize(), written]);
+    return { sizeBytes: plainSize, fichesCount: fiches.length, filesCount };
+  } catch (error) {
+    archive.destroy(error);
+    await written.catch(() => {});
+    throw error;
   }
-
-  // Journal d'activité, tel que ce compte peut le voir.
-  const { condition } = await journalScope(ctx);
-  const journalRows = condition
-    ? await db
-        .select()
-        .from(activityLog)
-        .where(and(...condition))
-        .orderBy(desc(activityLog.occurredAt), desc(activityLog.id))
-    : [];
-  const journal = await presentEntries(journalRows);
-  archive.append(await renderJournalPdf({ familyName: family.name, entries: journal, categories: CATEGORIES, exportedBy, exportedAt: now }), {
-    name: "journal-activite.pdf",
-    date: now,
-  });
-
-  const data = {
-    exporteLe: now.toISOString(),
-    exportePar: { nom: ctx.user.name, email: ctx.user.email },
-    famille: { nom: family.name, creeeLe: family.createdAt },
-    comptes: accounts.map((a) => {
-      const linked = a.linkedMemberId ? ficheById.get(a.linkedMemberId) : null;
-      return {
-        nom: a.name,
-        email: a.email,
-        role: ROLE_LABELS[effectiveRole(a.role, linked?.dateOfBirth)] ?? a.role,
-        administrateurFamilial: a.isPrimaryAdmin,
-        fiche: linked ? fullName(linked) : null,
-        membreDepuis: a.joinedAt,
-      };
-    }),
-    fiches: fichesJson,
-    journal: journal.map((e) => ({ date: e.occurredAt, categorie: CATEGORIES[e.category] ?? null, texte: e.text, fiche: e.memberName })),
-  };
-  archive.append(JSON.stringify(data, null, 2), { name: "donnees-famille.json", date: now });
-  archive.append(readme({ familyName: family.name, exportedBy, exportedAt: now, fiches: ficheNames, filesCount, missingFiles }), {
-    name: "LISEZMOI.txt",
-    date: now,
-  });
-
-  await archive.finalize();
-  await closed;
-  const { size } = await fsp.stat(outPath);
-  return { sizeBytes: size, fichesCount: fiches.length, filesCount };
 }
 
 // Marque une demande en échec : fichier effacé, trace au journal.

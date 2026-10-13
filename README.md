@@ -24,8 +24,11 @@ docker compose --profile dev up --build   # avec MailHog et pgAdmin (développem
 
 Variables **obligatoires** dans `.env` (docker compose refuse de démarrer sans
 elles) : `POSTGRES_PASSWORD`, `PGADMIN_PASSWORD`, `JWT_ACCESS_SECRET`,
-`JWT_REFRESH_SECRET`. Générer un secret :
-`node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"`.
+`JWT_REFRESH_SECRET`, `DOCUMENTS_ENCRYPTION_KEY`. Générer un secret :
+`node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"` ;
+la clé de chiffrement des documents (32 octets) :
+`node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`
+— **à sauvegarder à part** (voir « Chiffrement des documents » ci-dessous).
 L'image backend tourne en `NODE_ENV=production` : elle exige des secrets JWT
 d'au moins 32 caractères (différents l'un de l'autre) et `COOKIE_SECURE=true`
 (qui fonctionne aussi sur http://localhost). Voir le tableau complet des
@@ -86,8 +89,8 @@ personne et à l'administrateur familial. Fuseau de référence : `APP_TIMEZONE`
   nom, son adresse (confirmée par un lien envoyé à la nouvelle, avis envoyé à
   l'ancienne) ou son mot de passe (alerte par courriel, autres appareils
   déconnectés), télécharger ses données (JSON) et supprimer son compte.
-- **Sécurité** : fichiers téléversés vérifiés par leur contenu et servis avec
-  un type imposé, en-têtes de sécurité (helmet côté API, `security-headers.conf`
+- **Sécurité** : fichiers téléversés vérifiés par leur contenu, **chiffrés sur
+  le disque** (voir ci-dessous) et servis avec un type imposé, en-têtes de sécurité (helmet côté API, `security-headers.conf`
   côté Nginx), cookies `SameSite=Strict`, contrôle de l'origine des requêtes,
   jetons d'invitation et de vérification stockés sous forme d'empreinte,
   jeton de fiche d'urgence chiffré, réponses de l'API jamais mises en cache,
@@ -127,6 +130,37 @@ doit être l'adresse publique de l'application.
   le même compte. L'archive est préparée dans `uploads/exports/` (volume
   partagé avec le worker) et effacée après téléchargement ou expiration.
 
+### Chiffrement des documents
+
+Les documents médicaux (`uploads/`) et les archives d'export
+(`uploads/exports/`) sont **chiffrés sur le disque** (AES-256-GCM) : une copie
+du volume des fichiers ou d'une sauvegarde ne livre aucun contenu sans la clé.
+Chaque fichier a sa propre clé aléatoire, elle-même chiffrée par la clé
+maîtresse `DOCUMENTS_ENCRYPTION_KEY` (32 octets en base64 ou en hexadécimal),
+qui n'est jamais en base ni dans le code. Les fichiers sont déchiffrés à la
+volée à la consultation, au téléchargement par le lien médecin et dans
+l'archive de la famille ; un fichier altéré n'est jamais servi (erreur
+journalisée). La base de données, elle, n'est pas chiffrée par ce mécanisme.
+
+- **Générer la clé** :
+  `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`,
+  à placer dans `.env` (`DOCUMENTS_ENCRYPTION_KEY=`). Elle est transmise au
+  backend et au worker.
+- ⚠️ **Perdre cette clé rend tous les documents irrécupérables.** Sauvegardez-la
+  **à part** : hors du serveur et hors des sauvegardes de fichiers (gestionnaire
+  de mots de passe, coffre-fort de l'équipe…). Une sauvegarde du volume
+  `uploads_data` sans la clé est inutilisable — et la clé rangée avec cette
+  sauvegarde annulerait la protection.
+- En production (`NODE_ENV=production`, défaut de l'image Docker), le backend
+  et le worker **refusent de démarrer** si la clé est absente ou invalide. En
+  développement, sans clé, une clé est dérivée de `JWT_ACCESS_SECRET` (avec un
+  avertissement) : changer ce secret rendrait alors les documents locaux illisibles.
+- **Anciens fichiers** (téléversés avant le chiffrement) : chiffrés
+  automatiquement au démarrage du backend, sans interruption (copie chiffrée
+  vérifiée, puis remplacement de l'original) ; compte rendu dans les journaux :
+  `🔐 N document(s) chiffré(s), M déjà chiffré(s), K erreur(s)`.
+- **Changer de clé (rotation)** : voir DOCUMENTATION.md §9.1.
+
 ### Modifier le schéma de la base
 
 1. Modifier `Backend/src/db/schema.js`
@@ -164,7 +198,7 @@ docker compose up --build
 ```bash
 cd Backend
 cp .env.example .env
-# éditer .env : DATABASE_URL, secrets JWT, FRONTEND_URL (voir DOCUMENTATION.md §3.5)
+# éditer .env : DATABASE_URL, secrets JWT, DOCUMENTS_ENCRYPTION_KEY, FRONTEND_URL (voir DOCUMENTATION.md §3.5)
 npm install
 npm run db:migrate   # crée/met à jour les tables à partir des migrations de Backend/drizzle/
 npm run dev           # démarre l'API sur http://localhost:4000

@@ -88,6 +88,11 @@ services:
       APP_TIMEZONE: ${APP_TIMEZONE:-Africa/Dakar}
       MAIL_WEBHOOK_SECRET: ${MAIL_WEBHOOK_SECRET:-}
       EMERGENCY_TOKEN_KEY: ${EMERGENCY_TOKEN_KEY:-}
+      # Clé maîtresse du chiffrement des documents (backend ET worker, qui
+      # prépare les archives d'export). Obligatoire : sa perte rend les
+      # documents irrécupérables — à sauvegarder à part (voir .env.example).
+      DOCUMENTS_ENCRYPTION_KEY: ${DOCUMENTS_ENCRYPTION_KEY:?La variable DOCUMENTS_ENCRYPTION_KEY est requise — voir .env.example}
+      DOCUMENTS_ENCRYPTION_KEY_PREVIOUS: ${DOCUMENTS_ENCRYPTION_KEY_PREVIOUS:-}
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?La variable POSTGRES_PASSWORD est requise — voir .env.example}@db:5432/${POSTGRES_DB:-santefamille}
       JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?La variable JWT_ACCESS_SECRET est requise — voir .env.example}
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?La variable JWT_REFRESH_SECRET est requise — voir .env.example}
