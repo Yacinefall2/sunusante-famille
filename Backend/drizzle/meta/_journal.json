@@ -134,6 +134,13 @@
       "when": 1791820868181,
       "tag": "0018_mode_senior",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1791885508061,
+      "tag": "0019_exports",
+      "breakpoints": true
     }
   ]
 }

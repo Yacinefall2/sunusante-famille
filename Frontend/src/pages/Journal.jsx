@@ -16,6 +16,7 @@ import {
   UserCog,
   FileSignature,
   Lock,
+  Download,
 } from "lucide-react";
 import { format, isToday, isYesterday, parseISO } from "date-fns";
 import { fr } from "date-fns/locale";
@@ -40,6 +41,7 @@ const CATEGORY_STYLE = {
   urgence: { icon: ShieldAlert, color: "bg-red-50 text-red-600" },
   village: { icon: TreePine, color: "bg-lime-50 text-lime-700" },
   consentement: { icon: FileSignature, color: "bg-indigo-50 text-indigo-600" },
+  exports: { icon: Download, color: "bg-orange-50 text-orange-600" },
 };
 const DEFAULT_STYLE = { icon: History, color: "bg-gray-100 text-gray-500" };
 

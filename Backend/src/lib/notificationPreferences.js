@@ -21,6 +21,9 @@ export const NOTIFICATION_CATEGORIES = {
   // Gouvernance des rôles (UC-39, R4).
   role_transfer: { label: "Propositions de transfert de gestion", inApp: true, email: true },
   role_expiry: { label: "Fin prochaine d'un accès de lecteur invité (3 jours avant)", inApp: true, email: true },
+  // Export des données de la famille par l'autre parent (UC-09) : activé par
+  // défaut, chaque parent doit savoir que les données du foyer sont sorties.
+  family_export: { label: "Exports des données de la famille par un autre parent", inApp: true, email: true },
 };
 
 // Échec de remise d'un courriel : jamais silencieux (§7.3), donc toujours

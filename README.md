@@ -116,6 +116,17 @@ Page « Partage & urgence » (`/partage`) :
 Les liens sont construits à partir de `FRONTEND_URL` : en production, elle
 doit être l'adresse publique de l'application.
 
+### Exports
+
+- **Dossier en PDF** (UC-27) : bouton « Exporter en PDF » sur une fiche et dans
+  « Mon compte », pour toute personne qui peut lire ce dossier.
+- **Données de la famille** (UC-09, parents) : archive ZIP (un PDF par
+  dossier lisible, fichiers des documents, `donnees-famille.json`, journal
+  d'activité). Mot de passe ressaisi, puis lien de téléchargement à usage
+  unique valable 1 h envoyé par courriel, utilisable seulement connecté avec
+  le même compte. L'archive est préparée dans `uploads/exports/` (volume
+  partagé avec le worker) et effacée après téléchargement ou expiration.
+
 ### Modifier le schéma de la base
 
 1. Modifier `Backend/src/db/schema.js`

@@ -17,6 +17,7 @@ import { withAccess } from "../lib/documentAccess.js";
 import { notify } from "./notify.js";
 import { parentsOf, villageTick } from "./village.js";
 import { rolesTick } from "./roles.js";
+import { exportsTick } from "../lib/familyExport.js";
 import { sendNotificationEmail } from "../lib/mailer.js";
 import { APP_TIMEZONE, addDays, formatDate, formatDateTime, localDate, zonedTime } from "../lib/time.js";
 
@@ -427,6 +428,8 @@ export async function runReminderTick({ now = new Date(), sendMail = sendNotific
   await lateVaccineReminders(now);
   await endFinishedTreatments(now);
   await medicationReminders(now);
+  // Archives de la famille (UC-09) : préparation en attente, liens expirés.
+  await exportsTick(now);
   await dispatchEmails(now, sendMail);
 }
 

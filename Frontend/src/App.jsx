@@ -25,6 +25,7 @@ import PartagePage from "./pages/Partage.jsx";
 import JournalPage from "./pages/Journal.jsx";
 import PublicDoctorPage from "./pages/PublicDoctor.jsx";
 import PublicEmergencyPage from "./pages/PublicEmergency.jsx";
+import ExportDownloadPage from "./pages/ExportDownload.jsx";
 import { useFamily } from "./context/FamilyContext";
 import { SeniorAlerts } from "./components/senior/SeniorAlerts";
 
@@ -51,6 +52,9 @@ export default function App() {
       {/* Pages publiques de la phase F : sans connexion */}
       <Route path="/medecin/:token" element={<PublicDoctorPage />} />
       <Route path="/urgence/:token" element={<PublicEmergencyPage />} />
+      {/* Lien de l'archive de la famille (UC-09) : hors écran « Ma fiche », mais
+          la page exige d'être connecté avec le compte du demandeur */}
+      <Route path="/export/:token" element={<ExportDownloadPage />} />
       <Route
         path="/*"
         element={

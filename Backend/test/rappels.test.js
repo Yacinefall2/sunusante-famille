@@ -276,6 +276,7 @@ describe("API des notifications", () => {
       ["emergency_view", true, true],
       ["role_transfer", true, true],
       ["role_expiry", true, true],
+      ["family_export", true, true],
     ]);
     expect((await as(f.fatou).put("/api/notifications/preferences").send({ category: "delivery_failure", inApp: false, email: false })).status).toBe(400);
   });

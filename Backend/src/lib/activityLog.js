@@ -23,6 +23,7 @@ export const CATEGORIES = {
   urgence: "Fiche d'urgence",
   village: "Village",
   consentement: "Consentement",
+  exports: "Exports",
 };
 
 const SPACE_ROLE = {
@@ -321,6 +322,29 @@ export const ACTIONS = {
   consent_renewed: {
     category: "consentement",
     text: (e, d) => `${e.actor} a réactivé la fiche de ${e.member}, qui a redonné son accord oral${consentHow(d)}, et en est gestionnaire`,
+  },
+  // ── Exports (UC-27 dossier en PDF, UC-09 archive de la famille) ──
+  member_exported_pdf: {
+    category: "exports",
+    text: (e) => `${e.actor} a exporté en PDF le dossier de ${e.member}`,
+  },
+  family_export_requested: {
+    category: "exports",
+    text: (e) => `${e.actor} a demandé l'export des données de la famille (archive ZIP)`,
+  },
+  family_export_sent: {
+    category: "exports",
+    text: (e, d) =>
+      `Archive des données de la famille prête : lien de téléchargement envoyé par courriel à ${e.actor}` +
+      (d.fichesCount != null ? ` (${plural(d.fichesCount, "dossier")}, ${plural(d.filesCount ?? 0, "fichier")} de documents)` : ""),
+  },
+  family_export_downloaded: {
+    category: "exports",
+    text: (e) => `${e.actor} a téléchargé l'archive des données de la famille`,
+  },
+  family_export_failed: {
+    category: "exports",
+    text: (e) => `L'archive des données de la famille demandée par ${e.actor} n'a pas pu être préparée`,
   },
 };
 

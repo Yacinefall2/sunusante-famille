@@ -26,6 +26,7 @@ import accountRouter from "./routes/account.js";
 import activityRouter from "./routes/activity.js";
 import roleTransfersRouter from "./routes/roleTransfers.js";
 import reminderSettingsRouter from "./routes/reminderSettings.js";
+import { exportDownloadRouter, familyExportRouter, memberExportRouter } from "./routes/exports.js";
 import { requireAuth, requireVerifiedEmail } from "./middleware/auth.js";
 import { convertLegacyEmergencyTokens } from "./lib/sharing.js";
 
@@ -95,7 +96,11 @@ app.use("/api/public", publicRouter);
 // via requireFamilyMembership, à l'intérieur de chaque fichier de routes.
 app.use("/api/account", requireAuth, requireVerifiedEmail, accountRouter);
 app.use("/api/families", requireAuth, requireVerifiedEmail, familiesRouter);
+// Archive ZIP de la famille (UC-09) : POST /api/families/:id/export, historique
+app.use("/api/families", requireAuth, requireVerifiedEmail, familyExportRouter);
 app.use("/api/members", requireAuth, requireVerifiedEmail, membersRouter);
+// Dossier médical en PDF (UC-27) : GET /api/members/:id/export.pdf
+app.use("/api/members", requireAuth, requireVerifiedEmail, memberExportRouter);
 app.use("/api/appointments", requireAuth, requireVerifiedEmail, appointmentsRouter);
 app.use("/api/treatments", requireAuth, requireVerifiedEmail, treatmentsRouter);
 app.use("/api/vaccinations", requireAuth, requireVerifiedEmail, vaccinationsRouter);
@@ -115,6 +120,9 @@ app.use("/api/doctor-shares", requireAuth, requireVerifiedEmail, doctorSharesRou
 app.use("/api/emergency", requireAuth, requireVerifiedEmail, emergencyRouter);
 // Journal d'activité (UC-10) : lecture seule, visibilité calculée par la route.
 app.use("/api/activity", requireAuth, requireVerifiedEmail, activityRouter);
+// Lien de téléchargement de l'archive (reçu par courriel) : exige aussi d'être
+// connecté avec le compte qui l'a demandée.
+app.use("/api/exports", requireAuth, requireVerifiedEmail, exportDownloadRouter);
 
 app.get("/api/health", (req, res) => res.json({ status: "ok" }));
 

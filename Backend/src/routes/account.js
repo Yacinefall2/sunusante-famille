@@ -14,7 +14,7 @@ import {
   users,
   vaccinations,
 } from "../db/schema.js";
-import { comparePassword, hashPassword } from "../lib/password.js";
+import { hashPassword } from "../lib/password.js";
 import { generateToken } from "../lib/token.js";
 import { signAccessToken, signRefreshToken, REFRESH_TOKEN_TTL_MS } from "../lib/jwt.js";
 import { clearAuthCookies, hashToken, setAuthCookies } from "../lib/session.js";
@@ -26,7 +26,9 @@ import { setDocumentRole } from "../lib/documentAccess.js";
 import { soleManagedFiches } from "../lib/management.js";
 import { SENIOR_MODE_INVALID, setSeniorMode } from "../lib/seniorMode.js";
 import { sendEmailChangeEmail, sendEmailChangeNotice, sendPasswordChangedAlert } from "../lib/mailer.js";
-import { clearFailures, lockedMinutes, recordFailure, tooManyAttemptsMessage } from "../lib/loginThrottle.js";
+// Vérification du mot de passe actuel, avec la limite de tentatives de la
+// connexion : commune à « Mon compte » et à l'export de la famille.
+import { checkPassword } from "../lib/passwordCheck.js";
 
 // « Mon compte » : profil, mot de passe, adresse courriel, export des
 // données et suppression du compte. Chaque action sensible redemande le mot
@@ -39,26 +41,6 @@ const EMAIL_CHANGE_TTL_MS = 24 * 60 * 60 * 1000;
 
 async function fullUser(id) {
   const [user] = await db.select().from(users).where(eq(users.id, id));
-  return user;
-}
-
-// Vérifie le mot de passe actuel, avec la même limite de tentatives que la
-// connexion (lib/loginThrottle.js) : une session volée ne doit pas servir à
-// deviner le mot de passe, puis à changer l'adresse du compte.
-async function checkPassword(req, res) {
-  const user = await fullUser(req.user.id);
-  const minutes = lockedMinutes(user.email, req.ip);
-  if (minutes > 0) {
-    res.status(429).json({ error: tooManyAttemptsMessage(minutes) });
-    return null;
-  }
-  const ok = typeof req.body.password === "string" && (await comparePassword(req.body.password, user.passwordHash));
-  if (!ok) {
-    recordFailure(user.email, req.ip);
-    res.status(403).json({ error: "Mot de passe actuel incorrect" });
-    return null;
-  }
-  clearFailures(user.email, req.ip);
   return user;
 }
 

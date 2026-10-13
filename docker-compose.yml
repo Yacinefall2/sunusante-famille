@@ -123,6 +123,11 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+    # Volume des fichiers : le worker prépare les archives de la famille
+    # (UC-09, uploads/exports/) avec les documents, et efface celles dont le
+    # lien a expiré.
+    volumes:
+      - uploads_data:/app/uploads
     healthcheck:
       test: ["CMD", "node", "-e", "process.exit(Date.now() - Number(require('fs').readFileSync('/tmp/worker-heartbeat', 'utf8')) < 180000 ? 0 : 1)"]
       interval: 60s

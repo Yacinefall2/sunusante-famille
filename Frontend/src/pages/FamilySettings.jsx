@@ -22,6 +22,7 @@ import {
 } from "../lib/roles";
 import toast from "react-hot-toast";
 import { ReminderSettingsPanel } from "../components/village/ReminderSettingsPanel";
+import { FamilyExportPanel } from "../components/exports/FamilyExportPanel";
 import { Switch } from "../components/ui/Switch";
 
 // Rôles d'un compte dans la famille, et rôles sur une fiche (optionnels,
@@ -567,6 +568,9 @@ export default function FamilySettingsPage() {
 
             {/* Règles d'escalade des rappels du Village (UC-08) — parents seulement */}
             {isParent && <ReminderSettingsPanel familyId={selectedFamily.id} />}
+
+            {/* Export des données de la famille (UC-09) — parents seulement */}
+            {isParent && <FamilyExportPanel familyId={selectedFamily.id} />}
 
             {/* Zone sensible — suppression de l'espace, réservée à l'administrateur familial */}
             {isPrimaryAdmin && (

@@ -5,7 +5,8 @@ import { Modal } from "../components/ui/Modal";
 import { Button } from "../components/ui/Button";
 import { Input } from "../components/ui/Input";
 import { useAuth } from "../context/AuthContext";
-import { UserRound, Mail, KeyRound, Download, Trash2, Loader2, AlertTriangle, Clock, RotateCw, ZoomIn } from "lucide-react";
+import { useFamily } from "../context/FamilyContext";
+import { UserRound, Mail, KeyRound, Download, FileDown, Trash2, Loader2, AlertTriangle, Clock, RotateCw, ZoomIn } from "lucide-react";
 import { Switch } from "../components/ui/Switch";
 import { SoundAlertsSetup } from "../components/senior/SoundAlertsSetup";
 import { formatDate } from "../lib/utils";
@@ -44,6 +45,8 @@ async function send(url, method, body) {
 
 export default function ComptePage() {
   const { refreshUser, seniorMode, setSeniorMode } = useAuth();
+  // Sa propre fiche dans la famille sélectionnée (export PDF du dossier).
+  const { myMember } = useFamily();
   const [savingDisplay, setSavingDisplay] = useState(false);
   const navigate = useNavigate();
   const [account, setAccount] = useState(null);
@@ -302,16 +305,34 @@ export default function ComptePage() {
           </Button>
         </Section>
 
-        <Section icon={Download} title="Mes données" hint="Une copie de votre compte et de votre fiche médicale, au format JSON.">
-          <a
-            href="/api/account/export"
-            download
-            onClick={openPrivateLink}
-            className="inline-flex items-center justify-center gap-2 font-semibold rounded-xl transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 text-sm px-4 py-2.5 border-2 border-teal-600 text-teal-600 hover:bg-teal-50 focus:ring-teal-500"
-          >
-            <Download size={15} />
-            Télécharger mes données
-          </a>
+        <Section
+          icon={Download}
+          title="Mes données"
+          hint="Votre dossier médical en PDF (à imprimer ou à montrer à un médecin), ou une copie complète de votre compte et de votre fiche au format JSON."
+        >
+          <div className="flex flex-col sm:flex-row gap-3">
+            {/* Dossier médical en PDF (UC-27) : sa propre fiche dans la famille sélectionnée */}
+            {myMember && (
+              <a
+                href={`/api/members/${myMember.id}/export.pdf`}
+                download
+                onClick={openPrivateLink}
+                className="inline-flex items-center justify-center gap-2 font-semibold rounded-xl transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 text-sm px-4 py-2.5 bg-teal-600 hover:bg-teal-700 text-white focus:ring-teal-500 shadow-sm"
+              >
+                <FileDown size={15} />
+                Exporter mon dossier en PDF
+              </a>
+            )}
+            <a
+              href="/api/account/export"
+              download
+              onClick={openPrivateLink}
+              className="inline-flex items-center justify-center gap-2 font-semibold rounded-xl transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 text-sm px-4 py-2.5 border-2 border-teal-600 text-teal-600 hover:bg-teal-50 focus:ring-teal-500"
+            >
+              <Download size={15} />
+              Télécharger mes données (JSON)
+            </a>
+          </div>
         </Section>
 
         <Section icon={Trash2} title="Supprimer mon compte" hint="Action définitive." danger>

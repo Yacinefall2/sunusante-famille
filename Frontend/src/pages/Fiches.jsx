@@ -31,7 +31,9 @@ import {
   ShieldAlert,
   ArrowRightLeft,
   CalendarClock,
+  Download,
 } from "lucide-react";
+import { openPrivateLink } from "../lib/session";
 import { calculateAge, clickableCardProps, formatDate } from "../lib/utils";
 import {
   DEFAULT_ROLE_DURATION,
@@ -105,6 +107,8 @@ export default function FichesPage() {
   //   Parent avec accès complet.
   const canRead = (m) => m?.access === "full" || m?.access === "read";
   const canEdit = (m) => m?.access === "full";
+  // Lecture du dossier (accès complet ou lecture seule) : export PDF possible.
+  const canReadFiche = (m) => m?.access === "full" || m?.access === "read";
   const canDelete = (m) => isParent && m?.access === "full" && !m.hasAccount;
   const canManageRoles = (m) => (m?.isMine && !isDependent) || (isParent && m?.access === "full");
   // - attester (ou retirer) l'accord oral d'un proche sans compte : accès
@@ -908,7 +912,19 @@ export default function FichesPage() {
             )}
 
             {/* Actions */}
-            <div className="flex gap-3 pt-2 border-t border-gray-100">
+            <div className="flex flex-wrap gap-3 pt-2 border-t border-gray-100">
+              {/* Dossier complet en PDF (UC-27) : tout compte qui peut le lire */}
+              {canReadFiche(viewing) && (
+                <a
+                  href={`/api/members/${viewing.id}/export.pdf`}
+                  download
+                  onClick={openPrivateLink}
+                  className="flex-1 inline-flex items-center justify-center gap-2 font-semibold rounded-xl transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 text-sm px-4 py-2.5 border-2 border-teal-600 text-teal-600 hover:bg-teal-50 focus:ring-teal-500 whitespace-nowrap"
+                >
+                  <Download size={15} />
+                  Exporter en PDF
+                </a>
+              )}
               {canEdit(viewing) && (
                 <Button
                   variant="ghost"

@@ -260,6 +260,31 @@ export async function sendDoctorShareEmail({ to, ...details }) {
   await transporter.sendMail({ from: FROM, to, ...buildDoctorShareEmail(details) });
 }
 
+// Archive des données de la famille prête (UC-09) : lien à usage unique,
+// valable 1 heure, qui exige en plus d'être connecté avec le compte du
+// demandeur. Objet neutre : aucune donnée de santé.
+export function buildFamilyExportEmail({ name, familyName, token, expiresAtLabel }) {
+  return {
+    subject: "Votre archive des données de la famille est prête — SunuSanté Famille",
+    html: accessButtonTemplate({
+      heading: `Bonjour ${escapeHtml(name)}`,
+      bodyHtml: `<p>L'archive des données de la famille <strong>${escapeHtml(familyName)}</strong> que vous avez demandée
+        est prête. Pour la télécharger, ouvrez le lien ci-dessous : vous devrez être connecté(e) à votre compte
+        SunuSanté Famille.</p>
+        <p>Elle contient des <strong>données de santé confidentielles</strong> : enregistrez-la dans un endroit sûr et
+        ne la transmettez qu'à des personnes de confiance.</p>`,
+      link: `${FRONTEND_URL}/export/${token}`,
+      buttonLabel: "Télécharger l'archive",
+      validityLabel: `Ce lien ne sert qu'une fois et expire le ${escapeHtml(expiresAtLabel)}.`,
+      footer: "Si vous n'avez pas demandé cet export, changez votre mot de passe dès maintenant.",
+    }),
+  };
+}
+
+export async function sendFamilyExportEmail({ to, ...details }) {
+  await transporter.sendMail({ from: FROM, to, ...buildFamilyExportEmail(details) });
+}
+
 // Objet des courriels de notification : NEUTRE, sans aucune donnée de santé.
 // L'objet s'affiche sur l'écran verrouillé du téléphone, dans les aperçus et
 // les listes de messages : le nom d'un médicament, d'un vaccin ou le motif
@@ -270,6 +295,7 @@ const NOTIFICATION_SUBJECTS = {
   vaccine_reminder: "Rappel de vaccination — SunuSanté Famille",
   doctor_share: "Partage de dossier — SunuSanté Famille",
   emergency_view: "Fiche d'urgence consultée — SunuSanté Famille",
+  family_export: "Export des données de la famille — SunuSanté Famille",
 };
 export const DEFAULT_NOTIFICATION_SUBJECT = "Rappel SunuSanté Famille";
 

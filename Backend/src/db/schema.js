@@ -7,6 +7,7 @@ import {
   timestamp,
   boolean,
   integer,
+  bigint,
   jsonb,
   index,
   uniqueIndex,
@@ -666,3 +667,46 @@ export const familyReminderSettings = pgTable("family_reminder_settings", {
   updatedByUserId: integer("updated_by_user_id").references(() => users.id, { onDelete: "set null" }),
   updatedAt: timestamp("updated_at", { precision: 3 }).defaultNow().notNull(),
 });
+
+// ── Exports des données de la famille (UC-09) ────────────────────────────────
+// Un parent (A1/A2) demande, mot de passe à l'appui, une archive ZIP de tout
+// ce qu'il peut lire. L'archive est préparée en arrière-plan (lib/familyExport.js)
+// dans un dossier du volume des fichiers qui n'est jamais servi par /uploads,
+// puis un lien à usage unique, valable 1 heure, part par courriel au
+// demandeur — qui doit en plus être connecté avec le même compte pour la
+// télécharger. Seule l'empreinte du jeton est conservée.
+// statut : pending (en préparation) | ready (lien envoyé) | failed |
+//          downloaded (téléchargée, fichier effacé) | expired (fichier effacé)
+export const familyExports = pgTable(
+  "family_exports",
+  {
+    id: serial("id").primaryKey(),
+    familyId: integer("family_id")
+      .references(() => families.id, { onDelete: "cascade" })
+      .notNull(),
+    requestedByUserId: integer("requested_by_user_id")
+      .references(() => users.id, { onDelete: "cascade" })
+      .notNull(),
+    status: varchar("status", { length: 20 }).default("pending").notNull(),
+    // Empreinte SHA-256 du jeton du lien, posée quand l'archive est prête
+    tokenHash: varchar("token_hash", { length: 64 }).unique(),
+    // Nom du fichier temporaire dans uploads/exports/ (effacé après
+    // téléchargement ou expiration)
+    filePath: text("file_path"),
+    sizeBytes: bigint("size_bytes", { mode: "number" }),
+    // Préparation prise en charge (serveur ou worker) : évite qu'elle soit
+    // faite deux fois ; reprise si elle reste bloquée (lib/familyExport.js)
+    claimedAt: timestamp("claimed_at", { precision: 3 }),
+    error: text("error"),
+    createdAt: timestamp("created_at", { precision: 3 }).defaultNow().notNull(),
+    readyAt: timestamp("ready_at", { precision: 3 }),
+    // ready_at + 1 heure
+    expiresAt: timestamp("expires_at", { precision: 3 }),
+    downloadedAt: timestamp("downloaded_at", { precision: 3 }),
+  },
+  (t) => [
+    // Une seule demande en préparation par famille et par demandeur
+    uniqueIndex("family_exports_pending_uq").on(t.familyId, t.requestedByUserId).where(sql`${t.status} = 'pending'`),
+    index("family_exports_requester_idx").on(t.requestedByUserId, t.createdAt.desc()),
+  ]
+);

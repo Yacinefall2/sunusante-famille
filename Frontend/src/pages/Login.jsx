@@ -1,14 +1,20 @@
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { Input } from "../components/ui/Input";
 import { Button } from "../components/ui/Button";
 import { Heart } from "lucide-react";
 import toast from "react-hot-toast";
 
+// Retour après connexion (?next=/export/…) : seulement un chemin interne à
+// l'application, jamais une adresse extérieure (« //site » ou « https:… »).
+const safeNext = (value) => (typeof value === "string" && /^\/(?![/\\])/.test(value) ? value : null);
+
 export default function LoginPage() {
   const { login } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const next = safeNext(searchParams.get("next"));
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -18,7 +24,7 @@ export default function LoginPage() {
     setLoading(true);
     try {
       const data = await login(email, password);
-      navigate(data.emailVerified ? "/dashboard" : "/verification-en-attente");
+      navigate(data.emailVerified ? next ?? "/dashboard" : "/verification-en-attente");
     } catch (err) {
       toast.error(err.message);
     } finally {
