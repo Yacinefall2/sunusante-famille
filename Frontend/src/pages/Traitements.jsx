@@ -628,7 +628,7 @@ export default function TraitementsPage() {
             </p>
           </div>
           {writableMembers.length > 0 && (
-            <Button onClick={openAdd}>
+            <Button onClick={openAdd} requiresNetwork>
               <Plus size={16} />
               Nouveau traitement
             </Button>
@@ -651,7 +651,7 @@ export default function TraitementsPage() {
                 ⚠️ Ajoutez d'abord un membre depuis la page Membres
               </p>
             ) : writableMembers.length > 0 ? (
-              <Button onClick={openAdd}>
+              <Button onClick={openAdd} requiresNetwork>
                 <Plus size={16} />
                 Ajouter un traitement
               </Button>
@@ -804,7 +804,7 @@ export default function TraitementsPage() {
                 Aucun traitement{filterActive === "active" ? " en cours" : filterActive === "inactive" ? " terminé" : ""} pour {selectionLabel}.
               </p>
               {writableMembers.length > 0 && (
-                <Button onClick={openAdd}>
+                <Button onClick={openAdd} requiresNetwork>
                   <Plus size={16} />
                   Ajouter un traitement
                 </Button>

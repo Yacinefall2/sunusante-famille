@@ -6,11 +6,18 @@ import App from "./App.jsx";
 import { AuthProvider, useAuth } from "./context/AuthContext.jsx";
 import { ErrorBoundary } from "./components/ErrorBoundary.jsx";
 import { installFetchInterceptor } from "./lib/session.js";
+import { installOnlineListeners } from "./lib/offline.js";
+import { captureInstallPrompt, registerServiceWorker } from "./lib/pwa.js";
 import "./index.css";
 
 // Renouvellement automatique de la session sur les réponses 401 (voir
 // lib/session.js) — installé avant tout appel réseau de l'application.
 installFetchInterceptor();
+// Application installable : état du réseau, service worker (hors ligne,
+// notifications push) et bouton « Installer l'application ».
+installOnlineListeners();
+captureInstallPrompt();
+registerServiceWorker();
 
 // Confirmations (toasts) : plus grandes et plus longues en mode senior (UC-25).
 function AppToaster() {

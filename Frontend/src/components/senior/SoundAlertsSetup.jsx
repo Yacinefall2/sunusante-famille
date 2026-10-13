@@ -66,7 +66,7 @@ export function SoundAlertsSetup({ onlyIfDisabled = false, className }) {
             Votre navigateur va vous demander l'autorisation d'afficher des notifications : répondez « Autoriser ».
           </p>
           <div className="flex flex-wrap gap-3">
-            <Button size="lg" onClick={activate} loading={busy}>
+            <Button size="lg" onClick={activate} loading={busy} offlineOk>
               <BellRing size={20} />
               Activer les alertes sonores
             </Button>

@@ -1,8 +1,21 @@
 import { cn } from "../../lib/utils";
 import { forwardRef } from "react";
+import { OFFLINE_HINT, useOnline } from "../../lib/offline";
 
+// Hors ligne (§10 : toute écriture exige la connexion), le bouton est
+// désactivé avec l'infobulle « Connexion nécessaire » s'il déclenche une
+// écriture : bouton d'envoi de formulaire (type="submit"), bouton d'action
+// asynchrone (prop `loading` fournie : enregistrer, supprimer…) ou bouton
+// marqué `requiresNetwork` (ouverture d'un formulaire d'ajout). `offlineOk`
+// le laisse actif (action locale, lecture).
 export const Button = forwardRef(
-  ({ className, variant = "primary", size = "md", loading, children, disabled, ...props }, ref) => {
+  (
+    { className, variant = "primary", size = "md", loading, children, disabled, requiresNetwork, offlineOk, title, ...props },
+    ref
+  ) => {
+    const online = useOnline();
+    const needsNetwork = !offlineOk && (requiresNetwork || props.type === "submit" || loading !== undefined);
+    const blocked = needsNetwork && !online;
     const base =
       "inline-flex items-center justify-center gap-2 font-semibold rounded-xl transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed";
 
@@ -24,7 +37,8 @@ export const Button = forwardRef(
       <button
         ref={ref}
         className={cn(base, variants[variant], sizes[size], className)}
-        disabled={disabled || loading}
+        disabled={disabled || loading || blocked}
+        title={blocked ? OFFLINE_HINT : title}
         {...props}
       >
         {loading && (

@@ -1,15 +1,21 @@
 import { cn } from "../../lib/utils";
+import { OFFLINE_HINT, useOnline } from "../../lib/offline";
 
 // Interrupteur marche / arrêt accessible (role="switch"). `label` est lu par
 // les lecteurs d'écran ; afficher le texte visible à côté si besoin.
-export function Switch({ checked, onChange, disabled, label, className }) {
+// Chaque bascule enregistre un réglage : désactivé hors ligne (§10), sauf
+// `offlineOk` (réglage propre à l'appareil).
+export function Switch({ checked, onChange, disabled, label, className, offlineOk = false }) {
+  const online = useOnline();
+  const blocked = !offlineOk && !online;
   return (
     <button
       type="button"
       role="switch"
       aria-checked={!!checked}
       aria-label={label}
-      disabled={disabled}
+      disabled={disabled || blocked}
+      title={blocked ? OFFLINE_HINT : undefined}
       onClick={(e) => {
         e.stopPropagation();
         onChange?.(!checked);

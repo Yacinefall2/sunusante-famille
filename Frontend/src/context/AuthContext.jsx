@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, useCallback } from "react";
 import { SESSION_EXPIRED_EVENT, isSessionStale, markSessionFresh, refreshSession } from "../lib/session";
+import { clearOfflineData, setOfflineSessionUser, unsubscribeThisDevice } from "../lib/pwa";
 
 const AuthContext = createContext(null);
 
@@ -32,10 +33,27 @@ export function AuthProvider({ children }) {
     loadMe();
   }, [loadMe]);
 
+  // Données gardées pour la consultation hors ligne : cloisonnées par compte.
+  // Le service worker efface celles d'un autre compte. Si un autre compte
+  // utilisait cet appareil sans s'être déconnecté, l'abonnement aux
+  // notifications push du navigateur était le sien : il est retiré (le
+  // serveur l'oubliera à son prochain envoi).
+  const userId = user?.id ?? null;
+  useEffect(() => {
+    if (!userId) return;
+    if (setOfflineSessionUser(userId)) unsubscribeThisDevice();
+  }, [userId]);
+
   // Session impossible à renouveler (signalée par l'intercepteur fetch) :
   // l'utilisateur repasse en « déconnecté » et sera renvoyé vers la connexion.
+  // Les données gardées hors ligne sont effacées. Les notifications push de
+  // l'appareil restent actives (rappels de médicaments) jusqu'à une
+  // déconnexion volontaire ou au retrait de l'appareil.
   useEffect(() => {
-    const onExpired = () => setUser(null);
+    const onExpired = () => {
+      clearOfflineData();
+      setUser(null);
+    };
     window.addEventListener(SESSION_EXPIRED_EVENT, onExpired);
     return () => window.removeEventListener(SESSION_EXPIRED_EVENT, onExpired);
   }, []);
@@ -142,13 +160,21 @@ export function AuthProvider({ children }) {
   };
 
   // La session locale est fermée même si l'appel réseau échoue (hors ligne,
-  // serveur indisponible).
+  // serveur indisponible). Avant : désabonnement de CET appareil des
+  // notifications push (la session est encore valide pour le dire au
+  // serveur). Après : effacement des données gardées hors ligne.
   const logout = async () => {
+    try {
+      await unsubscribeThisDevice();
+    } catch {
+      // ignoré : le navigateur peut ne pas prendre en charge le push
+    }
     try {
       await fetch("/api/auth/logout", { method: "POST" });
     } catch {
       // ignoré : l'interface repasse « déconnectée » quoi qu'il arrive
     } finally {
+      await clearOfflineData();
       setUser(null);
     }
   };

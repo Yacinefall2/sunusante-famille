@@ -28,6 +28,8 @@ import PublicEmergencyPage from "./pages/PublicEmergency.jsx";
 import ExportDownloadPage from "./pages/ExportDownload.jsx";
 import { useFamily } from "./context/FamilyContext";
 import { SeniorAlerts } from "./components/senior/SeniorAlerts";
+import { LocalReminders } from "./components/senior/LocalReminders";
+import { ServiceWorkerBridge } from "./components/pwa/ServiceWorkerBridge";
 
 // Tant que l'utilisateur n'a pas de fiche à lui dans la famille sélectionnée
 // (il n'est titulaire d'aucun dossier), il doit d'abord la désigner ou la
@@ -40,51 +42,57 @@ function MyFicheGate({ children }) {
 
 export default function App() {
   return (
-    <Routes>
-      <Route path="/login" element={<LoginPage />} />
-      <Route path="/register" element={<RegisterPage />} />
-      <Route path="/verification-en-attente" element={<PendingVerificationPage />} />
-      <Route path="/verifier-email/:token" element={<VerifyEmailPage />} />
-      <Route path="/mot-de-passe-oublie" element={<ForgotPasswordPage />} />
-      <Route path="/reinitialiser-mot-de-passe/:token" element={<ResetPasswordPage />} />
-      <Route path="/confirmer-email/:token" element={<ConfirmEmailChangePage />} />
-      <Route path="/invitations/:token" element={<AcceptInvitationPage />} />
-      {/* Pages publiques de la phase F : sans connexion */}
-      <Route path="/medecin/:token" element={<PublicDoctorPage />} />
-      <Route path="/urgence/:token" element={<PublicEmergencyPage />} />
-      {/* Lien de l'archive de la famille (UC-09) : hors écran « Ma fiche », mais
-          la page exige d'être connecté avec le compte du demandeur */}
-      <Route path="/export/:token" element={<ExportDownloadPage />} />
-      <Route
-        path="/*"
-        element={
-          <ProtectedRoute>
-            <FamilyProvider>
-              {/* Alertes sonores du mode senior (UC-25) : actives sur toutes les pages */}
-              <SeniorAlerts />
-              <MyFicheGate>
-                <Routes>
-                  <Route path="/" element={<Navigate to="/dashboard" replace />} />
-                  <Route path="/dashboard" element={<DashboardPage />} />
-                  <Route path="/membres" element={<MembresPage />} />
-                  <Route path="/fiches" element={<FichesPage />} />
-                  <Route path="/rendez-vous" element={<RendezVousPage />} />
-                  <Route path="/traitements" element={<TraitementsPage />} />
-                  <Route path="/vaccinations" element={<VaccinationsPage />} />
-                  <Route path="/documents" element={<DocumentsPage />} />
-                  <Route path="/famille" element={<FamilySettingsPage />} />
-                  <Route path="/village" element={<VillagePage />} />
-                  <Route path="/partage" element={<PartagePage />} />
-                  <Route path="/notifications" element={<NotificationsPage />} />
-                  <Route path="/journal" element={<JournalPage />} />
-                  <Route path="/compte" element={<ComptePage />} />
-                  <Route path="*" element={<Navigate to="/dashboard" replace />} />
-                </Routes>
-              </MyFicheGate>
-            </FamilyProvider>
-          </ProtectedRoute>
-        }
-      />
-    </Routes>
+    <>
+      {/* Clic sur une notification push : ouverture de la bonne page */}
+      <ServiceWorkerBridge />
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/register" element={<RegisterPage />} />
+        <Route path="/verification-en-attente" element={<PendingVerificationPage />} />
+        <Route path="/verifier-email/:token" element={<VerifyEmailPage />} />
+        <Route path="/mot-de-passe-oublie" element={<ForgotPasswordPage />} />
+        <Route path="/reinitialiser-mot-de-passe/:token" element={<ResetPasswordPage />} />
+        <Route path="/confirmer-email/:token" element={<ConfirmEmailChangePage />} />
+        <Route path="/invitations/:token" element={<AcceptInvitationPage />} />
+        {/* Pages publiques de la phase F : sans connexion */}
+        <Route path="/medecin/:token" element={<PublicDoctorPage />} />
+        <Route path="/urgence/:token" element={<PublicEmergencyPage />} />
+        {/* Lien de l'archive de la famille (UC-09) : hors écran « Ma fiche », mais
+            la page exige d'être connecté avec le compte du demandeur */}
+        <Route path="/export/:token" element={<ExportDownloadPage />} />
+        <Route
+          path="/*"
+          element={
+            <ProtectedRoute>
+              <FamilyProvider>
+                {/* Alertes sonores du mode senior (UC-25) : actives sur toutes les pages */}
+                <SeniorAlerts />
+                {/* Rappels locaux : application ouverte hors ligne (§10) */}
+                <LocalReminders />
+                <MyFicheGate>
+                  <Routes>
+                    <Route path="/" element={<Navigate to="/dashboard" replace />} />
+                    <Route path="/dashboard" element={<DashboardPage />} />
+                    <Route path="/membres" element={<MembresPage />} />
+                    <Route path="/fiches" element={<FichesPage />} />
+                    <Route path="/rendez-vous" element={<RendezVousPage />} />
+                    <Route path="/traitements" element={<TraitementsPage />} />
+                    <Route path="/vaccinations" element={<VaccinationsPage />} />
+                    <Route path="/documents" element={<DocumentsPage />} />
+                    <Route path="/famille" element={<FamilySettingsPage />} />
+                    <Route path="/village" element={<VillagePage />} />
+                    <Route path="/partage" element={<PartagePage />} />
+                    <Route path="/notifications" element={<NotificationsPage />} />
+                    <Route path="/journal" element={<JournalPage />} />
+                    <Route path="/compte" element={<ComptePage />} />
+                    <Route path="*" element={<Navigate to="/dashboard" replace />} />
+                  </Routes>
+                </MyFicheGate>
+              </FamilyProvider>
+            </ProtectedRoute>
+          }
+        />
+      </Routes>
+    </>
   );
 }

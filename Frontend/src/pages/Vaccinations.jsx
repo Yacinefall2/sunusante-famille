@@ -304,7 +304,7 @@ export default function VaccinationsPage() {
             <p className="text-sm text-gray-500">{vaccinations.length} vaccination(s) enregistrée(s)</p>
           </div>
           {writableMembers.length > 0 && (
-            <Button onClick={openAdd}>
+            <Button onClick={openAdd} requiresNetwork>
               <Plus size={16} />
               Ajouter une vaccination
             </Button>
@@ -393,7 +393,7 @@ export default function VaccinationsPage() {
                 ⚠️ Ajoutez d'abord un membre depuis la page Membres
               </p>
             ) : writableMembers.length > 0 ? (
-              <Button onClick={openAdd}>
+              <Button onClick={openAdd} requiresNetwork>
                 <Plus size={16} />
                 Enregistrer une vaccination
               </Button>

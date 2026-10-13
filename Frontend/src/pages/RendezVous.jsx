@@ -329,7 +329,7 @@ export default function RendezVousPage() {
             <p className="text-sm text-gray-500">{appointments.length} rendez-vous au total</p>
           </div>
           {writableMembers.length > 0 && (
-            <Button onClick={openAdd}>
+            <Button onClick={openAdd} requiresNetwork>
               <Plus size={16} />
               Nouveau rendez-vous
             </Button>
@@ -383,7 +383,7 @@ export default function RendezVousPage() {
                 ⚠️ Ajoutez d'abord un membre depuis la page Membres
               </p>
             ) : writableMembers.length > 0 ? (
-              <Button onClick={openAdd}>
+              <Button onClick={openAdd} requiresNetwork>
                 <Plus size={16} />
                 Planifier un rendez-vous
               </Button>

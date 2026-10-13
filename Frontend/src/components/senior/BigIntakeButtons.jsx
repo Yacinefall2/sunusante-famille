@@ -3,12 +3,15 @@ import { Check, X } from "lucide-react";
 import toast from "react-hot-toast";
 import { respondIntake } from "../notifications/intakes";
 import { cn } from "../../lib/utils";
+import { OFFLINE_HINT, useOnline } from "../../lib/offline";
 
 // Très grands boutons « Pris » / « Pas pris » du mode senior (UC-25) —
 // mêmes routes que les petits boutons (POST /api/intakes/:id/respond).
 // `onDone(updated)` après une réponse enregistrée.
 export function BigIntakeButtons({ intakeId, onDone, className }) {
   const [busy, setBusy] = useState(null);
+  // Hors ligne : réponse impossible (§10), boutons désactivés.
+  const online = useOnline();
 
   const answer = async (status) => {
     if (busy) return;
@@ -29,7 +32,8 @@ export function BigIntakeButtons({ intakeId, onDone, className }) {
     <div className={cn("flex gap-3", className)}>
       <button
         type="button"
-        disabled={!!busy}
+        disabled={!!busy || !online}
+        title={online ? undefined : OFFLINE_HINT}
         onClick={() => answer("taken")}
         className={cn(base, "bg-emerald-600 text-white hover:bg-emerald-700 focus-visible:ring-emerald-300")}
       >
@@ -38,7 +42,8 @@ export function BigIntakeButtons({ intakeId, onDone, className }) {
       </button>
       <button
         type="button"
-        disabled={!!busy}
+        disabled={!!busy || !online}
+        title={online ? undefined : OFFLINE_HINT}
         onClick={() => answer("not_taken")}
         className={cn(base, "bg-white text-red-700 border-4 border-red-300 hover:bg-red-50 focus-visible:ring-red-300")}
       >

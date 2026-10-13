@@ -386,9 +386,16 @@ export const notifications = pgTable(
     emailLastError: text("email_last_error"),
     emailMessageId: varchar("email_message_id", { length: 255 }),
     emailSentAt: timestamp("email_sent_at"),
+    // Notification push vers les appareils abonnés (lib/push.js) :
+    // skipped (catégorie non concernée, ou pas dans l'application) | pending | sent | failed
+    pushStatus: varchar("push_status", { length: 20 }).default("skipped").notNull(),
+    pushSentAt: timestamp("push_sent_at"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
-  (t) => [uniqueIndex("notifications_dedupe_uq").on(t.dedupeKey)]
+  (t) => [
+    uniqueIndex("notifications_dedupe_uq").on(t.dedupeKey),
+    index("notifications_push_pending_idx").on(t.id).where(sql`${t.pushStatus} = 'pending'`),
+  ]
 );
 
 // ── Préférences de notification (UC-65) ──────────────────────────────────────
@@ -709,4 +716,59 @@ export const familyExports = pgTable(
     uniqueIndex("family_exports_pending_uq").on(t.familyId, t.requestedByUserId).where(sql`${t.status} = 'pending'`),
     index("family_exports_requester_idx").on(t.requestedByUserId, t.createdAt.desc()),
   ]
+);
+
+
+// ── Abonnements aux notifications push (application installable, §10) ───────
+// Un appareil (navigateur) abonné par ligne : adresse du service push du
+// navigateur (endpoint, propre à l'appareil) et clés de chiffrement de la
+// charge utile (Web Push standard, VAPID). Supprimé quand le service push
+// répond 404/410 (abonnement expiré), quand la personne retire l'appareil, ou
+// à la déconnexion sur cet appareil.
+export const pushSubscriptions = pgTable(
+  "push_subscriptions",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id")
+      .references(() => users.id, { onDelete: "cascade" })
+      .notNull(),
+    endpoint: text("endpoint").notNull(),
+    p256dh: varchar("p256dh", { length: 255 }).notNull(),
+    auth: varchar("auth", { length: 255 }).notNull(),
+    userAgent: varchar("user_agent", { length: 500 }),
+    // Libellé lisible de l'appareil (« Chrome sur Android »)
+    label: varchar("label", { length: 100 }),
+    // « Masquer le détail sur l'écran verrouillé » : titre neutre
+    // « Rappel SunuSanté Famille », sans nom de médicament ni de proche.
+    hideDetails: boolean("hide_details").default(false).notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    lastSuccessAt: timestamp("last_success_at"),
+    // Échecs consécutifs (hors 404/410, qui suppriment l'abonnement)
+    failures: integer("failures").default(0).notNull(),
+    lastError: text("last_error"),
+  },
+  (t) => [uniqueIndex("push_subscriptions_endpoint_uq").on(t.endpoint), index("push_subscriptions_user_idx").on(t.userId)]
+);
+
+// ── Jetons d'action des notifications de prise ──────────────────────────────
+// Boutons « Pris » / « Pas pris » d'une notification push : l'application
+// peut être fermée et la session expirée. Chaque push de prise porte un jeton
+// aléatoire (seule son empreinte SHA-256 est gardée) : usage unique, limité à
+// CETTE prise et à CE compte, valable 24 h (routes/intakes.js).
+export const intakeActionTokens = pgTable(
+  "intake_action_tokens",
+  {
+    id: serial("id").primaryKey(),
+    tokenHash: varchar("token_hash", { length: 64 }).notNull().unique(),
+    intakeId: integer("intake_id")
+      .references(() => medicationIntakes.id, { onDelete: "cascade" })
+      .notNull(),
+    userId: integer("user_id")
+      .references(() => users.id, { onDelete: "cascade" })
+      .notNull(),
+    expiresAt: timestamp("expires_at").notNull(),
+    usedAt: timestamp("used_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [index("intake_action_tokens_expiry_idx").on(t.expiresAt)]
 );

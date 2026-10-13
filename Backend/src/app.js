@@ -15,7 +15,8 @@ import familyMembershipsRouter from "./routes/familyMemberships.js";
 import documentRolesRouter from "./routes/documentRoles.js";
 import uploadsRouter from "./routes/uploads.js";
 import notificationsRouter from "./routes/notifications.js";
-import intakesRouter from "./routes/intakes.js";
+import intakesRouter, { intakeActionRouter } from "./routes/intakes.js";
+import pushRouter from "./routes/push.js";
 import mailWebhooksRouter from "./routes/mailWebhooks.js";
 import villageRouter from "./routes/village.js";
 import familyDashboardRouter from "./routes/familyDashboard.js";
@@ -30,6 +31,7 @@ import { exportDownloadRouter, familyExportRouter, memberExportRouter } from "./
 import { requireAuth, requireVerifiedEmail } from "./middleware/auth.js";
 import { convertLegacyEmergencyTokens } from "./lib/sharing.js";
 import { encryptLegacyDocuments } from "./lib/documentFiles.js";
+import { pushConfig } from "./lib/push.js";
 
 const app = express();
 
@@ -90,6 +92,9 @@ app.use("/api/invitations", invitationsRouter);
 app.use("/api/webhooks/mail", mailWebhooksRouter);
 // Lien médecin et fiche d'urgence : publics, sans compte (phase F).
 app.use("/api/public", publicRouter);
+// Boutons « Pris » / « Pas pris » d'une notification push : sans session,
+// autorisés par le jeton d'action de la notification (routes/intakes.js).
+app.use("/api/intakes", intakeActionRouter);
 
 // Toutes les routes ci-dessous nécessitent une session valide ET une adresse
 // courriel vérifiée (règle transverse §10, sans exception). L'isolation
@@ -116,6 +121,8 @@ app.use("/api/role-transfers", requireAuth, requireVerifiedEmail, roleTransfersR
 app.use("/api/reminder-settings", requireAuth, requireVerifiedEmail, reminderSettingsRouter);
 app.use("/api/notifications", requireAuth, requireVerifiedEmail, notificationsRouter);
 app.use("/api/intakes", requireAuth, requireVerifiedEmail, intakesRouter);
+// Notifications push : abonnement des appareils (application installable).
+app.use("/api/push", requireAuth, requireVerifiedEmail, pushRouter);
 app.use("/api/village", requireAuth, requireVerifiedEmail, villageRouter);
 app.use("/api/doctor-shares", requireAuth, requireVerifiedEmail, doctorSharesRouter);
 app.use("/api/emergency", requireAuth, requireVerifiedEmail, emergencyRouter);
@@ -132,6 +139,9 @@ app.get("/api/health", (req, res) => res.json({ status: "ok" }));
 // aussi à leur première utilisation (lib/sharing.js upgradeEmergencyCard).
 // Pas pendant les tests, qui vident la base à leur rythme.
 if (!process.env.VITEST) {
+  // Clés VAPID absentes ou invalides : avertissement, push désactivé.
+  pushConfig();
+
   convertLegacyEmergencyTokens()
     .then((n) => n > 0 && console.log(`🔐 ${n} jeton(s) de fiche d'urgence chiffré(s)`))
     .catch((error) => console.error("Conversion des jetons de fiche d'urgence impossible :", error));

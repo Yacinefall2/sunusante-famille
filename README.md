@@ -74,6 +74,33 @@ courriel non remis après 3 tentatives est signalé dans l'application à la
 personne et à l'administrateur familial. Fuseau de référence : `APP_TIMEZONE`
 (Africa/Dakar par défaut). Journal : `docker compose logs -f worker`.
 
+### Application installable, hors ligne et notifications push
+
+- **Installer l'application** : menu de l'avatar ou « Mon compte » (Chrome,
+  Edge, Android) ; sur iPhone/iPad, Safari → Partager → « Sur l'écran
+  d'accueil ». Manifeste `Frontend/public/manifest.webmanifest`, icônes
+  `Frontend/public/icons/` (refaites par `npm run icons` dans `Frontend/`).
+- **Hors ligne** (§10) : l'interface et les données **déjà consultées sur
+  l'appareil** restent lisibles sans réseau (bandeau « Hors ligne — données
+  du … ») ; toute écriture exige la connexion (boutons désactivés, requêtes
+  refusées). Ces données sont effacées à la déconnexion, au changement de
+  compte, à l'expiration de la session et après 7 jours sans connexion.
+  Jamais gardés : fichiers des documents, exports, pages publiques.
+  Service worker écrit à la main : `Frontend/pwa/service-worker.js`.
+- **Notifications push** (Web Push standard, sans service payant) : page
+  Notifications → « Cet appareil » → « Recevoir les rappels sur cet
+  appareil ». Rappels de prise (avec boutons Pris / Pas pris), de
+  rendez-vous, de vaccin, du Village et transferts de gestion, quand la
+  préférence « Dans l'application » est cochée. Option par appareil
+  « Masquer le détail sur l'écran verrouillé ». Nécessite les clés VAPID
+  (facultatives — sans elles le push est désactivé) :
+  `cd Backend && npx web-push generate-vapid-keys`, puis `VAPID_PUBLIC_KEY`,
+  `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT=mailto:…` dans `.env`. Le push exige
+  HTTPS (ou `localhost`).
+- **Rappels locaux** : application ouverte et hors ligne, les prises du jour
+  déjà connues déclenchent l'alerte à l'heure (son et grande alerte en mode
+  senior).
+
 ### Comptes et connexion
 
 - **Mot de passe oublié** (`/mot-de-passe-oublie`) : un lien valable 1 heure,

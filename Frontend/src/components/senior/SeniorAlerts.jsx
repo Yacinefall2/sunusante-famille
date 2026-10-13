@@ -7,7 +7,9 @@ import { notifyNotificationsChanged } from "../notifications/intakes";
 import { BigIntakeButtons } from "./BigIntakeButtons";
 import { formatIsoDatesInText } from "../../lib/utils";
 import {
+  LOCAL_ALERT_EVENT,
   installAudioUnlockOnGesture,
+  intakeTag,
   markAlerted,
   playAlertSound,
   sessionOpenedAt,
@@ -61,10 +63,14 @@ export function SeniorAlerts() {
         const data = await res.json();
         const fresh = (Array.isArray(data?.items) ? data.items : []).filter((n) => shouldAlert(n, openedAt)).reverse();
         if (stopped || fresh.length === 0) return;
-        fresh.forEach((n) => markAlerted(n.id));
+        const tagOf = (n) => (n.medicationId && n.intakeScheduledAt ? intakeTag(n.medicationId, n.intakeScheduledAt) : undefined);
+        fresh.forEach((n) => {
+          markAlerted(n.id);
+          if (tagOf(n)) markAlerted(tagOf(n));
+        });
         setQueue((q) => [...q, ...fresh]);
         playAlertSound();
-        fresh.forEach((n) => showBrowserNotification({ id: n.id, ...alertText(n, myMemberId.current) }));
+        fresh.forEach((n) => showBrowserNotification({ id: n.id, tag: tagOf(n), ...alertText(n, myMemberId.current) }));
         notifyNotificationsChanged(); // la cloche et l'accueil se mettent à jour
       } catch {
         // Silencieux : nouvel essai au prochain passage.
@@ -76,6 +82,15 @@ export function SeniorAlerts() {
       stopped = true;
       clearInterval(timer);
     };
+  }, [seniorMode]);
+
+  // Rappels locaux (application ouverte HORS LIGNE, LocalReminders) : même
+  // grande alerte, sans réponse possible tant que la connexion est absente.
+  useEffect(() => {
+    if (!seniorMode) return;
+    const onLocal = (e) => setQueue((q) => [...q, { ...e.detail, local: true }]);
+    window.addEventListener(LOCAL_ALERT_EVENT, onLocal);
+    return () => window.removeEventListener(LOCAL_ALERT_EVENT, onLocal);
   }, [seniorMode]);
 
   const current = queue[0];
@@ -92,8 +107,8 @@ export function SeniorAlerts() {
     next();
   };
 
-  const isIntake = current.category === "medication_intake" && current.intakeId;
-  const { title, body } = alertText(current, myMemberId.current);
+  const isIntake = current.category === "medication_intake" && (current.intakeId || current.local);
+  const { title, body } = current.local ? current : alertText(current, myMemberId.current);
   const Icon = isIntake ? Pill : CalendarClock;
 
   return (
@@ -110,7 +125,20 @@ export function SeniorAlerts() {
           <p className="text-2xl font-bold text-gray-900">{title}</p>
           {body && <p className={`mt-2 ${isIntake ? "text-3xl font-extrabold text-violet-800" : "text-xl text-gray-800"}`}>{body}</p>}
         </div>
-        {isIntake ? (
+        {current.local ? (
+          <>
+            <p className="text-lg text-gray-700">
+              Pas de connexion : vous pourrez indiquer « Pris » ou « Pas pris » dès le retour du réseau.
+            </p>
+            <button
+              type="button"
+              onClick={next}
+              className="w-full min-h-[3.5rem] rounded-2xl bg-teal-600 hover:bg-teal-700 text-white text-xl font-bold focus:outline-none focus-visible:ring-4 focus-visible:ring-teal-300"
+            >
+              J'ai compris
+            </button>
+          </>
+        ) : isIntake ? (
           <>
             <BigIntakeButtons intakeId={current.intakeId} onDone={next} />
             <button type="button" onClick={next} className="text-base font-semibold text-gray-600 underline">

@@ -4,6 +4,14 @@
 // plutôt que de modifier chaque appel `fetch` de l'application, un
 // intercepteur global rejoue automatiquement la requête après un
 // renouvellement réussi.
+//
+// Hors ligne (lib/offline.js) : une coupure réseau ne déconnecte JAMAIS
+// (renouvellement impossible = "network", pas "expired") ; les requêtes qui
+// modifient des données sont refusées sans appel réseau, avec un message
+// clair ; les lectures passent par le service worker, qui sert les données
+// déjà consultées.
+
+import { isOffline, noteApiResponse, noteNetworkFailure, offlineWriteResponse } from "./offline.js";
 
 // Événement émis quand la session ne peut plus être renouvelée : le contexte
 // d'authentification l'écoute pour repasser l'utilisateur en « déconnecté ».
@@ -84,35 +92,53 @@ let installed = false;
 
 // Remplace window.fetch par une version qui, sur une réponse 401, renouvelle
 // la session une fois puis rejoue la requête d'origine.
-// Option propre à l'application : `{ skipAuthRefresh: true }` désactive ce
-// comportement pour un appel donné.
+// Options propres à l'application : `{ skipAuthRefresh: true }` désactive ce
+// comportement pour un appel donné ; `{ offlineSilent: true }` aussi, et
+// l'appel n'est pas pris en compte pour l'état hors ligne.
 export function installFetchInterceptor() {
   if (installed || !nativeFetch) return;
   installed = true;
 
   window.fetch = async (input, init) => {
-    if (init?.skipAuthRefresh || !shouldIntercept(requestUrl(input))) {
-      return nativeFetch(input, init);
-    }
-
-    // La requête est construite puis clonée AVANT l'envoi : un corps
-    // FormData (téléversement) ou un flux ne peut être lu qu'une fois.
-    let request;
-    let retry;
+    // offlineSilent : lecture d'arrière-plan (rappels locaux) qui ne doit
+    // pas modifier le bandeau « Hors ligne ».
+    if (init?.offlineSilent || !shouldIntercept(requestUrl(input))) return nativeFetch(input, init);
+    const method = (init?.method || (input instanceof Request ? input.method : "GET")).toUpperCase();
+    // Écriture hors ligne : refusée tout de suite (§11 : pas d'écriture
+    // différée), avec un message prêt à afficher.
+    if (method !== "GET" && method !== "HEAD" && isOffline()) return offlineWriteResponse();
     try {
-      request = new Request(input, init);
-      retry = request.clone();
-    } catch {
-      return nativeFetch(input, init);
+      const res = await interceptedFetch(input, init);
+      noteApiResponse(res);
+      return res;
+    } catch (error) {
+      if (error instanceof TypeError) noteNetworkFailure();
+      throw error;
     }
-
-    const res = await nativeFetch(request);
-    if (res.status !== 401) return res;
-
-    const outcome = await refreshSession();
-    if (outcome !== "ok") return res;
-    return nativeFetch(retry);
   };
+}
+
+// Appel de l'API avec renouvellement de session sur 401.
+async function interceptedFetch(input, init) {
+  if (init?.skipAuthRefresh) return nativeFetch(input, init);
+
+  // La requête est construite puis clonée AVANT l'envoi : un corps
+  // FormData (téléversement) ou un flux ne peut être lu qu'une fois.
+  let request;
+  let retry;
+  try {
+    request = new Request(input, init);
+    retry = request.clone();
+  } catch {
+    return nativeFetch(input, init);
+  }
+
+  const res = await nativeFetch(request);
+  if (res.status !== 401) return res;
+
+  const outcome = await refreshSession();
+  if (outcome !== "ok") return res;
+  return nativeFetch(retry);
 }
 
 // Avant d'ouvrir un lien privé (/uploads, export…) dans un nouvel onglet ou

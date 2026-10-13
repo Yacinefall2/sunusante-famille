@@ -7,6 +7,7 @@ import { cn } from "../../lib/utils";
 import { useAuth } from "../../context/AuthContext";
 import { useFamily } from "../../context/FamilyContext";
 import { familyRoleLabel } from "../../lib/roles";
+import { InstallAppButton } from "../pwa/InstallAppButton";
 
 // Menu du compte connecté, ouvert en cliquant sur l'avatar de la barre du haut.
 export function UserMenu() {
@@ -133,6 +134,8 @@ export function UserMenu() {
                 </span>
               </Link>
             ))}
+            {/* Application installable : affiché seulement si le navigateur la propose */}
+            <InstallAppButton variant="menu" onDone={close} />
           </div>
 
           {/* Affichage : mode senior (grands caractères, accueil simplifié, alertes sonores) */}

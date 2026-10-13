@@ -6,15 +6,19 @@ import { AppShell } from "../components/layout/AppShell";
 import { NotificationItem } from "../components/notifications/NotificationItem";
 import { useNotifications } from "../components/notifications/useNotifications";
 import { RoleTransferInbox } from "../components/members/RoleTransferInbox";
+import { DevicePushSection } from "../components/notifications/DevicePushSection";
+import { OFFLINE_HINT, useOnline } from "../lib/offline";
 
 // Case à cocher d'une préférence (canal "Dans l'application" ou "Par courriel").
+// Hors ligne : désactivée (§10, toute écriture exige la connexion).
 function PreferenceCheckbox({ checked, disabled, onChange, label }) {
+  const online = useOnline();
   return (
-    <label className="inline-flex items-center gap-2 cursor-pointer select-none">
+    <label className="inline-flex items-center gap-2 cursor-pointer select-none" title={online ? undefined : OFFLINE_HINT}>
       <input
         type="checkbox"
         checked={checked}
-        disabled={disabled}
+        disabled={disabled || !online}
         onChange={(e) => onChange(e.target.checked)}
         className="w-4 h-4 rounded text-teal-600 focus:ring-teal-500 disabled:opacity-50"
       />
@@ -153,9 +157,13 @@ export default function NotificationsPage() {
 
           <p className="text-xs text-gray-500 mt-4 flex items-start gap-1.5">
             <Info size={13} className="text-teal-500 flex-shrink-0 mt-0.5" />
-            Les échecs d&apos;envoi de courriel vous sont toujours signalés dans l&apos;application.
+            Les échecs d&apos;envoi de courriel vous sont toujours signalés dans l&apos;application. Les rappels affichés
+            dans l&apos;application arrivent aussi en notification sur les appareils abonnés (section « Cet appareil »).
           </p>
         </section>
+
+        {/* Notifications push de cet appareil (application installable) */}
+        <DevicePushSection />
 
         {/* Historique */}
         <section className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">

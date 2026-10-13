@@ -2,6 +2,7 @@ import "dotenv/config";
 import fs from "node:fs";
 import { pool } from "./src/db/index.js";
 import { runReminderTick } from "./src/reminders/engine.js";
+import { pushConfig } from "./src/lib/push.js";
 
 // Service « worker » : passe toutes les minutes sur le moteur de rappels.
 // Un verrou PostgreSQL garantit qu'un seul worker travaille à la fois, même si
@@ -22,6 +23,8 @@ async function acquireLock() {
 
 await acquireLock();
 console.log("✅ Worker de rappels SunuSanté Famille démarré");
+// Notifications push : avertit si les clés VAPID manquent (push désactivé).
+if (pushConfig()) console.log("🔔 Notifications push activées");
 
 let running = false;
 async function tick() {

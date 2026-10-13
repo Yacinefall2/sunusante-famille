@@ -6,9 +6,10 @@ import { Button } from "../components/ui/Button";
 import { Input } from "../components/ui/Input";
 import { useAuth } from "../context/AuthContext";
 import { useFamily } from "../context/FamilyContext";
-import { UserRound, Mail, KeyRound, Download, FileDown, Trash2, Loader2, AlertTriangle, Clock, RotateCw, ZoomIn } from "lucide-react";
+import { UserRound, Mail, KeyRound, Download, FileDown, Trash2, Loader2, AlertTriangle, Clock, RotateCw, ZoomIn, Smartphone } from "lucide-react";
 import { Switch } from "../components/ui/Switch";
 import { SoundAlertsSetup } from "../components/senior/SoundAlertsSetup";
+import { InstallAppButton } from "../components/pwa/InstallAppButton";
 import { formatDate } from "../lib/utils";
 import { openPrivateLink } from "../lib/session";
 import toast from "react-hot-toast";
@@ -230,6 +231,14 @@ export default function ComptePage() {
               <SoundAlertsSetup />
             </div>
           )}
+        </Section>
+
+        <Section
+          icon={Smartphone}
+          title="Application sur cet appareil"
+          hint="Installez SunuSanté Famille sur l'écran d'accueil de votre téléphone ou de votre ordinateur."
+        >
+          <InstallAppButton />
         </Section>
 
         <Section icon={Mail} title="Adresse courriel" hint="Pour vous connecter et recevoir les rappels.">

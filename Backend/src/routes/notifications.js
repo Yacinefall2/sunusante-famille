@@ -30,6 +30,7 @@ router.get("/", async (req, res) => {
         intakeStatus: medicationIntakes.status,
         // Médicament de la prise : affiché en grand par l'alerte du mode senior
         // (« C'est l'heure de votre médicament : Amlodipine 5 mg »).
+        medicationId: medicationIntakes.medicationId,
         medicationName: treatmentMedications.name,
         medicationDosage: treatmentMedications.dosage,
         intakeScheduledAt: medicationIntakes.scheduledAt,

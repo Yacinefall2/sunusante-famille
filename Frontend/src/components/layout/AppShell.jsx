@@ -1,5 +1,6 @@
 import { Sidebar } from "./Sidebar";
 import { Topbar } from "./Topbar";
+import { OfflineBanner } from "../pwa/OfflineBanner";
 
 export function AppShell({ children }) {
   return (
@@ -7,7 +8,10 @@ export function AppShell({ children }) {
       <Sidebar />
       <div className="flex-1 lg:ml-64 flex flex-col min-h-screen">
         <Topbar />
-        <main className="flex-1 p-4 sm:p-6 lg:p-8">{children}</main>
+        <main className="flex-1 p-4 sm:p-6 lg:p-8">
+          <OfflineBanner />
+          {children}
+        </main>
       </div>
     </div>
   );

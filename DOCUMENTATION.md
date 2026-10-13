@@ -181,6 +181,8 @@ refuse de démarrer sans elle.
 | `SMTP_USER` / `SMTP_PASS` | Identifiants SMTP (vides pour MailHog) | — |
 | `SMTP_FROM` | Expéditeur des courriels | `SunuSanté Famille <no-reply@santefamille.local>` |
 | `MAIL_WEBHOOK_SECRET` | Secret des rebonds de courriel : en-tête `X-Webhook-Secret` sur `POST /api/webhooks/mail` (préférable), ou adresse `/api/webhooks/mail/<secret>` ; vide = désactivé | — |
+| `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | Clés VAPID des notifications push (facultatives : vides, push désactivé avec un avertissement au démarrage). Générer une fois : `cd Backend && npx web-push generate-vapid-keys`. Ne plus les changer ensuite (chaque appareil devrait se réabonner) | — |
+| `VAPID_SUBJECT` | Contact de l'exploitant transmis aux services push (`mailto:…`) | `mailto:contact@santefamille.local` |
 | `FRONTEND_PORT` | Port hôte du frontend | `8080` |
 | `BACKEND_PORT` | Port hôte de l'API (127.0.0.1 seulement) | `4000` |
 | `DB_HOST_PORT` | Port hôte de PostgreSQL (127.0.0.1 seulement) | `5432` |
@@ -247,6 +249,57 @@ d'URL complète). Cela fonctionne dans les deux environnements :
 
 Ne jamais coder en dur `http://localhost:4000` dans le code React : cela casserait le
 fonctionnement en Docker.
+
+### 4.5 bis Application installable, hors ligne et notifications push
+
+**Fichiers.** `Frontend/pwa/service-worker.js` (service worker écrit à la main),
+`Frontend/pwa/vitePlugin.js` (le publie en `/sw.js` au build avec la liste des
+fichiers de l'interface et un numéro de version), `Frontend/pwa/generate-icons.js`
+(icônes PNG sans dépendance : `npm run icons`), `Frontend/public/manifest.webmanifest`.
+Côté application : `src/lib/pwa.js` (enregistrement, installation, abonnement push,
+effacement du cache), `src/lib/offline.js` (état hors ligne, `useOnline`),
+`src/components/pwa/*` (bandeau, bouton d'installation, navigation au clic),
+`src/components/senior/LocalReminders.jsx`, `src/components/notifications/DevicePushSection.jsx`.
+Le service worker n'est enregistré qu'en production (`npm run build` / Docker),
+pas avec `npm run dev`.
+
+**Cache hors ligne.** Interface précachée. Lectures de l'API listées dans
+`API_LECTURE` (service worker) : « réseau d'abord, cache en secours », réponses
+200 seulement, dans le cache `sunusante-donnees-u<id du compte>`. L'API répond
+`Cache-Control: no-store` : cet en-tête interdit le cache HTTP du navigateur et
+des proxys, pas ce cache applicatif explicite, effacé par l'application
+(déconnexion, changement de compte, session expirée, 7 jours sans connexion
+réussie). Jamais gardés : `/uploads/*`, `/api/exports`, `/api/public/*`, routes
+d'authentification (hors `/api/auth/me`), requêtes autres que GET. Une page
+jamais consultée affiche « Cette page n'a pas encore été consultée sur cet
+appareil : connexion nécessaire ». **Ajouter une route de lecture à la liste
+`API_LECTURE`** pour qu'elle soit consultable hors ligne.
+
+**Écritures hors ligne.** Refusées par l'intercepteur fetch (`src/lib/session.js`,
+réponse 503 « Connexion nécessaire… ») ; le composant `Button` se désactive hors
+ligne s'il est `type="submit"`, a une prop `loading` ou `requiresNetwork`
+(`offlineOk` pour une action locale). Une coupure réseau ne déconnecte jamais.
+
+**Push.** Table `push_subscriptions` (un navigateur par ligne, supprimé sur
+réponse 404/410 du service push ou après 10 échecs). `notify()` marque
+`push_status = pending` les catégories de `PUSH_CATEGORIES` (`lib/push.js`)
+quand la préférence « Dans l'application » est active ; le worker les envoie à
+chaque passage (`dispatchPushes`). Routes : `GET /api/push/public-key`,
+`GET|POST|DELETE /api/push/subscriptions`, `PUT|DELETE /api/push/subscriptions/:id`,
+`POST /api/push/test`. Boutons Pris / Pas pris : jeton d'action aléatoire (table
+`intake_action_tokens`, empreinte SHA-256), usage unique, limité à la prise et au
+compte, 24 h, vérifié par `POST /api/intakes/:id/respond-with-token` (sans session,
+droits revérifiés). Option « Masquer le détail » : titre neutre « Rappel
+SunuSanté Famille », sans boutons.
+
+**nginx.** `/sw.js` et `/manifest.webmanifest` en `no-cache` ; CSP avec
+`worker-src 'self'; manifest-src 'self'`.
+
+**Limites.** Téléphone sans réseau et application fermée : le rappel arrive au
+retour du réseau (conservé 12 h par le service push). iPhone/iPad : push
+seulement si l'application est installée sur l'écran d'accueil (iOS 16.4+).
+Chrome refuse le push en navigation privée. Rappels locaux : heure de l'appareil
+(identique à `APP_TIMEZONE` au Sénégal).
 
 ### 4.6 État global : `FamilyContext`
 

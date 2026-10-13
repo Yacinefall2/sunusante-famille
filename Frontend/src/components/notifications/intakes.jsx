@@ -3,6 +3,7 @@ import { Check, X } from "lucide-react";
 import toast from "react-hot-toast";
 import { Badge } from "../ui/Badge";
 import { cn } from "../../lib/utils";
+import { OFFLINE_HINT, useOnline } from "../../lib/offline";
 
 // Statuts d'une prise de médicament, tels que renvoyés par le serveur.
 export const INTAKE_STATUSES = {
@@ -57,6 +58,8 @@ export function IntakeStatusBadge({ status, className }) {
 // appelé après une réponse enregistrée avec succès.
 export function IntakeAnswerButtons({ intakeId, onDone, className }) {
   const [busy, setBusy] = useState(null);
+  // Hors ligne : réponse impossible (§10), boutons désactivés.
+  const online = useOnline();
 
   const answer = async (e, status) => {
     e.stopPropagation();
@@ -77,7 +80,8 @@ export function IntakeAnswerButtons({ intakeId, onDone, className }) {
     <div className={cn("flex items-center gap-1.5", className)} onClick={(e) => e.stopPropagation()}>
       <button
         type="button"
-        disabled={!!busy}
+        disabled={!!busy || !online}
+        title={online ? undefined : OFFLINE_HINT}
         onClick={(e) => answer(e, "taken")}
         className={cn(base, "bg-emerald-600 text-white hover:bg-emerald-700")}
       >
@@ -86,7 +90,8 @@ export function IntakeAnswerButtons({ intakeId, onDone, className }) {
       </button>
       <button
         type="button"
-        disabled={!!busy}
+        disabled={!!busy || !online}
+        title={online ? undefined : OFFLINE_HINT}
         onClick={(e) => answer(e, "not_taken")}
         className={cn(base, "bg-white text-red-600 border border-red-200 hover:bg-red-50")}
       >

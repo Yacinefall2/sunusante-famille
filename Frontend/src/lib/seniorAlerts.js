@@ -1,13 +1,15 @@
 // ── Alertes sonores du mode senior (UC-25, M10 Accessibilité) ────────────────
 // Son généré par le navigateur (Web Audio API — aucun fichier externe) et
-// notification du navigateur (Notification API). Fonctionne quand
-// SunuSanté Famille est OUVERTE ; l'application fermée relèvera des
-// notifications « push » (lot PWA).
+// notification du navigateur (affichée par le service worker). Fonctionne
+// quand SunuSanté Famille est OUVERTE ; application fermée : notifications
+// push (lib/pwa.js, page Notifications « Cet appareil »).
 //
 // Les navigateurs bloquent tout son tant que la personne n'a pas touché la
 // page : le bouton « Activer les alertes sonores » débloque l'audio (et
 // demande, une seule fois, l'autorisation d'afficher des notifications). Après
 // un rechargement, le premier appui n'importe où sur la page le redébloque.
+
+import { showLocalNotification } from "./pwa.js";
 
 const ENABLED_KEY = "sunusante.alertesSonores";
 
@@ -130,20 +132,17 @@ export function notificationPermission() {
   return notificationsSupported() ? Notification.permission : "unsupported";
 }
 
-// Notification du navigateur (visible même si l'onglet est en arrière-plan).
-export function showBrowserNotification({ id, title, body }) {
-  if (!notificationsSupported() || Notification.permission !== "granted") return;
-  try {
-    const n = new Notification(title, { body, tag: `sunusante-${id}`, renotify: true, requireInteraction: true });
-    n.onclick = () => {
-      window.focus();
-      n.close();
-    };
-  } catch {
-    // Certains navigateurs mobiles n'autorisent les notifications que via un
-    // service worker (lot PWA) : la grande alerte à l'écran suffit ici.
-  }
+// Notification du navigateur (visible même si l'onglet est en arrière-plan),
+// affichée par le service worker quand il est là (seule méthode acceptée par
+// Chrome sur Android). `tag` : une prise = une seule notification à l'écran,
+// même si le push du serveur arrive aussi (même tag, voir intakeTag).
+export function showBrowserNotification({ id, title, body, tag, url }) {
+  showLocalNotification(title, { body, tag: tag ?? `sunusante-${id}`, url, requireInteraction: true });
 }
+
+// « Tag » d'une prise : médicament + heure prévue — identique à celui des
+// notifications push (Backend/src/lib/push.js, intakeTag).
+export const intakeTag = (medicationId, scheduledAt) => `prise-${medicationId}-${new Date(scheduledAt).getTime()}`;
 
 // ── Notifications déjà alertées : jamais deux fois la même ───────────────────
 const ALERTED_KEY = "sunusante.alertesJouees";
@@ -183,6 +182,10 @@ export function sessionOpenedAt() {
 }
 
 export const ALERT_CATEGORIES = ["medication_intake", "appointment_reminder"];
+
+// Événement : rappel local à montrer en grande alerte (mode senior), émis par
+// LocalReminders quand l'application est ouverte hors ligne.
+export const LOCAL_ALERT_EVENT = "sunusante:alerte-locale";
 const RECENT_UNREAD_MS = 15 * 60 * 1000;
 
 // Une notification mérite-t-elle une alerte ? Rappel de prise (encore en
@@ -191,6 +194,8 @@ const RECENT_UNREAD_MS = 15 * 60 * 1000;
 export function shouldAlert(n, openedAt, now = Date.now()) {
   if (!ALERT_CATEGORIES.includes(n.category) || wasAlerted(n.id)) return false;
   if (n.category === "medication_intake" && n.intakeId && n.intakeStatus !== "pending") return false;
+  // Prise déjà signalée par l'alerte locale (application ouverte hors ligne)
+  if (n.medicationId && n.intakeScheduledAt && wasAlerted(intakeTag(n.medicationId, n.intakeScheduledAt))) return false;
   const created = new Date(n.createdAt).getTime();
   if (Number.isNaN(created)) return false;
   return created >= openedAt || (!n.readAt && now - created < RECENT_UNREAD_MS);

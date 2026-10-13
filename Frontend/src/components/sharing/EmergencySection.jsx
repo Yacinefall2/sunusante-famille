@@ -379,7 +379,7 @@ export function EmergencySection({ member }) {
                       <Printer size={15} />
                       Imprimer la carte
                     </Button>
-                    <Button variant="outline" onClick={downloadLockScreen} loading={imaging}>
+                    <Button variant="outline" onClick={downloadLockScreen} loading={imaging} offlineOk>
                       <Smartphone size={15} />
                       Image pour l'écran de verrouillage
                     </Button>

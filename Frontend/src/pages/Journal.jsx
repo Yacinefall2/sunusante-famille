@@ -301,7 +301,7 @@ export default function JournalPage() {
             )}
             {nextCursor && (
               <div className="flex justify-center">
-                <Button variant="outline" onClick={loadMore} loading={loadingMore}>
+                <Button variant="outline" onClick={loadMore} loading={loadingMore} offlineOk>
                   Charger plus
                 </Button>
               </div>

@@ -249,7 +249,7 @@ function MemberDashboard() {
                   </div>
                 ))}
               </div>
-              <Button size="lg" onClick={() => setShowNewFamily(true)}>
+              <Button size="lg" onClick={() => setShowNewFamily(true)} requiresNetwork>
                 <Plus size={20} />
                 Créer ma famille
               </Button>

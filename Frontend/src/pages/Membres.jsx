@@ -116,7 +116,7 @@ export default function MembresPage() {
           </div>
           {canCreate && (
             <div className="flex flex-col items-start sm:items-end gap-1">
-              <Button onClick={() => setShowForm(true)}>
+              <Button onClick={() => setShowForm(true)} requiresNetwork>
                 <Plus size={16} />
                 Ajouter un membre
               </Button>
@@ -170,7 +170,7 @@ export default function MembresPage() {
             <h3 className="text-lg font-bold text-gray-700 mb-2">Aucun membre</h3>
             <p className="text-gray-400 mb-6">Ajoutez les personnes de votre foyer pour commencer le suivi médical.</p>
             {canCreate && (
-              <Button onClick={() => setShowForm(true)}>
+              <Button onClick={() => setShowForm(true)} requiresNetwork>
                 <Plus size={16} />
                 Ajouter un membre
               </Button>

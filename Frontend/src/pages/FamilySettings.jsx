@@ -396,7 +396,7 @@ export default function FamilySettingsPage() {
             </p>
           </div>
           {isParent && (
-            <Button onClick={() => setShowInvite(true)}>
+            <Button onClick={() => setShowInvite(true)} requiresNetwork>
               <Plus size={16} />
               Inviter quelqu&apos;un
             </Button>

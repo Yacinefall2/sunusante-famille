@@ -19,6 +19,7 @@ import { parentsOf, villageTick } from "./village.js";
 import { rolesTick } from "./roles.js";
 import { exportsTick } from "../lib/familyExport.js";
 import { sendNotificationEmail } from "../lib/mailer.js";
+import { dispatchPushes, purgeIntakeActionTokens } from "../lib/push.js";
 import { APP_TIMEZONE, addDays, formatDate, formatDateTime, localDate, zonedTime } from "../lib/time.js";
 
 // ── Moteur de rappels et de notifications (acteur système S1, UC-54 à 56) ────
@@ -430,6 +431,10 @@ export async function runReminderTick({ now = new Date(), sendMail = sendNotific
   await medicationReminders(now);
   // Archives de la famille (UC-09) : préparation en attente, liens expirés.
   await exportsTick(now);
+  // Notifications push (application installable) : juste après la création
+  // des rappels, pour qu'ils arrivent à l'heure sur les appareils abonnés.
+  await dispatchPushes(now);
+  await purgeIntakeActionTokens(now);
   await dispatchEmails(now, sendMail);
 }
 

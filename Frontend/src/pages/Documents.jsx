@@ -439,7 +439,7 @@ export default function DocumentsPage() {
           </div>
 
           {writableMembers.length > 0 && (
-            <Button onClick={openAdd}>
+            <Button onClick={openAdd} requiresNetwork>
               <Plus size={16} />
               Ajouter un document
             </Button>
@@ -601,7 +601,7 @@ export default function DocumentsPage() {
                 </p>
 
                 {writableMembers.length > 0 && (
-                  <Button onClick={openAdd}>
+                  <Button onClick={openAdd} requiresNetwork>
                     <Plus size={16} />
                     Ajouter ce document
                   </Button>
