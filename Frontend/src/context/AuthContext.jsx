@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState, useCallback } from "react";
 import { SESSION_EXPIRED_EVENT, isSessionStale, markSessionFresh, refreshSession } from "../lib/session";
 import { clearOfflineData, setOfflineSessionUser, unsubscribeThisDevice } from "../lib/pwa";
+import { postGoogle } from "../lib/google";
 
 const AuthContext = createContext(null);
 
@@ -98,6 +99,42 @@ export function AuthProvider({ children }) {
     return data;
   };
 
+  // « Continuer avec Google » : le jeton d'identité reçu du bouton Google est
+  // envoyé tel quel ; c'est le serveur qui le vérifie. Renvoie soit le compte
+  // connecté, soit { needsSignup, signupToken, name, email } (personne n'a
+  // encore de compte : écran de confirmation, rien n'est créé).
+  const googleSignIn = async (credential) => {
+    const { ok, data } = await postGoogle("/api/auth/google", { credential });
+    if (!ok) throw Object.assign(new Error(data.error || "Connexion avec Google impossible"), { code: data.code });
+    if (data.needsSignup) return data;
+    markSessionFresh();
+    setUser(data);
+    return data;
+  };
+
+  // Confirmation de l'inscription avec Google (conditions acceptées) : le
+  // compte est créé, déjà vérifié, et la session ouverte.
+  const googleSignup = async ({ signupToken, name }) => {
+    const { ok, data } = await postGoogle("/api/auth/google/signup", { signupToken, name, accept: true });
+    if (!ok) throw new Error(data.error || "Création du compte impossible");
+    const { invitation: _invitation, ...account } = data;
+    markSessionFresh();
+    setUser(account);
+    return data;
+  };
+
+  // « Accepter avec Google » une invitation. La session peut être ouverte
+  // même si l'acceptation échoue (déjà membre d'un espace…) : data.user.
+  const acceptInvitationWithGoogle = async (token, credential) => {
+    const { ok, data } = await postGoogle(`/api/invitations/${token}/accept-google`, { credential });
+    if (data.user) {
+      markSessionFresh();
+      setUser(data.user);
+    }
+    if (!ok) throw Object.assign(new Error(data.error || "Acceptation avec Google impossible"), { code: data.code });
+    return data;
+  };
+
   const register = async (name, email, password) => {
     const res = await fetch("/api/auth/register", {
       method: "POST",
@@ -186,6 +223,9 @@ export function AuthProvider({ children }) {
         user,
         loading,
         login,
+        googleSignIn,
+        googleSignup,
+        acceptInvitationWithGoogle,
         register,
         logout,
         resendVerification,

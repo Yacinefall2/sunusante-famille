@@ -262,16 +262,23 @@ router.post("/login", authIpLimit, async (req, res) => {
     if (minutes > 0) return res.status(429).json({ error: tooManyAttemptsMessage(minutes) });
 
     const [user] = await db.select().from(users).where(eq(users.email, normalizedEmail));
-    // Compte inconnu : comparaison quand même, avec une empreinte factice, pour
-    // une durée de réponse identique.
-    const valid = await comparePassword(password, user ? user.passwordHash : await dummyHash());
-    if (!user || !valid) {
+    // Compte inconnu, ou compte sans mot de passe (créé avec « Continuer avec
+    // Google ») : comparaison quand même, avec une empreinte factice, pour une
+    // durée de réponse identique. Le refus est le MÊME message générique
+    // qu'un mauvais mot de passe : l'écran ne révèle pas qu'un compte existe ;
+    // la page de connexion rappelle d'utiliser le bouton Google.
+    const valid = await comparePassword(password, user?.passwordHash ?? (await dummyHash()));
+    if (!user || !user.passwordHash || !valid) {
       recordFailure(normalizedEmail, req.ip);
       // Journal technique (UC-53) : jamais le mot de passe ni l'adresse en clair.
       await logTechnical({
         level: "warn",
         category: "auth",
-        message: user ? "Connexion refusée : mot de passe incorrect" : "Connexion refusée : compte inconnu",
+        message: !user
+          ? "Connexion refusée : compte inconnu"
+          : user.passwordHash
+            ? "Connexion refusée : mot de passe incorrect"
+            : "Connexion refusée : compte sans mot de passe (connexion Google)",
         metadata: { ...requestMeta(req), userId: user?.id },
       });
       return res.status(401).json({ error: "Identifiants invalides" });

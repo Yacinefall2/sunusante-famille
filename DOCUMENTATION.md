@@ -185,6 +185,7 @@ refuse de démarrer sans elle.
 | `MAIL_WEBHOOK_SECRET` | Secret des rebonds de courriel : en-tête `X-Webhook-Secret` sur `POST /api/webhooks/mail` (préférable), ou adresse `/api/webhooks/mail/<secret>` ; vide = désactivé | — |
 | `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | Clés VAPID des notifications push (facultatives : vides, push désactivé avec un avertissement au démarrage). Générer une fois : `cd Backend && npx web-push generate-vapid-keys`. Ne plus les changer ensuite (chaque appareil devrait se réabonner) | — |
 | `VAPID_SUBJECT` | Contact de l'exploitant transmis aux services push (`mailto:…`) | `mailto:contact@santefamille.local` |
+| `GOOGLE_CLIENT_ID` | Identifiant client OAuth « Application Web » de « Continuer avec Google » (facultatif : vide, aucun bouton Google et routes Google en 404). Aucun secret client nécessaire (§11) | `123…-abc.apps.googleusercontent.com` |
 | `FRONTEND_PORT` | Port hôte du frontend | `8080` |
 | `BACKEND_PORT` | Port hôte de l'API (127.0.0.1 seulement) | `4000` |
 | `DB_HOST_PORT` | Port hôte de PostgreSQL (127.0.0.1 seulement) | `5432` |
@@ -690,3 +691,106 @@ limiteurs déclenchés (une entrée par blocage).
 (`purgeTechnicalLogs`). Page `/admin/journaux` : filtres niveau, catégorie, période,
 recherche, pagination (50 par page). Accueil `/admin` : demandes en attente par type,
 comptes suspendus, santé du worker, erreurs et courriels échoués des dernières 24 h.
+
+---
+
+## 11. Connexion avec Google (« Continuer avec Google »)
+
+Fonction **facultative**. Sans `GOOGLE_CLIENT_ID`, aucun bouton Google n'apparaît,
+`GET /api/auth/config` renvoie `{ googleClientId: null }` et les routes Google
+répondent 404 : rien d'autre ne change.
+
+### 11.1 Mise en place (Google Cloud Console)
+
+1. Ouvrir https://console.cloud.google.com/ et **créer un projet** (ex.
+   « SunuSanté Famille »).
+2. **API et services → Écran de consentement OAuth** : type d'utilisateur
+   **Externe** ; nom de l'application, adresse d'assistance, logo facultatif,
+   domaine de l'application et liens vers les conditions / la politique de
+   confidentialité si vous en publiez. Champs d'application : les champs de
+   base suffisent (`openid`, `email`, `profile`). Tant que l'application est
+   « En test », seuls les utilisateurs test déclarés peuvent se connecter :
+   la **publier** pour l'ouvrir à tous.
+3. **API et services → Identifiants → Créer des identifiants → ID client
+   OAuth** : type **Application Web**.
+   - **Origines JavaScript autorisées** : l'adresse exacte de l'application,
+     schéma et port compris — `http://localhost:8081` en local (la valeur de
+     `FRONTEND_URL`) et l'URL de production (ex. `https://sunusante.exemple.sn`).
+   - **URI de redirection autorisés** : **aucun** (inutile avec Google Identity
+     Services en mode fenêtre surgissante).
+4. Copier l'**ID client** (`…apps.googleusercontent.com`) dans `.env` :
+   `GOOGLE_CLIENT_ID=…` (transmise au backend par `docker-compose.yml`), puis
+   `docker compose up -d backend`. **Pas de secret client** à renseigner, et
+   pas de reconstruction du frontend : il lit l'identifiant à l'exécution.
+
+### 11.2 Fonctionnement
+
+- **Frontend** : bouton officiel GIS (`components/auth/GoogleButton.jsx`, script
+  `https://accounts.google.com/gsi/client` chargé seulement si la fonction est
+  active ; thème `outline`, texte `continue_with`, `locale: fr`). Avant chaque
+  affichage, un **nonce** est demandé au serveur (`GET /api/auth/google/nonce`) et
+  passé à Google, qui le recopie dans le jeton. Le jeton d'identité (JWT) reçu
+  est envoyé **tel quel** au serveur ; son contenu n'est jamais lu côté navigateur.
+- **Vérification** (`Backend/src/lib/googleAuth.js`) : bibliothèque officielle
+  `google-auth-library` (`OAuth2Client.verifyIdToken`, audience =
+  `GOOGLE_CLIENT_ID` : signature, émetteur, expiration), puis contrôles refaits
+  par l'application : émetteur `accounts.google.com`, audience, expiration,
+  `email_verified === true` (sinon refus), nonce authentique (HMAC), non expiré
+  (10 min) et **jamais utilisé** (mémoire du serveur — comme les limiteurs, valable
+  pour une seule instance du backend). Données conservées : identifiant Google
+  (`users.google_sub`, unique), adresse, nom — rien d'autre.
+- **`POST /api/auth/google { credential }`** :
+  1. `sub` déjà connu → connexion de ce compte (même si l'adresse Google a changé) ;
+  2. sinon, compte de même adresse (normalisée) → **liaison automatique**
+     (`google_sub`, `google_linked_at`, adresse marquée vérifiée), courriel
+     « Connexion Google ajoutée à votre compte », session ; le mot de passe reste
+     valable. Exception : adresse **jamais vérifiée** → l'ancien mot de passe (qui
+     a pu être choisi par un tiers ayant inscrit l'adresse) est effacé, avec les
+     sessions et liens de vérification en cours. Compte déjà lié à **un autre**
+     compte Google → refus (409). Compte suspendu → même refus que la connexion
+     classique (403, message de suspension), sans liaison ;
+  3. sinon → **aucun compte créé** : `{ needsSignup, signupToken, name, email }`
+     (jeton enregistré sous forme d'empreinte, table `google_signup_tokens`,
+     15 minutes, usage unique).
+- **`POST /api/auth/google/signup { signupToken, name, accept: true }`** : sans
+  `accept: true` → 400. Crée le compte **déjà vérifié**, **sans mot de passe**
+  (`password_hash` NULL), ouvre la session, envoie un courriel de bienvenue
+  (sans lien d'activation). Puis parcours habituel (créer sa famille, Ma fiche).
+- **Invitations** : `POST /api/invitations/:token/accept-google { credential }`.
+  L'adresse Google doit être **exactement** celle de l'invitation (sinon 403
+  « Cette invitation a été envoyée à a***@gmail.com : connectez-vous avec ce compte
+  Google »). Compte existant → connexion (avec liaison) puis acceptation ; aucun
+  compte → écran de confirmation, puis `/api/auth/google/signup` crée le compte et
+  accepte l'invitation. L'acceptation passe dans tous les cas par la même fonction
+  que l'acceptation classique (`acceptInvitationRecord`, `routes/invitations.js`) :
+  rôle fixé à l'émission, limite de 2 parents, auteur encore parent, fiche, rôle
+  de dossier…
+- **Comptes sans mot de passe** : la connexion par mot de passe répond le **même
+  message générique** qu'un mauvais mot de passe (« Identifiants invalides ») —
+  l'écran ne révèle pas qu'un compte existe ; la page de connexion rappelle
+  « Vous vous êtes inscrit avec Google ? Utilisez le bouton Google ». Les actions
+  qui redemandent le mot de passe actuel (changer d'adresse ou de mot de passe,
+  supprimer le compte, délier Google, export de la famille, demande de suppression
+  au support) répondent 403 `PASSWORD_NOT_SET` : **définir d'abord un mot de
+  passe**. Choix volontairement simple et sûr (pas de ré-authentification Google
+  à la volée) : le lien reçu par courriel prouve la possession de la boîte.
+- **Mon compte → « Connexion avec Google »** : état (lié depuis le …) ; « Lier »
+  (`POST /api/account/google`, **même adresse** que le compte exigée) ; « Délier »
+  (`DELETE /api/account/google`, mot de passe actuel exigé, refusé sans mot de
+  passe) ; « Définir un mot de passe » (`POST /api/account/password-setup`, lien
+  « Mot de passe oublié » envoyé à l'adresse du compte).
+- **Journaux** : journal technique (catégorie `auth`) pour les connexions Google
+  réussies ou refusées (motif seul, jamais le jeton ni l'adresse), liaisons,
+  déliaisons et inscriptions. **Pas** d'entrée au journal d'activité des familles :
+  c'est un événement du compte, pas de l'espace familial (un compte peut n'avoir
+  aucune famille).
+- **Sécurité** : limite de 100 requêtes par IP et par quart d'heure sur les routes
+  Google (300 pour le nonce) ; refus de jeton en 400 (pas 401, pour ne pas
+  déclencher le renouvellement de session du frontend) ; le service worker ne
+  garde jamais `/api/auth/config` ni `/api/auth/google…`.
+- **CSP** (`Frontend/security-headers.conf`), ouvertures minimales recommandées
+  par Google : `script-src https://accounts.google.com/gsi/client`,
+  `style-src https://accounts.google.com/gsi/style`,
+  `frame-src https://accounts.google.com/gsi/`, `connect-src https://accounts.google.com/gsi/`.
+- **Tests** : `Backend/test/connexionGoogle.test.js` remplace le vérificateur par
+  un faux (`setGoogleTokenVerifier`) : Google n'est jamais appelé.

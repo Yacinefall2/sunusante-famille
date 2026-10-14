@@ -27,7 +27,7 @@ export async function resetDatabase() {
       medication_intakes, notification_preferences, relay_tasks, relay_events,
       doctor_shares, emergency_cards, emergency_card_views, password_reset_tokens, email_change_tokens,
       activity_log, consent_attestations, role_transfers, family_reminder_settings, family_exports,
-      push_subscriptions, intake_action_tokens,
+      push_subscriptions, intake_action_tokens, google_signup_tokens,
       support_users, support_sessions, support_requests, support_request_messages, support_audit, technical_logs
     restart identity cascade
   `);

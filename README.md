@@ -116,6 +116,15 @@ personne et à l'administrateur familial. Fuseau de référence : `APP_TIMEZONE`
   nom, son adresse (confirmée par un lien envoyé à la nouvelle, avis envoyé à
   l'ancienne) ou son mot de passe (alerte par courriel, autres appareils
   déconnectés), télécharger ses données (JSON) et supprimer son compte.
+- **Connexion avec Google** (facultative) : bouton officiel « Continuer avec
+  Google » sur la connexion, l'inscription et l'acceptation d'une invitation,
+  affiché seulement si `GOOGLE_CLIENT_ID` est définie (sinon rien ne change).
+  Compte existant de même adresse : liaison automatique (courriel
+  d'information) ; personne inconnue : écran de confirmation (nom, conditions)
+  avant création d'un compte déjà vérifié, sans mot de passe ; invitation :
+  seulement avec le compte Google de l'adresse invitée. « Mon compte » →
+  « Connexion avec Google » : lier, délier, définir un mot de passe. Mise en
+  place (Google Cloud Console) : DOCUMENTATION.md §11.
 - **Sécurité** : fichiers téléversés vérifiés par leur contenu, **chiffrés sur
   le disque** (voir ci-dessous) et servis avec un type imposé, en-têtes de sécurité (helmet côté API, `security-headers.conf`
   côté Nginx), cookies `SameSite=Strict`, contrôle de l'origine des requêtes,

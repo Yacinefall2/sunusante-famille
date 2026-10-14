@@ -22,10 +22,21 @@ import { sendEmailChangeEmail, sendEmailChangeNotice, sendPasswordChangedAlert }
 // Vérification du mot de passe actuel, avec la limite de tentatives de la
 // connexion : commune à « Mon compte » et à l'export de la famille.
 import { checkPassword } from "../lib/passwordCheck.js";
+import {
+  GOOGLE_SUB_TAKEN,
+  googleIpLimit,
+  linkGoogleAccount,
+  rejectGoogleCredential,
+  requireGoogleConfigured,
+  verifyGoogleCredential,
+} from "../lib/googleAuth.js";
+import { issuePasswordReset, passwordResetSentRecently } from "../lib/passwordReset.js";
+import { logTechnical, requestMeta } from "../lib/technicalLog.js";
 
-// « Mon compte » : profil, mot de passe, adresse courriel, export des
-// données et suppression du compte. Chaque action sensible redemande le mot
-// de passe actuel.
+// « Mon compte » : profil, mot de passe, adresse courriel, connexion avec
+// Google, export des données et suppression du compte. Chaque action sensible
+// redemande le mot de passe actuel (lib/passwordCheck.js : un compte créé avec
+// Google doit d'abord en définir un).
 const router = Router();
 
 const MIN_PASSWORD_LENGTH = 8;
@@ -51,6 +62,11 @@ router.get("/", async (req, res) => {
       email: user.email,
       createdAt: user.createdAt,
       pendingEmail: pending && pending.expiresAt > new Date() ? pending.newEmail : null,
+      // Connexion avec Google : un compte créé avec Google n'a pas de mot de
+      // passe tant qu'il n'en a pas défini un (jamais l'empreinte elle-même).
+      hasPassword: Boolean(user.passwordHash),
+      googleLinked: Boolean(user.googleSub),
+      googleLinkedAt: user.googleLinkedAt,
       // Affichage (mode senior) : qui l'a réglé en dernier, si c'est un proche.
       seniorMode: user.seniorMode,
       seniorModeSetBy:
@@ -127,6 +143,77 @@ router.post("/password", async (req, res) => {
     setAuthCookies(res, accessToken, refreshToken);
     await sendPasswordChangedAlert(user);
     res.json({ success: true });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Connexion avec Google ────────────────────────────────────────────────────
+
+// Lier son compte Google depuis « Mon compte » : l'adresse Google (vérifiée
+// par Google) doit être la MÊME que celle du compte — règle simple, qui évite
+// de rattacher par erreur le compte Google de quelqu'un d'autre.
+router.post("/google", googleIpLimit, requireGoogleConfigured, async (req, res) => {
+  try {
+    const user = await fullUser(req.user.id);
+    const verified = await verifyGoogleCredential(req.body?.credential);
+    if (!verified.ok) return rejectGoogleCredential(req, res, verified.reason, user.id);
+    const { identity } = verified;
+    if (user.googleSub === identity.sub) return res.json({ googleLinked: true, googleLinkedAt: user.googleLinkedAt });
+    if (user.googleSub) return res.status(409).json({ error: "Votre compte est déjà lié à un autre compte Google : déliez-le d'abord" });
+    if (identity.email !== user.email) {
+      return res.status(400).json({
+        error: `Utilisez le compte Google de la même adresse que votre compte (${user.email})`,
+        code: "GOOGLE_EMAIL_MISMATCH",
+      });
+    }
+    const [taken] = await db.select({ id: users.id }).from(users).where(eq(users.googleSub, identity.sub));
+    if (taken) return res.status(409).json({ error: GOOGLE_SUB_TAKEN });
+    const linked = await linkGoogleAccount(user, identity, req);
+    if (!linked) return res.status(409).json({ error: "Votre compte est déjà lié à un autre compte Google : déliez-le d'abord" });
+    res.json({ googleLinked: true, googleLinkedAt: linked.googleLinkedAt });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Délier : seulement si le compte a un mot de passe (sinon il ne pourrait
+// plus se connecter du tout), et sur présentation de ce mot de passe.
+router.delete("/google", async (req, res) => {
+  try {
+    const current = await fullUser(req.user.id);
+    if (!current.googleSub) return res.status(400).json({ error: "Votre compte n'est pas lié à un compte Google" });
+    if (!current.passwordHash) {
+      return res.status(400).json({
+        error: "Définissez d'abord un mot de passe : sans lui, vous ne pourriez plus vous connecter",
+        code: "PASSWORD_NOT_SET",
+      });
+    }
+    const user = await checkPassword(req, res);
+    if (!user) return;
+    await db.update(users).set({ googleSub: null, googleLinkedAt: null }).where(eq(users.id, user.id));
+    await logTechnical({ category: "auth", message: "Connexion Google retirée du compte", metadata: { ...requestMeta(req), userId: user.id } });
+    res.json({ googleLinked: false });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// « Définir un mot de passe » (compte créé avec Google) : même mécanisme que
+// « Mot de passe oublié » — un lien part à l'adresse du compte, et le mot de
+// passe est choisi sur la page de réinitialisation.
+router.post("/password-setup", async (req, res) => {
+  try {
+    const user = await fullUser(req.user.id);
+    if (user.passwordHash) {
+      return res.status(400).json({ error: "Votre compte a déjà un mot de passe : utilisez « Changer le mot de passe »" });
+    }
+    // Délai minimal entre deux envois : la demande est ignorée en silence.
+    if (!(await passwordResetSentRecently(user.id))) await issuePasswordReset(user);
+    res.json({ sentTo: user.email });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Erreur serveur" });

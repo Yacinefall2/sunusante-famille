@@ -195,7 +195,10 @@ export const documents = pgTable("documents", {
 export const users = pgTable("users", {
   id: serial("id").primaryKey(),
   email: varchar("email", { length: 255 }).notNull().unique(),
-  passwordHash: varchar("password_hash", { length: 255 }).notNull(),
+  // NULL pour un compte créé avec « Continuer avec Google » qui n'a pas
+  // (encore) choisi de mot de passe : la connexion par mot de passe lui est
+  // alors impossible (même refus générique qu'un mauvais mot de passe).
+  passwordHash: varchar("password_hash", { length: 255 }),
   name: varchar("name", { length: 150 }).notNull(),
   // Un compte n'accède à rien (créer un espace, consulter, saisir) tant que
   // cette adresse n'a pas été vérifiée via le lien reçu par courriel —
@@ -222,6 +225,11 @@ export const users = pgTable("users", {
   suspendedUntil: timestamp("suspended_until", { precision: 3 }),
   suspensionReason: text("suspension_reason"),
   suspendedBy: integer("suspended_by").references(() => supportUsers.id, { onDelete: "set null" }),
+  // Connexion avec Google : identifiant Google stable (champ « sub » du jeton
+  // d'identité vérifié), jamais l'adresse — elle peut changer côté Google.
+  // Seules données Google conservées : cet identifiant, l'adresse et le nom.
+  googleSub: varchar("google_sub", { length: 255 }).unique(),
+  googleLinkedAt: timestamp("google_linked_at", { precision: 3 }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -279,6 +287,24 @@ export const passwordResetTokens = pgTable("password_reset_tokens", {
   tokenHash: varchar("token_hash", { length: 64 }).notNull().unique(),
   expiresAt: timestamp("expires_at").notNull(),
   consumedAt: timestamp("consumed_at"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+// ── Inscription avec Google, en attente de confirmation ─────────────────────
+// Premier passage d'une personne inconnue par « Continuer avec Google » : le
+// compte n'est PAS créé tout de suite. Ce jeton (empreinte seule, 15 minutes,
+// usage unique) retient l'identité Google VÉRIFIÉE le temps qu'elle confirme
+// son nom et accepte les conditions. Lié à une invitation quand l'inscription
+// part de « Accepter avec Google ».
+export const googleSignupTokens = pgTable("google_signup_tokens", {
+  id: serial("id").primaryKey(),
+  tokenHash: varchar("token_hash", { length: 64 }).notNull().unique(),
+  googleSub: varchar("google_sub", { length: 255 }).notNull(),
+  email: varchar("email", { length: 255 }).notNull(),
+  name: varchar("name", { length: 150 }).notNull(),
+  invitationId: integer("invitation_id").references(() => pendingInvitations.id, { onDelete: "cascade" }),
+  expiresAt: timestamp("expires_at", { precision: 3 }).notNull(),
+  consumedAt: timestamp("consumed_at", { precision: 3 }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

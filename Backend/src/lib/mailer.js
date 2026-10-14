@@ -146,6 +146,61 @@ export async function sendVerificationEmail({ to, name, token }) {
   });
 }
 
+// ── Connexion avec Google ────────────────────────────────────────────────────
+
+// Avis de sécurité : la connexion Google vient d'être ajoutée au compte (liaison
+// automatique à la première connexion Google, ou depuis « Mon compte »).
+export function buildGoogleLinkedEmail({ name }) {
+  return {
+    subject: "Connexion Google ajoutée à votre compte SunuSanté Famille",
+    html: accessButtonTemplate({
+      heading: `Bonjour ${escapeHtml(name)}`,
+      bodyHtml: `<p>Vous pouvez désormais vous connecter à SunuSanté Famille avec le bouton « Continuer avec Google »,
+        en plus de votre mot de passe habituel s'il existe.</p>
+        <p><strong>Si ce n'est pas vous</strong>, contactez le support sans attendre avec le bouton ci-dessous.</p>`,
+      link: `${FRONTEND_URL}/support/acces`,
+      buttonLabel: "Ce n'est pas moi : contacter le support",
+      validityLabel: "Si c'est bien vous, aucune action n'est nécessaire.",
+      footer: "",
+    }),
+  };
+}
+
+export async function sendGoogleLinkedEmail({ to, name }) {
+  // Un avis non remis ne doit pas faire échouer la connexion elle-même.
+  try {
+    await transporter.sendMail({ from: FROM, to, ...buildGoogleLinkedEmail({ name }) });
+  } catch (error) {
+    console.error(error);
+  }
+}
+
+// Bienvenue après une inscription avec Google : l'adresse est déjà vérifiée
+// par Google, donc AUCUN lien d'activation — un simple lien vers l'application.
+export function buildGoogleWelcomeEmail({ name }) {
+  return {
+    subject: "Bienvenue sur SunuSanté Famille",
+    html: accessButtonTemplate({
+      heading: `Bienvenue sur SunuSanté Famille, ${escapeHtml(name)}`,
+      bodyHtml: `<p>Votre compte est créé et prêt à l'emploi. Pour vous connecter, utilisez le bouton
+        « Continuer avec Google ». Vous pouvez aussi définir un mot de passe depuis « Mon compte ».</p>
+        <p>Prochaine étape : créez votre espace familial, ou complétez votre fiche si vous avez rejoint une famille.</p>`,
+      link: `${FRONTEND_URL}/dashboard`,
+      buttonLabel: "Ouvrir SunuSanté Famille",
+      validityLabel: "",
+      footer: "Si vous n'êtes pas à l'origine de cette inscription, contactez le support depuis la page de connexion (« Je n'arrive plus à accéder à mon compte »).",
+    }),
+  };
+}
+
+export async function sendGoogleWelcomeEmail({ to, name }) {
+  try {
+    await transporter.sendMail({ from: FROM, to, ...buildGoogleWelcomeEmail({ name }) });
+  } catch (error) {
+    console.error(error);
+  }
+}
+
 // Courriel « Mot de passe oublié » : lien de réinitialisation valable 1 heure.
 export function buildPasswordResetEmail({ name, token }) {
   return {
@@ -174,7 +229,8 @@ export function buildAccountExistsEmail({ name }) {
     html: accessButtonTemplate({
       heading: `Bonjour ${escapeHtml(name)}`,
       bodyHtml: `<p>Quelqu'un (vous, sans doute) a voulu créer un compte avec cette adresse, mais elle est déjà
-        enregistrée. Connectez-vous avec votre mot de passe habituel, ou choisissez-en un nouveau si vous l'avez oublié.</p>`,
+        enregistrée. Connectez-vous avec votre mot de passe habituel, ou choisissez-en un nouveau si vous l'avez oublié.
+        Si vous vous êtes inscrit avec Google, utilisez le bouton « Continuer avec Google ».</p>`,
       link: `${FRONTEND_URL}/mot-de-passe-oublie`,
       buttonLabel: "Mot de passe oublié",
       validityLabel: "",

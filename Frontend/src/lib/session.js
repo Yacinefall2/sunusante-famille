@@ -71,8 +71,9 @@ export function refreshSession() {
 // privés du même domaine, hors routes qui n'ont pas de sens à rejouer.
 // L'espace support (/api/admin) a sa propre session, sans renouvellement :
 // jamais de /api/auth/refresh pour lui. Les demandes publiques au support
-// (/api/support/public) se passent de session.
-const EXCLUDED_PREFIXES = ["/api/auth/refresh", "/api/auth/login", "/api/auth/logout", "/api/public/", "/api/admin/", "/api/support/public/"];
+// (/api/support/public) se passent de session, comme « Continuer avec
+// Google » (/api/auth/google…, /api/auth/config).
+const EXCLUDED_PREFIXES = ["/api/auth/refresh", "/api/auth/login", "/api/auth/logout", "/api/auth/google", "/api/auth/config", "/api/public/", "/api/admin/", "/api/support/public/"];
 
 function shouldIntercept(url) {
   try {

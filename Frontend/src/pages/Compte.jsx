@@ -6,12 +6,14 @@ import { Button } from "../components/ui/Button";
 import { Input } from "../components/ui/Input";
 import { useAuth } from "../context/AuthContext";
 import { useFamily } from "../context/FamilyContext";
-import { UserRound, Mail, KeyRound, Download, FileDown, Trash2, Loader2, AlertTriangle, Clock, RotateCw, ZoomIn, Smartphone, LifeBuoy } from "lucide-react";
+import { UserRound, Mail, KeyRound, Download, FileDown, Trash2, Loader2, AlertTriangle, Clock, RotateCw, ZoomIn, Smartphone, LifeBuoy, Link2 } from "lucide-react";
 import { Switch } from "../components/ui/Switch";
 import { SoundAlertsSetup } from "../components/senior/SoundAlertsSetup";
 import { InstallAppButton } from "../components/pwa/InstallAppButton";
 import { formatDate } from "../lib/utils";
 import { openPrivateLink } from "../lib/session";
+import { postGoogle } from "../lib/google";
+import { GoogleButton, useGoogleClientId } from "../components/auth/GoogleButton";
 import toast from "react-hot-toast";
 
 const MIN_PASSWORD_LENGTH = 8;
@@ -60,6 +62,11 @@ export default function ComptePage() {
   const [showDelete, setShowDelete] = useState(false);
   const [deleteForm, setDeleteForm] = useState({ password: "", deleteMyFiche: false, confirmText: "" });
   const [deleting, setDeleting] = useState(false);
+  // Connexion avec Google (section « Connexion avec Google »).
+  const googleClientId = useGoogleClientId();
+  const [unlinkPassword, setUnlinkPassword] = useState("");
+  const [unlinking, setUnlinking] = useState(false);
+  const [settingUpPassword, setSettingUpPassword] = useState(false);
 
   // Erreur de chargement : affichée avec un bouton « Réessayer » au lieu
   // d'un chargement sans fin.
@@ -141,6 +148,45 @@ export default function ComptePage() {
     }
   };
 
+  // Lier son compte Google : même adresse que le compte exigée (serveur).
+  const linkGoogle = async (credential) => {
+    const { ok, data } = await postGoogle("/api/account/google", { credential }, { authRefresh: true });
+    if (!ok) {
+      toast.error(data.error || "Liaison avec Google impossible");
+      return;
+    }
+    toast.success("Compte Google lié : vous pouvez vous connecter avec « Continuer avec Google »");
+    load();
+  };
+
+  const unlinkGoogle = async () => {
+    setUnlinking(true);
+    try {
+      await send("/api/account/google", "DELETE", { password: unlinkPassword });
+      toast.success("Connexion avec Google retirée");
+      setUnlinkPassword("");
+      load();
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setUnlinking(false);
+    }
+  };
+
+  // Compte créé avec Google : un lien pour choisir un mot de passe part à
+  // l'adresse du compte (même mécanisme que « Mot de passe oublié »).
+  const setupPassword = async () => {
+    setSettingUpPassword(true);
+    try {
+      const data = await send("/api/account/password-setup", "POST");
+      toast.success(`Lien envoyé à ${data.sentTo} : suivez-le pour choisir votre mot de passe`);
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setSettingUpPassword(false);
+    }
+  };
+
   const deleteAccount = async () => {
     setDeleting(true);
     try {
@@ -182,6 +228,15 @@ export default function ComptePage() {
   }
 
   const blocking = account.families.filter((f) => f.isPrimaryAdmin && f.otherAccounts > 0);
+  // Compte créé avec Google sans mot de passe : les actions qui demandent le
+  // mot de passe actuel attendent qu'il en ait défini un.
+  const noPassword = !account.hasPassword;
+  const noPasswordNote = (
+    <p className="text-sm text-gray-700 bg-gray-50 rounded-xl p-3">
+      Votre compte a été créé avec Google et n'a pas encore de mot de passe. Pour cette action, définissez-en un
+      d'abord (section « Mot de passe »).
+    </p>
+  );
   const soleAdminOf = account.families.filter((f) => f.isPrimaryAdmin && f.otherAccounts === 0);
 
   return (
@@ -254,65 +309,132 @@ export default function ComptePage() {
               </span>
             </p>
           )}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <Input
-              label="Nouvelle adresse"
-              type="email"
-              value={emailForm.newEmail}
-              onChange={(e) => setEmailForm((p) => ({ ...p, newEmail: e.target.value }))}
-              placeholder="vous@exemple.com"
-            />
-            <Input
-              label="Mot de passe actuel"
-              type="password"
-              autoComplete="current-password"
-              value={emailForm.password}
-              onChange={(e) => setEmailForm((p) => ({ ...p, password: e.target.value }))}
-            />
-          </div>
-          <p className="text-xs text-gray-500 mt-2">
-            Un lien de confirmation part vers la nouvelle adresse ; l'ancienne reste active jusqu'à ce qu'il soit suivi.
-          </p>
-          <Button
-            className="mt-3"
-            onClick={changeEmail}
-            loading={savingEmail}
-            disabled={!emailForm.newEmail.trim() || !emailForm.password}
-          >
-            Changer d'adresse
-          </Button>
+          {noPassword ? (
+            noPasswordNote
+          ) : (
+            <>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <Input
+                  label="Nouvelle adresse"
+                  type="email"
+                  value={emailForm.newEmail}
+                  onChange={(e) => setEmailForm((p) => ({ ...p, newEmail: e.target.value }))}
+                  placeholder="vous@exemple.com"
+                />
+                <Input
+                  label="Mot de passe actuel"
+                  type="password"
+                  autoComplete="current-password"
+                  value={emailForm.password}
+                  onChange={(e) => setEmailForm((p) => ({ ...p, password: e.target.value }))}
+                />
+              </div>
+              <p className="text-xs text-gray-500 mt-2">
+                Un lien de confirmation part vers la nouvelle adresse ; l'ancienne reste active jusqu'à ce qu'il soit suivi.
+              </p>
+              <Button
+                className="mt-3"
+                onClick={changeEmail}
+                loading={savingEmail}
+                disabled={!emailForm.newEmail.trim() || !emailForm.password}
+              >
+                Changer d'adresse
+              </Button>
+            </>
+          )}
         </Section>
 
         <Section icon={KeyRound} title="Mot de passe" hint="Changer de mot de passe déconnecte vos autres appareils.">
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <Input
-              label="Mot de passe actuel"
-              type="password"
-              autoComplete="current-password"
-              value={pwForm.password}
-              onChange={(e) => setPwForm((p) => ({ ...p, password: e.target.value }))}
-            />
-            <Input
-              label="Nouveau"
-              type="password"
-              autoComplete="new-password"
-              value={pwForm.newPassword}
-              onChange={(e) => setPwForm((p) => ({ ...p, newPassword: e.target.value }))}
-              error={pwTooShort ? `${MIN_PASSWORD_LENGTH} caractères minimum` : undefined}
-            />
-            <Input
-              label="Confirmer"
-              type="password"
-              autoComplete="new-password"
-              value={pwForm.confirm}
-              onChange={(e) => setPwForm((p) => ({ ...p, confirm: e.target.value }))}
-              error={pwMismatch ? "Ne correspond pas" : undefined}
-            />
-          </div>
-          <Button className="mt-3" onClick={changePassword} loading={savingPw} disabled={!pwReady}>
-            Changer le mot de passe
-          </Button>
+          {noPassword ? (
+            <div>
+              <p className="text-sm text-gray-700 mb-3">
+                Votre compte a été créé avec Google : il n'a pas de mot de passe. Vous pouvez en définir un pour vous
+                connecter aussi avec votre adresse : un lien vous est envoyé à <strong className="break-all">{account.email}</strong>.
+              </p>
+              <Button onClick={setupPassword} loading={settingUpPassword}>
+                <KeyRound size={15} />
+                Définir un mot de passe
+              </Button>
+            </div>
+          ) : (
+            <>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <Input
+                  label="Mot de passe actuel"
+                  type="password"
+                  autoComplete="current-password"
+                  value={pwForm.password}
+                  onChange={(e) => setPwForm((p) => ({ ...p, password: e.target.value }))}
+                />
+                <Input
+                  label="Nouveau"
+                  type="password"
+                  autoComplete="new-password"
+                  value={pwForm.newPassword}
+                  onChange={(e) => setPwForm((p) => ({ ...p, newPassword: e.target.value }))}
+                  error={pwTooShort ? `${MIN_PASSWORD_LENGTH} caractères minimum` : undefined}
+                />
+                <Input
+                  label="Confirmer"
+                  type="password"
+                  autoComplete="new-password"
+                  value={pwForm.confirm}
+                  onChange={(e) => setPwForm((p) => ({ ...p, confirm: e.target.value }))}
+                  error={pwMismatch ? "Ne correspond pas" : undefined}
+                />
+              </div>
+              <Button className="mt-3" onClick={changePassword} loading={savingPw} disabled={!pwReady}>
+                Changer le mot de passe
+              </Button>
+            </>
+          )}
         </Section>
+
+        {(account.googleLinked || googleClientId) && (
+          <Section
+            icon={Link2}
+            title="Connexion avec Google"
+            hint="Se connecter en un clic avec le compte Google de la même adresse."
+          >
+            {account.googleLinked ? (
+              <div className="space-y-3">
+                <p className="text-sm text-gray-700">
+                  Votre compte est lié à Google
+                  {account.googleLinkedAt ? ` depuis le ${formatDate(account.googleLinkedAt)}` : ""} : vous pouvez vous
+                  connecter avec « Continuer avec Google ».
+                </p>
+                {noPassword ? (
+                  <p className="text-sm text-gray-700 bg-gray-50 rounded-xl p-3">
+                    Pour délier Google, définissez d'abord un mot de passe (section « Mot de passe ») : sans lui, vous ne
+                    pourriez plus vous connecter.
+                  </p>
+                ) : (
+                  <div className="flex flex-col sm:flex-row gap-3 sm:items-end">
+                    <div className="flex-1">
+                      <Input
+                        label="Mot de passe actuel"
+                        type="password"
+                        autoComplete="current-password"
+                        value={unlinkPassword}
+                        onChange={(e) => setUnlinkPassword(e.target.value)}
+                      />
+                    </div>
+                    <Button variant="outline" onClick={unlinkGoogle} loading={unlinking} disabled={!unlinkPassword}>
+                      Délier Google
+                    </Button>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="max-w-sm">
+                <p className="text-sm text-gray-700 mb-3">
+                  Utilisez le compte Google de <strong className="break-all">{account.email}</strong>.
+                </p>
+                <GoogleButton onCredential={linkGoogle} />
+              </div>
+            )}
+          </Section>
+        )}
 
         <Section
           icon={Download}
@@ -402,13 +524,17 @@ export default function ComptePage() {
             </span>
           </label>
 
-          <Input
-            label="Mot de passe actuel"
-            type="password"
-            autoComplete="current-password"
-            value={deleteForm.password}
-            onChange={(e) => setDeleteForm((p) => ({ ...p, password: e.target.value }))}
-          />
+          {noPassword ? (
+            noPasswordNote
+          ) : (
+            <Input
+              label="Mot de passe actuel"
+              type="password"
+              autoComplete="current-password"
+              value={deleteForm.password}
+              onChange={(e) => setDeleteForm((p) => ({ ...p, password: e.target.value }))}
+            />
+          )}
           <Input
             label="Tapez SUPPRIMER pour confirmer"
             value={deleteForm.confirmText}

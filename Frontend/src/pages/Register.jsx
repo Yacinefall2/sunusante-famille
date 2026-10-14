@@ -5,14 +5,17 @@ import { Input } from "../components/ui/Input";
 import { Button } from "../components/ui/Button";
 import { Heart } from "lucide-react";
 import toast from "react-hot-toast";
+import { GoogleButton } from "../components/auth/GoogleButton";
+import { GoogleSignupConfirm } from "../components/auth/GoogleSignupConfirm";
 
 export default function RegisterPage() {
-  const { register } = useAuth();
+  const { register, googleSignIn } = useAuth();
   const navigate = useNavigate();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
+  const [googlePending, setGooglePending] = useState(null);
 
   const submit = async (e) => {
     e.preventDefault();
@@ -30,6 +33,35 @@ export default function RegisterPage() {
       setLoading(false);
     }
   };
+
+  // « Continuer avec Google » : compte existant → connexion directe ; sinon
+  // écran de confirmation (le compte n'est créé qu'après).
+  const onGoogle = async (credential) => {
+    try {
+      const data = await googleSignIn(credential);
+      if (data.needsSignup) setGooglePending(data);
+      else navigate("/dashboard");
+    } catch (err) {
+      toast.error(err.message);
+    }
+  };
+
+  if (googlePending) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
+        <div className="w-full max-w-sm bg-white rounded-2xl shadow-xl p-8">
+          <GoogleSignupConfirm
+            pending={googlePending}
+            onCancel={() => setGooglePending(null)}
+            onDone={() => {
+              toast.success("Compte créé : bienvenue !");
+              navigate("/dashboard");
+            }}
+          />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
@@ -62,6 +94,7 @@ export default function RegisterPage() {
             Créer mon compte
           </Button>
         </form>
+        <GoogleButton separator onCredential={onGoogle} />
         <p className="text-sm text-gray-500 text-center mt-6">
           Déjà un compte ?{" "}
           <Link to="/login" className="text-teal-600 font-semibold hover:underline">

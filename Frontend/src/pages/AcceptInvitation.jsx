@@ -6,6 +6,8 @@ import { Button } from "../components/ui/Button";
 import { Heart, Loader2 } from "lucide-react";
 import toast from "react-hot-toast";
 import { ROLE_DURATION_OPTIONS, familyRoleLabel, ficheRoleLongLabel } from "../lib/roles";
+import { GoogleButton } from "../components/auth/GoogleButton";
+import { GoogleSignupConfirm } from "../components/auth/GoogleSignupConfirm";
 
 // Durée d'accès d'un lecteur invité prévue par l'invitation (R4), ou null.
 const durationLabel = (inv) =>
@@ -15,7 +17,7 @@ const durationLabel = (inv) =>
 export default function AcceptInvitationPage() {
   const { token } = useParams();
   const navigate = useNavigate();
-  const { user, login, register, logout, refreshUser } = useAuth();
+  const { user, login, register, logout, refreshUser, acceptInvitationWithGoogle } = useAuth();
 
   const [invitation, setInvitation] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -23,6 +25,8 @@ export default function AcceptInvitationPage() {
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  // « Accepter avec Google » sans compte existant : écran de confirmation.
+  const [googlePending, setGooglePending] = useState(null);
 
   useEffect(() => {
     fetch(`/api/invitations/${token}`)
@@ -54,6 +58,34 @@ export default function AcceptInvitationPage() {
     } finally {
       setSubmitting(false);
     }
+  };
+
+  // « Accepter avec Google » : l'adresse Google doit être celle de
+  // l'invitation (vérifié par le serveur). Compte existant → connexion et
+  // acceptation d'un coup ; sinon → confirmation de l'inscription d'abord.
+  const onGoogle = async (credential) => {
+    try {
+      const data = await acceptInvitationWithGoogle(token, credential);
+      if (data.needsSignup) {
+        setGooglePending(data);
+        return;
+      }
+      toast.success("Invitation acceptée !");
+      navigate("/dashboard");
+    } catch (err) {
+      toast.error(err.message);
+    }
+  };
+
+  // Compte créé avec Google : l'invitation a été acceptée dans la foulée
+  // (data.invitation), avec les mêmes vérifications que l'acceptation classique.
+  const onGoogleSignupDone = async (data) => {
+    if (data.invitation?.status === 200) {
+      toast.success("Compte créé et invitation acceptée !");
+    } else {
+      toast.error(data.invitation?.error || "Compte créé, mais l'invitation n'a pas pu être acceptée");
+    }
+    navigate("/dashboard");
   };
 
   const submitAuth = async (e) => {
@@ -176,6 +208,21 @@ export default function AcceptInvitationPage() {
     );
   }
 
+  if (googlePending) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
+        <div className="w-full max-w-sm bg-white rounded-2xl shadow-xl p-8">
+          <GoogleSignupConfirm
+            pending={googlePending}
+            subtitle={`Puis rejoindre ${invitation.familyName} en tant que ${roleLabel}`}
+            onCancel={() => setGooglePending(null)}
+            onDone={onGoogleSignupDone}
+          />
+        </div>
+      </div>
+    );
+  }
+
   // Pas connecté : formulaire connexion/inscription, email verrouillé sur l'invitation
   return (
     <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
@@ -240,6 +287,11 @@ export default function AcceptInvitationPage() {
             {mode === "login" ? "Se connecter et rejoindre" : "Créer mon compte et rejoindre"}
           </Button>
         </form>
+        <GoogleButton
+          separator
+          label={`Accepter avec Google (compte ${invitation.email})`}
+          onCredential={onGoogle}
+        />
       </div>
     </div>
   );

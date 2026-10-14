@@ -25,6 +25,16 @@ import { familyIdFromBody, familyIdFromQuery } from "../lib/familyResolvers.js";
 import { INVALID_ID, parseId } from "../lib/validation.js";
 import { fullName, logActivity } from "../lib/activityLog.js";
 import { CONSENT_REQUIRED, consentApplies, hasAccount, isAttested } from "../lib/consent.js";
+import { logTechnical, maskEmail, requestMeta } from "../lib/technicalLog.js";
+import {
+  googleIpLimit,
+  openSession,
+  rejectGoogleCredential,
+  requireGoogleConfigured,
+  sessionUser,
+  signInWithGoogle,
+  verifyGoogleCredential,
+} from "../lib/googleAuth.js";
 
 const router = Router();
 
@@ -352,160 +362,223 @@ const NEW_INVITATION = "demandez une nouvelle invitation";
 // encore et est-elle libre ? le rôle de dossier prévu est-il encore
 // attribuable ? Si l'invité avait déjà une fiche dans cette famille
 // (archivée à son départ), elle lui est rendue.
+// Cœur de l'acceptation, commun à « Accepter l'invitation » (compte connecté)
+// et à « Accepter avec Google » (routes plus bas) : `user` est le compte qui
+// accepte (id, name, email, emailVerified). L'invitation a déjà été trouvée ;
+// sa validité (déjà utilisée, expirée) est vérifiée ici. Renvoie
+// { status, body } — rien n'est envoyé au navigateur.
+export async function acceptInvitationRecord(invitation, user) {
+  const reply = (status, body) => ({ status, body });
+  if (invitation.acceptedAt) return reply(409, { error: "Invitation déjà utilisée" });
+  if (invitation.expiresAt < new Date()) return reply(410, { error: "Invitation expirée" });
+  if (invitation.email !== user.email.toLowerCase()) {
+    return reply(403, { error: "Cette invitation ne correspond pas à votre compte connecté" });
+  }
+
+  // Un compte n'appartient qu'à un seul espace familial à la fois — même
+  // règle qu'à la création d'un espace (routes/families.js).
+  const [existingMembership] = await db
+    .select({ id: familyMemberships.id })
+    .from(familyMemberships)
+    .where(eq(familyMemberships.userId, user.id));
+  if (existingMembership) {
+    return reply(409, { error: "Vous êtes déjà membre d'un espace familial" });
+  }
+
+  // L'auteur doit toujours administrer cet espace (A1 pour un parent).
+  const inviter = invitation.invitedByUserId ? await membershipOf(invitation.invitedByUserId, invitation.familyId) : null;
+  if (!inviter || inviter.role !== "parent" || (invitation.role === "parent" && !inviter.isPrimaryAdmin)) {
+    return reply(409, {
+      error: `Cette invitation n'est plus valable : la personne qui l'a envoyée n'administre plus cet espace, ${NEW_INVITATION}`,
+    });
+  }
+  if (invitation.role === "parent" && (await parentCount(invitation.familyId)) >= MAX_PARENTS) {
+    return reply(409, { error: `Le foyer compte déjà ${MAX_PARENTS} parents : cette invitation ne peut plus être acceptée` });
+  }
+
+  // Fiche de l'invité : sa fiche archivée s'il revient, sinon celle prévue
+  // (elle a pu être supprimée, archivée ou reliée à un autre compte depuis).
+  const [archivedFiche] = await db
+    .select()
+    .from(members)
+    .where(
+      and(
+        eq(members.familyId, invitation.familyId),
+        eq(members.archivedUserId, user.id),
+        isNotNull(members.archivedAt)
+      )
+    )
+    .orderBy(desc(members.archivedAt))
+    .limit(1);
+  let linkedFiche = archivedFiche ?? null;
+  if (!linkedFiche && invitation.linkedMemberId) {
+    const [planned] = await db.select().from(members).where(eq(members.id, invitation.linkedMemberId));
+    const [taken] = await db
+      .select({ id: familyMemberships.id })
+      .from(familyMemberships)
+      .where(eq(familyMemberships.linkedMemberId, invitation.linkedMemberId));
+    if (planned && !taken && !planned.archivedAt) linkedFiche = planned;
+  }
+  if (invitation.role === "dependent" && !linkedFiche) {
+    return reply(409, { error: `La fiche prévue n'est plus disponible : ${NEW_INVITATION}` });
+  }
+  if (linkedFiche) {
+    const age = ageOn(linkedFiche.dateOfBirth);
+    if (invitation.role === "parent" && age !== null && age < ADULT_AGE) {
+      return reply(409, { error: MINOR_PARENT_ERROR });
+    }
+    if (invitation.role !== "parent" && age !== null && age < ACCOUNT_MIN_AGE) {
+      return reply(409, { error: UNDER_MIN_AGE_ERROR });
+    }
+  }
+  const inviteeRole = effectiveRole(invitation.role, linkedFiche?.dateOfBirth);
+
+  // Le rôle de dossier prévu est-il encore attribuable ?
+  let grantedRole = null;
+  if (invitation.documentRole && invitation.documentMemberId !== linkedFiche?.id) {
+    const [docFiche] = invitation.documentMemberId
+      ? await db.select().from(members).where(eq(members.id, invitation.documentMemberId))
+      : [];
+    if (!docFiche || docFiche.familyId !== invitation.familyId || docFiche.archivedAt) {
+      return reply(409, { error: `Le dossier prévu par l'invitation n'est plus disponible : ${NEW_INVITATION}` });
+    }
+    if (inviteeRole === "dependent") {
+      return reply(409, { error: `${TEEN_ROLE_ERROR} : ${NEW_INVITATION}` });
+    }
+    if (!(await inviterCanManageRoles(inviter, invitation.familyId, docFiche.id))) {
+      return reply(409, { error: `La personne qui vous a invité ne gère plus ce dossier : ${NEW_INVITATION}` });
+    }
+    grantedRole = { memberId: docFiche.id, role: invitation.documentRole };
+    // Lecteur invité : l'échéance court à partir de l'acceptation (30 jours
+    // pour une invitation antérieure au choix de la durée).
+    if (grantedRole.role === "lecteur_invite") {
+      grantedRole.duration = isRoleDuration(invitation.documentRoleDuration) ? invitation.documentRoleDuration : "30j";
+      grantedRole.expiresAt = expiryFor(grantedRole.duration);
+    }
+  }
+
+  if (archivedFiche) await restoreArchivedFiche(user.id, invitation.familyId);
+  await db.insert(familyMemberships).values({
+    userId: user.id,
+    familyId: invitation.familyId,
+    role: invitation.role,
+    linkedMemberId: linkedFiche?.id ?? null,
+  });
+  const familyId = invitation.familyId;
+  await logActivity({
+    familyId,
+    actor: user,
+    action: "invitation_accepted",
+    target: invitation.invitedByUserId,
+    details: { invitationId: invitation.id, role: invitation.role },
+  });
+  if (archivedFiche) {
+    await logActivity({ familyId, actor: user, action: "member_restored", member: archivedFiche });
+  }
+  // Fiche reliée : les rôles posés avant la liaison tombent (le créateur de
+  // la fiche n'en garde pas la gestion), statut et lien « Parent » à jour.
+  if (linkedFiche) {
+    const removed = await afterFicheLinked({ memberId: linkedFiche.id, userId: user.id, role: invitation.role });
+    if (!archivedFiche) {
+      await logActivity({
+        familyId,
+        actor: user,
+        action: "account_linked",
+        member: linkedFiche,
+        target: user,
+        details: { via: "invitation" },
+      });
+    }
+    await logRolesAutoRevoked({ familyId, actor: user, member: linkedFiche, removed });
+  }
+  await db.update(pendingInvitations).set({ acceptedAt: new Date() }).where(eq(pendingInvitations.id, invitation.id));
+
+  // Le rôle de dossier (Axe 2) fixé avant l'envoi est appliqué maintenant
+  // que l'invitation est acceptée (§6.2).
+  if (grantedRole) {
+    await setDocumentRole(grantedRole.memberId, user.id, grantedRole.role, { expiresAt: grantedRole.expiresAt ?? null });
+    await logActivity({
+      familyId,
+      actor: invitation.invitedByUserId,
+      action: "document_role_granted",
+      member: grantedRole.memberId,
+      target: user,
+      details: {
+        role: grantedRole.role,
+        via: "invitation",
+        ...(grantedRole.expiresAt ? { duration: grantedRole.duration, expiresAt: grantedRole.expiresAt.toISOString() } : {}),
+      },
+    });
+  }
+
+  // La possession de l'adresse vient d'être prouvée par la consommation de
+  // ce lien unique — on active donc l'adresse si ce n'était pas déjà fait.
+  if (!user.emailVerified) {
+    await db.update(users).set({ emailVerified: true }).where(eq(users.id, user.id));
+  }
+
+  return reply(200, { success: true, familyId: invitation.familyId, linkedMemberId: linkedFiche?.id ?? null, restored: !!archivedFiche });
+}
+
 router.post("/:token/accept", requireAuth, async (req, res) => {
   try {
     const { token } = req.params;
     const [invitation] = await db.select().from(pendingInvitations).where(eq(pendingInvitations.token, hashToken(token)));
     if (!invitation) return res.status(404).json({ error: "Invitation introuvable" });
+    const result = await acceptInvitationRecord(invitation, req.user);
+    res.status(result.status).json(result.body);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// « Accepter avec Google » — sans session préalable. L'adresse Google
+// (vérifiée par Google) doit être EXACTEMENT celle de l'invitation : c'est
+// elle qui prouve, comme le clic sur le lien reçu, la possession de la boîte.
+// Ensuite, mêmes règles que « Continuer avec Google » (lib/googleAuth.js) :
+//   - compte connu (identifiant Google ou même adresse) → connexion (avec
+//     liaison si besoin) puis acceptation, avec TOUTES les vérifications de
+//     l'acceptation classique (acceptInvitationRecord) ;
+//   - aucun compte → { needsSignup, signupToken… } lié à cette invitation :
+//     après confirmation (POST /api/auth/google/signup), le compte est créé
+//     puis l'invitation acceptée, avec le rôle fixé à l'émission.
+router.post("/:token/accept-google", googleIpLimit, requireGoogleConfigured, async (req, res) => {
+  try {
+    const [invitation] = await db
+      .select()
+      .from(pendingInvitations)
+      .where(eq(pendingInvitations.token, hashToken(String(req.params.token))));
+    if (!invitation) return res.status(404).json({ error: "Invitation introuvable" });
     if (invitation.acceptedAt) return res.status(409).json({ error: "Invitation déjà utilisée" });
     if (invitation.expiresAt < new Date()) return res.status(410).json({ error: "Invitation expirée" });
-    if (invitation.email !== req.user.email.toLowerCase()) {
-      return res.status(403).json({ error: "Cette invitation ne correspond pas à votre compte connecté" });
-    }
 
-    // Un compte n'appartient qu'à un seul espace familial à la fois — même
-    // règle qu'à la création d'un espace (routes/families.js).
-    const [existingMembership] = await db
-      .select({ id: familyMemberships.id })
-      .from(familyMemberships)
-      .where(eq(familyMemberships.userId, req.user.id));
-    if (existingMembership) {
-      return res.status(409).json({ error: "Vous êtes déjà membre d'un espace familial" });
-    }
-
-    // L'auteur doit toujours administrer cet espace (A1 pour un parent).
-    const inviter = invitation.invitedByUserId ? await membershipOf(invitation.invitedByUserId, invitation.familyId) : null;
-    if (!inviter || inviter.role !== "parent" || (invitation.role === "parent" && !inviter.isPrimaryAdmin)) {
-      return res.status(409).json({
-        error: `Cette invitation n'est plus valable : la personne qui l'a envoyée n'administre plus cet espace, ${NEW_INVITATION}`,
+    const verified = await verifyGoogleCredential(req.body?.credential);
+    if (!verified.ok) return rejectGoogleCredential(req, res, verified.reason);
+    const { identity } = verified;
+    if (identity.email !== invitation.email) {
+      await logTechnical({
+        level: "warn",
+        category: "auth",
+        message: "Acceptation avec Google refusée : adresse Google différente de celle de l'invitation",
+        metadata: requestMeta(req),
       });
-    }
-    if (invitation.role === "parent" && (await parentCount(invitation.familyId)) >= MAX_PARENTS) {
-      return res.status(409).json({ error: `Le foyer compte déjà ${MAX_PARENTS} parents : cette invitation ne peut plus être acceptée` });
-    }
-
-    // Fiche de l'invité : sa fiche archivée s'il revient, sinon celle prévue
-    // (elle a pu être supprimée, archivée ou reliée à un autre compte depuis).
-    const [archivedFiche] = await db
-      .select()
-      .from(members)
-      .where(
-        and(
-          eq(members.familyId, invitation.familyId),
-          eq(members.archivedUserId, req.user.id),
-          isNotNull(members.archivedAt)
-        )
-      )
-      .orderBy(desc(members.archivedAt))
-      .limit(1);
-    let linkedFiche = archivedFiche ?? null;
-    if (!linkedFiche && invitation.linkedMemberId) {
-      const [planned] = await db.select().from(members).where(eq(members.id, invitation.linkedMemberId));
-      const [taken] = await db
-        .select({ id: familyMemberships.id })
-        .from(familyMemberships)
-        .where(eq(familyMemberships.linkedMemberId, invitation.linkedMemberId));
-      if (planned && !taken && !planned.archivedAt) linkedFiche = planned;
-    }
-    if (invitation.role === "dependent" && !linkedFiche) {
-      return res.status(409).json({ error: `La fiche prévue n'est plus disponible : ${NEW_INVITATION}` });
-    }
-    if (linkedFiche) {
-      const age = ageOn(linkedFiche.dateOfBirth);
-      if (invitation.role === "parent" && age !== null && age < ADULT_AGE) {
-        return res.status(409).json({ error: MINOR_PARENT_ERROR });
-      }
-      if (invitation.role !== "parent" && age !== null && age < ACCOUNT_MIN_AGE) {
-        return res.status(409).json({ error: UNDER_MIN_AGE_ERROR });
-      }
-    }
-    const inviteeRole = effectiveRole(invitation.role, linkedFiche?.dateOfBirth);
-
-    // Le rôle de dossier prévu est-il encore attribuable ?
-    let grantedRole = null;
-    if (invitation.documentRole && invitation.documentMemberId !== linkedFiche?.id) {
-      const [docFiche] = invitation.documentMemberId
-        ? await db.select().from(members).where(eq(members.id, invitation.documentMemberId))
-        : [];
-      if (!docFiche || docFiche.familyId !== invitation.familyId || docFiche.archivedAt) {
-        return res.status(409).json({ error: `Le dossier prévu par l'invitation n'est plus disponible : ${NEW_INVITATION}` });
-      }
-      if (inviteeRole === "dependent") {
-        return res.status(409).json({ error: `${TEEN_ROLE_ERROR} : ${NEW_INVITATION}` });
-      }
-      if (!(await inviterCanManageRoles(inviter, invitation.familyId, docFiche.id))) {
-        return res.status(409).json({ error: `La personne qui vous a invité ne gère plus ce dossier : ${NEW_INVITATION}` });
-      }
-      grantedRole = { memberId: docFiche.id, role: invitation.documentRole };
-      // Lecteur invité : l'échéance court à partir de l'acceptation (30 jours
-      // pour une invitation antérieure au choix de la durée).
-      if (grantedRole.role === "lecteur_invite") {
-        grantedRole.duration = isRoleDuration(invitation.documentRoleDuration) ? invitation.documentRoleDuration : "30j";
-        grantedRole.expiresAt = expiryFor(grantedRole.duration);
-      }
-    }
-
-    if (archivedFiche) await restoreArchivedFiche(req.user.id, invitation.familyId);
-    await db.insert(familyMemberships).values({
-      userId: req.user.id,
-      familyId: invitation.familyId,
-      role: invitation.role,
-      linkedMemberId: linkedFiche?.id ?? null,
-    });
-    const familyId = invitation.familyId;
-    await logActivity({
-      familyId,
-      actor: req.user,
-      action: "invitation_accepted",
-      target: invitation.invitedByUserId,
-      details: { invitationId: invitation.id, role: invitation.role },
-    });
-    if (archivedFiche) {
-      await logActivity({ familyId, actor: req.user, action: "member_restored", member: archivedFiche });
-    }
-    // Fiche reliée : les rôles posés avant la liaison tombent (le créateur de
-    // la fiche n'en garde pas la gestion), statut et lien « Parent » à jour.
-    if (linkedFiche) {
-      const removed = await afterFicheLinked({ memberId: linkedFiche.id, userId: req.user.id, role: invitation.role });
-      if (!archivedFiche) {
-        await logActivity({
-          familyId,
-          actor: req.user,
-          action: "account_linked",
-          member: linkedFiche,
-          target: req.user,
-          details: { via: "invitation" },
-        });
-      }
-      await logRolesAutoRevoked({ familyId, actor: req.user, member: linkedFiche, removed });
-    }
-    await db.update(pendingInvitations).set({ acceptedAt: new Date() }).where(eq(pendingInvitations.id, invitation.id));
-
-    // Le rôle de dossier (Axe 2) fixé avant l'envoi est appliqué maintenant
-    // que l'invitation est acceptée (§6.2).
-    if (grantedRole) {
-      await setDocumentRole(grantedRole.memberId, req.user.id, grantedRole.role, { expiresAt: grantedRole.expiresAt ?? null });
-      await logActivity({
-        familyId,
-        actor: invitation.invitedByUserId,
-        action: "document_role_granted",
-        member: grantedRole.memberId,
-        target: req.user,
-        details: {
-          role: grantedRole.role,
-          via: "invitation",
-          ...(grantedRole.expiresAt ? { duration: grantedRole.duration, expiresAt: grantedRole.expiresAt.toISOString() } : {}),
-        },
+      return res.status(403).json({
+        error: `Cette invitation a été envoyée à ${maskEmail(invitation.email)} : connectez-vous avec ce compte Google`,
+        code: "GOOGLE_EMAIL_MISMATCH",
       });
     }
 
-    // La possession de l'adresse vient d'être prouvée par la consommation de
-    // ce lien unique — on active donc l'adresse si ce n'était pas déjà fait.
-    if (!req.user.emailVerified) {
-      await db.update(users).set({ emailVerified: true }).where(eq(users.id, req.user.id));
-    }
+    const outcome = await signInWithGoogle(identity, req, { invitationId: invitation.id });
+    if (outcome.status) return res.status(outcome.status).json(outcome.body);
+    if (outcome.signup) return res.json(outcome.signup);
 
-    res.json({ success: true, familyId: invitation.familyId, linkedMemberId: linkedFiche?.id ?? null, restored: !!archivedFiche });
+    await openSession(res, outcome.user);
+    await logTechnical({ category: "auth", message: "Connexion Google réussie", metadata: { ...requestMeta(req), userId: outcome.user.id } });
+    const result = await acceptInvitationRecord(invitation, outcome.user);
+    // La session reste ouverte même si l'acceptation échoue (déjà membre d'un
+    // espace…) : comme après une connexion classique, le message s'affiche.
+    res.status(result.status).json({ ...result.body, user: sessionUser({ ...outcome.user, emailVerified: true }) });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Erreur serveur" });

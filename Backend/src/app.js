@@ -3,6 +3,7 @@ import helmet from "helmet";
 import cookieParser from "cookie-parser";
 import cors from "cors";
 import authRouter from "./routes/auth.js";
+import googleAuthRouter from "./routes/google.js";
 import familiesRouter from "./routes/families.js";
 import membersRouter from "./routes/members.js";
 import appointmentsRouter from "./routes/appointments.js";
@@ -96,6 +97,9 @@ app.use("/api", (req, res, next) => {
 app.use("/uploads", requireAuth, requireVerifiedEmail, uploadsRouter);
 
 app.use("/api/auth", authRouter);
+// « Continuer avec Google » : /api/auth/config, /api/auth/google… (facultatif,
+// actif seulement si GOOGLE_CLIENT_ID est définie).
+app.use("/api/auth", googleAuthRouter);
 app.use("/api/invitations", invitationsRouter);
 app.use("/api/webhooks/mail", mailWebhooksRouter);
 // Lien médecin et fiche d'urgence : publics, sans compte (phase F).

@@ -150,6 +150,9 @@ self.addEventListener("fetch", (event) => {
   if (url.pathname === "/admin" || url.pathname.startsWith("/admin/") || url.pathname.startsWith("/api/admin")) return;
 
   if (url.pathname.startsWith("/api/")) {
+    // Connexion avec Google (configuration, nonce à usage unique) : réseau
+    // seul, jamais gardée (règle explicite, en plus de la liste API_LECTURE).
+    if (url.pathname === "/api/auth/config" || url.pathname.startsWith("/api/auth/google")) return;
     if (isApiRead(url.pathname)) event.respondWith(apiNetworkFirst(request, url));
     return; // autres routes de l'API : réseau seul, jamais gardées
   }

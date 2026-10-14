@@ -5,13 +5,15 @@ import { Input } from "../components/ui/Input";
 import { Button } from "../components/ui/Button";
 import { Heart } from "lucide-react";
 import toast from "react-hot-toast";
+import { GoogleButton, useGoogleClientId } from "../components/auth/GoogleButton";
+import { GoogleSignupConfirm } from "../components/auth/GoogleSignupConfirm";
 
 // Retour après connexion (?next=/export/…) : seulement un chemin interne à
 // l'application, jamais une adresse extérieure (« //site » ou « https:… »).
 const safeNext = (value) => (typeof value === "string" && /^\/(?![/\\])/.test(value) ? value : null);
 
 export default function LoginPage() {
-  const { login } = useAuth();
+  const { login, googleSignIn } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const next = safeNext(searchParams.get("next"));
@@ -21,6 +23,8 @@ export default function LoginPage() {
   // Compte suspendu par le support (UC-52) : message détaillé (durée, motif,
   // recours) affiché en clair, révélé seulement après un mot de passe correct.
   const [suspended, setSuspended] = useState(null);
+  // Première connexion avec Google sans compte : écran de confirmation.
+  const [googlePending, setGooglePending] = useState(null);
 
   const submit = async (e) => {
     e.preventDefault();
@@ -36,6 +40,35 @@ export default function LoginPage() {
       setLoading(false);
     }
   };
+
+  const onGoogle = async (credential) => {
+    setSuspended(null);
+    try {
+      const data = await googleSignIn(credential);
+      if (data.needsSignup) setGooglePending(data);
+      else navigate(next ?? "/dashboard");
+    } catch (err) {
+      if (err.code === "ACCOUNT_SUSPENDED") setSuspended(err.message);
+      else toast.error(err.message);
+    }
+  };
+
+  if (googlePending) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
+        <div className="w-full max-w-sm bg-white rounded-2xl shadow-xl p-8">
+          <GoogleSignupConfirm
+            pending={googlePending}
+            onCancel={() => setGooglePending(null)}
+            onDone={() => {
+              toast.success("Compte créé : bienvenue !");
+              navigate(next ?? "/dashboard");
+            }}
+          />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
@@ -77,6 +110,8 @@ export default function LoginPage() {
             Se connecter
           </Button>
         </form>
+        <GoogleButton separator onCredential={onGoogle} />
+        <GoogleHint />
         <p className="text-sm text-center mt-4">
           <Link to="/support/acces" className="text-gray-500 hover:text-teal-600 hover:underline">
             Je n'arrive plus à accéder à mon compte
@@ -90,5 +125,18 @@ export default function LoginPage() {
         </p>
       </div>
     </div>
+  );
+}
+
+// Rappel pour les comptes créés avec Google (sans mot de passe) : la connexion
+// par mot de passe leur répond le même message générique qu'un mauvais mot de
+// passe — l'écran ne révèle jamais qu'un compte existe.
+function GoogleHint() {
+  const clientId = useGoogleClientId();
+  if (!clientId) return null;
+  return (
+    <p className="text-xs text-gray-500 text-center mt-3">
+      Vous vous êtes inscrit avec Google ? Utilisez le bouton « Continuer avec Google ».
+    </p>
   );
 }
