@@ -46,7 +46,9 @@ const userCols = { id: users.id, name: users.name, email: users.email, emailVeri
 // dossier. Avec holderFirst, seulement le titulaire s'il existe (rappels de
 // prise : c'est lui qui prend le médicament, adolescent compris). Sans
 // titulaire ni gestionnaire, ce sont les parents du foyer qui sont prévenus
-// (comme au Village). Une fiche archivée n'a aucun destinataire.
+// (comme au Village). Une fiche archivée n'a aucun destinataire. Un compte
+// suspendu par le support (UC-52) n'en est jamais un : ses rappels vont
+// alors aux autres (gestionnaires, à défaut parents).
 export async function recipientsFor(memberId, { holderFirst = false } = {}) {
   const [fiche] = await db
     .select({ familyId: members.familyId, archivedAt: members.archivedAt })
@@ -58,7 +60,7 @@ export async function recipientsFor(memberId, { holderFirst = false } = {}) {
       .select(userCols)
       .from(familyMemberships)
       .innerJoin(users, eq(users.id, familyMemberships.userId))
-      .where(eq(familyMemberships.linkedMemberId, memberId)),
+      .where(and(eq(familyMemberships.linkedMemberId, memberId), isNull(users.suspendedAt))),
     memberId
   );
   if (holderFirst && holders.length > 0) return holders;
@@ -67,7 +69,7 @@ export async function recipientsFor(memberId, { holderFirst = false } = {}) {
       .select(userCols)
       .from(documentRoles)
       .innerJoin(users, eq(users.id, documentRoles.userId))
-      .where(and(eq(documentRoles.memberId, memberId), eq(documentRoles.role, "gestionnaire"))),
+      .where(and(eq(documentRoles.memberId, memberId), eq(documentRoles.role, "gestionnaire"), isNull(users.suspendedAt))),
     memberId
   );
   const all = new Map([...holders, ...managers].map((u) => [u.id, u]));
@@ -376,6 +378,16 @@ export async function markEmailFailed(notification, reason, now = new Date()) {
 }
 
 async function dispatchEmails(now, sendMail) {
+  // Compte suspendu depuis la création de la notification : rien ne part.
+  await db
+    .update(notifications)
+    .set({ emailStatus: "skipped", emailNextAttemptAt: null })
+    .where(
+      and(
+        eq(notifications.emailStatus, "pending"),
+        sql`${notifications.userId} in (select ${users.id} from ${users} where ${users.suspendedAt} is not null)`
+      )
+    );
   const due = await db
     .select({ n: notifications, email: users.email })
     .from(notifications)

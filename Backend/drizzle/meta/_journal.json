@@ -148,6 +148,13 @@
       "when": 1791892621213,
       "tag": "0020_notifications_push",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1791897271387,
+      "tag": "0021_support_plateforme",
+      "breakpoints": true
     }
   ]
 }

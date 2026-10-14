@@ -3,6 +3,7 @@ import { verifyAccessToken } from "../lib/jwt.js";
 import { db } from "../db/index.js";
 import { familyMemberships, members, users } from "../db/schema.js";
 import { effectiveRole } from "../lib/family.js";
+import { isSuspended } from "../lib/suspensionStatus.js";
 
 // Vérifie qu'une session valide (access token) est présente. Va chercher
 // l'utilisateur en base à chaque requête (plutôt que de faire confiance aux
@@ -21,6 +22,8 @@ export async function requireAuth(req, res, next) {
         email: users.email,
         emailVerified: users.emailVerified,
         passwordChangedAt: users.passwordChangedAt,
+        suspendedAt: users.suspendedAt,
+        suspendedUntil: users.suspendedUntil,
       })
       .from(users)
       .where(eq(users.id, payload.sub));
@@ -29,7 +32,15 @@ export async function requireAuth(req, res, next) {
     if (user.passwordChangedAt && payload.iat < Math.floor(user.passwordChangedAt.getTime() / 1000)) {
       return res.status(401).json({ error: "Session expirée, reconnexion requise" });
     }
+    // Compte suspendu par le support (UC-52) : tout jeton est refusé, même
+    // encore valide. (Seul le jeton d'accès des familles est accepté ici :
+    // la session du support — cookie admin_token — n'ouvre jamais ces routes.)
+    if (isSuspended(user)) {
+      return res.status(401).json({ error: "Compte suspendu", code: "ACCOUNT_SUSPENDED" });
+    }
     delete user.passwordChangedAt;
+    delete user.suspendedAt;
+    delete user.suspendedUntil;
     req.user = user;
     next();
   } catch (err) {

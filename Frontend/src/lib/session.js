@@ -69,7 +69,10 @@ export function refreshSession() {
 
 // Requêtes concernées par le renouvellement automatique : API et fichiers
 // privés du même domaine, hors routes qui n'ont pas de sens à rejouer.
-const EXCLUDED_PREFIXES = ["/api/auth/refresh", "/api/auth/login", "/api/auth/logout", "/api/public/"];
+// L'espace support (/api/admin) a sa propre session, sans renouvellement :
+// jamais de /api/auth/refresh pour lui. Les demandes publiques au support
+// (/api/support/public) se passent de session.
+const EXCLUDED_PREFIXES = ["/api/auth/refresh", "/api/auth/login", "/api/auth/logout", "/api/public/", "/api/admin/", "/api/support/public/"];
 
 function shouldIntercept(url) {
   try {

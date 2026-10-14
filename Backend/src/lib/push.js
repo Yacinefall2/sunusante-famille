@@ -4,6 +4,7 @@ import { and, eq, gt, inArray, isNotNull, isNull, lte, or } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { intakeActionTokens, medicationIntakes, notifications, pushSubscriptions, users } from "../db/schema.js";
 import { hashToken } from "./session.js";
+import { logTechnical } from "./technicalLog.js";
 
 // ── Notifications push (Web Push standard, VAPID — aucun service payant) ─────
 // Les rappels arrivent sur le téléphone ou l'ordinateur même quand
@@ -185,6 +186,14 @@ export async function sendToSubscription(subscription, payload, now = new Date()
     return true;
   } catch (error) {
     const status = error?.statusCode;
+    // Journal technique (UC-53) : le code d'erreur seulement, jamais le
+    // contenu du message ni l'adresse de l'abonnement.
+    await logTechnical({
+      level: "warn",
+      category: "push",
+      message: status === 404 || status === 410 ? "Abonnement push expiré : retiré" : "Échec d'envoi d'une notification push",
+      metadata: { userId: subscription.userId, statusCode: status, errorName: error?.name },
+    });
     if (status === 404 || status === 410) {
       await db.delete(pushSubscriptions).where(eq(pushSubscriptions.id, subscription.id));
       return false;

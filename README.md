@@ -188,6 +188,55 @@ journalisée). La base de données, elle, n'est pas chiffrée par ce mécanisme.
   `🔐 N document(s) chiffré(s), M déjà chiffré(s), K erreur(s)`.
 - **Changer de clé (rotation)** : voir DOCUMENTATION.md §9.1.
 
+### Espace support (administration de la plateforme, acteur A5)
+
+Espace **séparé** de l'application famille, à l'adresse `/admin` (bandeau
+permanent « Espace support — aucun accès au contenu médical »). Le support
+agit sur les **comptes** et les **métadonnées techniques**, jamais sur les
+dossiers : aucune fiche, aucun rendez-vous, traitement, vaccin, document, note,
+allergie, fiche d'urgence ni journal de famille ne lui est accessible (vérifié
+par `Backend/test/supportCloisonnement.test.js`).
+
+**Créer un compte support** — uniquement en ligne de commande (aucune page ne
+le permet). Le mot de passe (24 caractères aléatoires) est affiché une seule
+fois, avec le QR code du double facteur à scanner dans une application
+d'authentification (Google Authenticator, Microsoft Authenticator, Aegis…) :
+
+```bash
+# Docker
+docker compose exec backend npm run support:creer -- --email support@exemple.sn --nom "Awa Ndiaye"
+docker compose exec backend npm run support:desactiver -- --email support@exemple.sn
+docker compose exec backend npm run support:reinitialiser-2fa -- --email support@exemple.sn
+
+# Sans Docker (dans Backend/, base accessible via DATABASE_URL)
+npm run support:creer -- --email support@exemple.sn --nom "Awa Ndiaye"
+```
+
+- **Connexion** : adresse + mot de passe + code à 6 chiffres (TOTP, un code
+  ne sert qu'une fois). 5 échecs bloquent 15 minutes. Session de 30 minutes
+  glissantes (cookie `admin_token`, limité à `/api/admin`), déconnexion
+  automatique après 30 minutes d'inactivité. Une session famille n'ouvre
+  jamais `/api/admin`, une session support n'ouvre aucune route famille.
+- **Demandes** (`/admin/demandes`) : « Je n'arrive plus à accéder à mon
+  compte » (écran de connexion, UC-50), « Contacter le support » dans
+  « Mon compte » (suppression des données UC-51, autre question), « Signaler un
+  compte » dans « Comptes & invitations » (UC-52). L'identité est confirmée par
+  un lien envoyé à l'adresse du compte ; à défaut (boîte perdue), le support la
+  vérifie hors application.
+- **Actions** (motif obligatoire, toutes tracées) : lien de réinitialisation
+  du mot de passe, déblocage de la connexion, changement d'adresse (identité
+  vérifiée hors application), suppression du compte (mêmes règles que « Mon
+  compte »), suspension temporaire et réversible d'un compte signalé (levée
+  manuelle ou automatique à la date de fin).
+- **Journal d'audit** (`/admin/audit`) : ineffaçable (la base refuse toute
+  modification ou suppression).
+- **Journaux techniques** (`/admin/journaux`, UC-53) : connexions, erreurs
+  serveur, courriels, passages du worker, échecs push, limiteurs — métadonnées
+  seulement (IP tronquée, destinataire masqué, jamais de corps de requête ni
+  de donnée médicale), **purgés après 90 jours** par le worker.
+
+Détails : DOCUMENTATION.md §10.
+
 ### Modifier le schéma de la base
 
 1. Modifier `Backend/src/db/schema.js`
@@ -286,3 +335,4 @@ Tables : `families`, `members`, `appointments`, `treatments`, `vaccinations`, `d
 - Traitements / médicaments (actifs ou terminés)
 - Carnet de vaccinations (avec rappels à venir)
 - Documents médicaux (ordonnances, résultats, radios, comptes-rendus)
+- Espace support séparé (`/admin`, double facteur) : récupération de compte, suppression des données, suspension d'un compte signalé, journaux techniques et journal d'audit — sans aucun accès au contenu médical

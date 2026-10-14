@@ -1,5 +1,7 @@
+import { eq } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { notifications } from "../db/schema.js";
+import { notifications, users } from "../db/schema.js";
+import { isSuspended } from "../lib/suspensionStatus.js";
 import { DELIVERY_FAILURE, getPreference } from "../lib/notificationPreferences.js";
 import { PUSH_CATEGORIES } from "../lib/push.js";
 
@@ -8,7 +10,14 @@ import { PUSH_CATEGORIES } from "../lib/push.js";
 // Les rappels (PUSH_CATEGORIES) affichés dans l'application partent aussi en
 // notification push vers les appareils abonnés du destinataire, au prochain
 // passage du moteur (lib/push.js, dispatchPushes).
+// Compte suspendu par le support (UC-52) : il ne reçoit plus rien (ni dans
+// l'application, ni par courriel, ni en push).
 export async function notify({ user, category, dedupeKey, title, body, link, familyId, memberId, intakeId, now }) {
+  const [state] = await db
+    .select({ suspendedAt: users.suspendedAt, suspendedUntil: users.suspendedUntil })
+    .from(users)
+    .where(eq(users.id, user.id));
+  if (!state || isSuspended(state, now ?? new Date())) return null;
   const forced = category === DELIVERY_FAILURE;
   const pref = forced ? { inApp: true, email: false } : await getPreference(user.id, category);
   if (!pref.inApp && !pref.email) return null;

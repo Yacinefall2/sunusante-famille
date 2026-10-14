@@ -28,6 +28,11 @@ import activityRouter from "./routes/activity.js";
 import roleTransfersRouter from "./routes/roleTransfers.js";
 import reminderSettingsRouter from "./routes/reminderSettings.js";
 import { exportDownloadRouter, familyExportRouter, memberExportRouter } from "./routes/exports.js";
+import adminAuthRouter from "./routes/adminAuth.js";
+import adminRouter from "./routes/admin.js";
+import { supportPublicRouter, supportRouter } from "./routes/support.js";
+import { requireSupport } from "./middleware/supportAuth.js";
+import { httpErrorLogger } from "./lib/technicalLog.js";
 import { requireAuth, requireVerifiedEmail } from "./middleware/auth.js";
 import { convertLegacyEmergencyTokens } from "./lib/sharing.js";
 import { encryptLegacyDocuments } from "./lib/documentFiles.js";
@@ -73,6 +78,9 @@ app.use((req, res, next) => {
   if (origin === FRONTEND_ORIGIN || host === req.get("host")) return next();
   res.status(403).json({ error: "Origine refusée" });
 });
+// Journal technique (UC-53) : toute réponse 5xx est notée (route, méthode,
+// statut, durée — jamais le corps de la requête ni de la réponse).
+app.use(httpErrorLogger);
 app.use(express.json({ limit: "100kb" }));
 app.use(cookieParser());
 
@@ -95,6 +103,16 @@ app.use("/api/public", publicRouter);
 // Boutons « Pris » / « Pas pris » d'une notification push : sans session,
 // autorisés par le jeton d'action de la notification (routes/intakes.js).
 app.use("/api/intakes", intakeActionRouter);
+// Support : « Je n'arrive plus à accéder à mon compte » et lien de
+// confirmation d'une demande (sans session).
+app.use("/api/support/public", supportPublicRouter);
+
+// Espace support (acteur A5, UC-50 à 53) : session SÉPARÉE (cookie
+// admin_token, mot de passe + code à usage unique). Une session famille n'y
+// donne jamais accès, et une session support n'ouvre aucune route famille
+// (requireAuth ne lit que le cookie access_token).
+app.use("/api/admin/auth", adminAuthRouter);
+app.use("/api/admin", requireSupport, adminRouter);
 
 // Toutes les routes ci-dessous nécessitent une session valide ET une adresse
 // courriel vérifiée (règle transverse §10, sans exception). L'isolation
@@ -128,6 +146,8 @@ app.use("/api/doctor-shares", requireAuth, requireVerifiedEmail, doctorSharesRou
 app.use("/api/emergency", requireAuth, requireVerifiedEmail, emergencyRouter);
 // Journal d'activité (UC-10) : lecture seule, visibilité calculée par la route.
 app.use("/api/activity", requireAuth, requireVerifiedEmail, activityRouter);
+// Demandes au support (« Contacter le support », « Signaler un compte », « Mes demandes »).
+app.use("/api/support", requireAuth, requireVerifiedEmail, supportRouter);
 // Lien de téléchargement de l'archive (reçu par courriel) : exige aussi d'être
 // connecté avec le compte qui l'a demandée.
 app.use("/api/exports", requireAuth, requireVerifiedEmail, exportDownloadRouter);
@@ -163,6 +183,8 @@ if (!process.env.VITEST) {
 app.use((err, req, res, next) => {
   const status = err.status || err.statusCode || 500;
   if (status >= 500) console.error(err);
+  // Nom de l'erreur (TypeError…) pour le journal technique, jamais son contenu.
+  res.locals.errorName = typeof err?.name === "string" ? err.name.slice(0, 60) : undefined;
   res.status(status).json({ error: status >= 500 ? "Erreur serveur" : "Requête invalide" });
 });
 

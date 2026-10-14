@@ -4,7 +4,10 @@ import { db } from "../db/index.js";
 import { users, refreshTokens, emailVerificationTokens, passwordResetTokens, emailChangeTokens } from "../db/schema.js";
 import { hashPassword, comparePassword } from "../lib/password.js";
 import { generateToken } from "../lib/token.js";
-import { sendAccountExistsEmail, sendPasswordChangedAlert, sendPasswordResetEmail, sendVerificationEmail } from "../lib/mailer.js";
+import { sendAccountExistsEmail, sendPasswordChangedAlert, sendVerificationEmail } from "../lib/mailer.js";
+import { issuePasswordReset, passwordResetSentRecently } from "../lib/passwordReset.js";
+import { isSuspended, suspendedLoginMessage } from "../lib/suspensionStatus.js";
+import { logTechnical, requestMeta } from "../lib/technicalLog.js";
 import {
   clearEmail,
   clearFailures,
@@ -28,7 +31,6 @@ const router = Router();
 
 const VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000; // 24 heures
 const RESEND_MIN_INTERVAL_MS = 60 * 1000; // délai minimal entre deux envois à une même adresse (UC-62)
-const PASSWORD_RESET_TTL_MS = 60 * 60 * 1000; // 1 heure
 const MIN_PASSWORD_LENGTH = 8;
 const MAX_NAME_LENGTH = 150;
 // Un jeton de rafraîchissement remplacé il y a peu peut légitimement revenir
@@ -211,6 +213,12 @@ router.post("/verify-email/:token", authIpLimit, async (req, res) => {
 
     const [user] = await db.select().from(users).where(eq(users.id, verification.userId));
     if (!user) return res.status(404).json({ error: "Compte introuvable" });
+    // Compte suspendu (UC-52) : l'adresse est bien vérifiée, mais aucune
+    // session n'est ouverte.
+    if (isSuspended(user)) {
+      await db.update(users).set({ emailVerified: true }).where(eq(users.id, user.id));
+      return res.status(403).json({ error: suspendedLoginMessage(user), code: "ACCOUNT_SUSPENDED" });
+    }
 
     // Sessions ouvertes avant la vérification (connexion permise sans adresse
     // vérifiée) : fermées. Seule la session ouverte par ce lien subsiste.
@@ -259,9 +267,25 @@ router.post("/login", authIpLimit, async (req, res) => {
     const valid = await comparePassword(password, user ? user.passwordHash : await dummyHash());
     if (!user || !valid) {
       recordFailure(normalizedEmail, req.ip);
+      // Journal technique (UC-53) : jamais le mot de passe ni l'adresse en clair.
+      await logTechnical({
+        level: "warn",
+        category: "auth",
+        message: user ? "Connexion refusée : mot de passe incorrect" : "Connexion refusée : compte inconnu",
+        metadata: { ...requestMeta(req), userId: user?.id },
+      });
       return res.status(401).json({ error: "Identifiants invalides" });
     }
     clearFailures(normalizedEmail, req.ip);
+
+    // Compte suspendu par le support (UC-52) : révélé SEULEMENT après un mot
+    // de passe correct (sinon, l'écran trahirait quels comptes sont suspendus).
+    if (isSuspended(user)) {
+      await logTechnical({ level: "warn", category: "auth", message: "Connexion refusée : compte suspendu", metadata: { ...requestMeta(req), userId: user.id } });
+      return res.status(403).json({ error: suspendedLoginMessage(user), code: "ACCOUNT_SUSPENDED" });
+    }
+    await db.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, user.id));
+    await logTechnical({ category: "auth", message: "Connexion réussie", metadata: { ...requestMeta(req), userId: user.id } });
 
     const accessToken = signAccessToken(user);
     const refreshToken = signRefreshToken(user);
@@ -296,30 +320,11 @@ router.post("/forgot-password", authIpLimit, async (req, res) => {
     if (!user) return res.json({ success: true });
 
     // Délai minimal entre deux envois : la demande est ignorée en silence.
-    const [recent] = await db
-      .select()
-      .from(passwordResetTokens)
-      .where(eq(passwordResetTokens.userId, user.id))
-      .orderBy(desc(passwordResetTokens.createdAt))
-      .limit(1);
-    if (recent && Date.now() - new Date(recent.createdAt).getTime() < RESEND_MIN_INTERVAL_MS) {
-      return res.json({ success: true });
-    }
+    if (await passwordResetSentRecently(user.id)) return res.json({ success: true });
 
-    // Une nouvelle demande annule les liens encore valides.
-    const now = new Date();
-    await db
-      .update(passwordResetTokens)
-      .set({ consumedAt: now })
-      .where(and(eq(passwordResetTokens.userId, user.id), isNull(passwordResetTokens.consumedAt)));
-
-    const token = generateToken();
-    await db.insert(passwordResetTokens).values({
-      userId: user.id,
-      tokenHash: hashToken(token),
-      expiresAt: new Date(now.getTime() + PASSWORD_RESET_TTL_MS),
-    });
-    await sendPasswordResetEmail({ to: user.email, name: user.name, token });
+    // Une nouvelle demande annule les liens encore valides (lib/passwordReset.js,
+    // mécanisme partagé avec le support — UC-50).
+    await issuePasswordReset(user);
     res.json({ success: true });
   } catch (error) {
     console.error(error);
@@ -441,7 +446,8 @@ router.post("/refresh", async (req, res) => {
     }
 
     const [user] = await db.select().from(users).where(eq(users.id, payload.sub));
-    if (!user) {
+    // Compte suspendu (UC-52) : plus aucun renouvellement de session.
+    if (!user || isSuspended(user)) {
       clearAuthCookies(res);
       return res.status(401).json({ error: "Session expirée, reconnexion requise" });
     }

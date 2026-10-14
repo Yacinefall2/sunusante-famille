@@ -26,6 +26,9 @@ import JournalPage from "./pages/Journal.jsx";
 import PublicDoctorPage from "./pages/PublicDoctor.jsx";
 import PublicEmergencyPage from "./pages/PublicEmergency.jsx";
 import ExportDownloadPage from "./pages/ExportDownload.jsx";
+import SupportAccessPage from "./pages/SupportAccess.jsx";
+import SupportConfirmPage from "./pages/SupportConfirm.jsx";
+import SupportRequestsPage from "./pages/SupportRequests.jsx";
 import { useFamily } from "./context/FamilyContext";
 import { SeniorAlerts } from "./components/senior/SeniorAlerts";
 import { LocalReminders } from "./components/senior/LocalReminders";
@@ -60,6 +63,10 @@ export default function App() {
         {/* Lien de l'archive de la famille (UC-09) : hors écran « Ma fiche », mais
             la page exige d'être connecté avec le compte du demandeur */}
         <Route path="/export/:token" element={<ExportDownloadPage />} />
+        {/* Support (UC-50, UC-51) : « Je n'arrive plus à accéder à mon compte »
+            et lien de confirmation d'une demande — sans connexion */}
+        <Route path="/support/acces" element={<SupportAccessPage />} />
+        <Route path="/support/confirmer/:token" element={<SupportConfirmPage />} />
         <Route
           path="/*"
           element={
@@ -85,6 +92,8 @@ export default function App() {
                     <Route path="/notifications" element={<NotificationsPage />} />
                     <Route path="/journal" element={<JournalPage />} />
                     <Route path="/compte" element={<ComptePage />} />
+                    {/* « Contacter le support » et « Mes demandes » */}
+                    <Route path="/support" element={<SupportRequestsPage />} />
                     <Route path="*" element={<Navigate to="/dashboard" replace />} />
                   </Routes>
                 </MyFicheGate>

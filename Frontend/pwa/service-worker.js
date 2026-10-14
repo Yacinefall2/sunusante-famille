@@ -145,6 +145,9 @@ self.addEventListener("fetch", (event) => {
   if (request.method !== "GET") return; // écritures : jamais interceptées
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
+  // Espace support (/admin) et son API (/api/admin) : jamais servis ni
+  // gardés par le service worker — réseau seul, aucune copie hors ligne.
+  if (url.pathname === "/admin" || url.pathname.startsWith("/admin/") || url.pathname.startsWith("/api/admin")) return;
 
   if (url.pathname.startsWith("/api/")) {
     if (isApiRead(url.pathname)) event.respondWith(apiNetworkFirst(request, url));

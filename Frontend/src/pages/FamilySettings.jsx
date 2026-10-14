@@ -4,10 +4,10 @@ import { AppShell } from "../components/layout/AppShell";
 import { useFamily } from "../context/FamilyContext";
 import { useAuth } from "../context/AuthContext";
 import { Button } from "../components/ui/Button";
-import { Input, Select } from "../components/ui/Input";
+import { Input, Select, Textarea } from "../components/ui/Input";
 import { Badge } from "../components/ui/Badge";
 import { Modal } from "../components/ui/Modal";
-import { UserCog, Mail, Trash2, Loader2, Clock, Shield, Plus, Link2, AlertTriangle } from "lucide-react";
+import { UserCog, Mail, Trash2, Loader2, Clock, Shield, Plus, Link2, AlertTriangle, Flag } from "lucide-react";
 import { formatDateTime } from "../lib/utils";
 import {
   AGE_ACCESS_HELP,
@@ -256,6 +256,31 @@ export default function FamilySettingsPage() {
   // removal = { membership, fiches, candidates, choices: { [memberId]: userId } }
   const [removal, setRemoval] = useState(null);
 
+  // « Signaler un compte » au support (UC-52) : un compte de SA famille, jamais
+  // soi-même. Le compte signalé n'est pas prévenu à ce stade.
+  const [reportTarget, setReportTarget] = useState(null);
+  const [reportForm, setReportForm] = useState({ reason: "abusive", description: "" });
+  const [reporting, setReporting] = useState(false);
+  const submitReport = async () => {
+    setReporting(true);
+    try {
+      const res = await fetch("/api/support/reports", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ familyId: selectedFamily.id, targetUserId: reportTarget.userId, ...reportForm }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Impossible d'envoyer le signalement");
+      toast.success(`Signalement ${data.reference} transmis au support. Suivez-le dans « Mon compte » › « Mes demandes ».`, { duration: 7000 });
+      setReportTarget(null);
+      setReportForm({ reason: "abusive", description: "" });
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setReporting(false);
+    }
+  };
+
   const openRemoval = async (membership) => {
     setRemovingId(membership.id);
     try {
@@ -498,6 +523,19 @@ export default function FamilySettingsPage() {
                       <Badge variant={familyRoleBadgeVariant(m.role, m.isPrimaryAdmin)}>{familyRoleLabel(m.role, m.isPrimaryAdmin)}</Badge>
                     )}
 
+                    {m.userId !== user?.id && (
+                      <button
+                        type="button"
+                        onClick={() => setReportTarget(m)}
+                        title="Signaler ce compte au support"
+                        aria-label={`Signaler le compte de ${m.name ?? "ce compte"} au support`}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border border-amber-200 text-amber-700 text-xs font-semibold hover:bg-amber-50 transition-colors"
+                      >
+                        <Flag size={14} />
+                        Signaler
+                      </button>
+                    )}
+
                     {isParent && (
                       <button
                         onClick={() => openRemoval(m)}
@@ -594,6 +632,45 @@ export default function FamilySettingsPage() {
           </>
         )}
       </div>
+
+      <Modal open={!!reportTarget} onClose={() => setReportTarget(null)} title="Signaler un compte au support">
+        {reportTarget && (
+          <div className="space-y-4">
+            <p className="text-sm text-gray-700">
+              Compte signalé : <strong>{reportTarget.name}</strong> ({reportTarget.email}). Le support examinera le signalement
+              et pourra suspendre ce compte temporairement. La personne n'est pas prévenue à ce stade.
+            </p>
+            <div className="flex gap-2 bg-amber-50 border border-amber-200 text-amber-900 rounded-xl p-3 text-sm">
+              <AlertTriangle size={16} className="flex-shrink-0 mt-0.5" />
+              <p>
+                <strong>N'indiquez aucune information médicale.</strong> Le support n'a jamais accès aux dossiers de santé.
+              </p>
+            </div>
+            <Select label="Motif" value={reportForm.reason} onChange={(e) => setReportForm((f) => ({ ...f, reason: e.target.value }))}>
+              <option value="abusive">Comportement abusif</option>
+              <option value="usurped">Compte usurpé</option>
+              <option value="other">Autre</option>
+            </Select>
+            <Textarea
+              label="Description"
+              rows={4}
+              maxLength={4000}
+              value={reportForm.description}
+              onChange={(e) => setReportForm((f) => ({ ...f, description: e.target.value }))}
+              placeholder="Décrivez ce qui se passe (10 caractères minimum)."
+            />
+            <div className="flex gap-3">
+              <Button variant="ghost" className="flex-1" onClick={() => setReportTarget(null)}>
+                Annuler
+              </Button>
+              <Button className="flex-1" loading={reporting} disabled={reportForm.description.trim().length < 10} onClick={submitReport}>
+                <Flag size={15} />
+                Envoyer le signalement
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
 
       <Modal open={!!removal} onClose={() => setRemoval(null)} title="Retirer ce compte de la famille">
         {removal && (

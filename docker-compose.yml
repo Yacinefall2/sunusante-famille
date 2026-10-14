@@ -88,6 +88,10 @@ services:
       APP_TIMEZONE: ${APP_TIMEZONE:-Africa/Dakar}
       MAIL_WEBHOOK_SECRET: ${MAIL_WEBHOOK_SECRET:-}
       EMERGENCY_TOKEN_KEY: ${EMERGENCY_TOKEN_KEY:-}
+      # Espace support : chiffrement des secrets du double facteur (facultatif,
+      # dérivé de JWT_ACCESS_SECRET à défaut) et adresse « Répondre à ».
+      SUPPORT_TOTP_KEY: ${SUPPORT_TOTP_KEY:-}
+      SUPPORT_CONTACT_EMAIL: ${SUPPORT_CONTACT_EMAIL:-}
       # Clé maîtresse du chiffrement des documents (backend ET worker, qui
       # prépare les archives d'export). Obligatoire : sa perte rend les
       # documents irrécupérables — à sauvegarder à part (voir .env.example).

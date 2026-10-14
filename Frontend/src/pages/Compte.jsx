@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { AppShell } from "../components/layout/AppShell";
 import { Modal } from "../components/ui/Modal";
 import { Button } from "../components/ui/Button";
 import { Input } from "../components/ui/Input";
 import { useAuth } from "../context/AuthContext";
 import { useFamily } from "../context/FamilyContext";
-import { UserRound, Mail, KeyRound, Download, FileDown, Trash2, Loader2, AlertTriangle, Clock, RotateCw, ZoomIn, Smartphone } from "lucide-react";
+import { UserRound, Mail, KeyRound, Download, FileDown, Trash2, Loader2, AlertTriangle, Clock, RotateCw, ZoomIn, Smartphone, LifeBuoy } from "lucide-react";
 import { Switch } from "../components/ui/Switch";
 import { SoundAlertsSetup } from "../components/senior/SoundAlertsSetup";
 import { InstallAppButton } from "../components/pwa/InstallAppButton";
@@ -342,6 +342,20 @@ export default function ComptePage() {
               Télécharger mes données (JSON)
             </a>
           </div>
+        </Section>
+
+        <Section
+          icon={LifeBuoy}
+          title="Contacter le support"
+          hint="Une question, ou faire supprimer vos données par le support. Le support n'a jamais accès aux dossiers de santé."
+        >
+          <Link
+            to="/support"
+            className="inline-flex items-center justify-center gap-2 font-semibold rounded-xl transition-all duration-200 text-sm px-4 py-2.5 border-2 border-teal-600 text-teal-600 hover:bg-teal-50"
+          >
+            <LifeBuoy size={15} />
+            Contacter le support · Mes demandes
+          </Link>
         </Section>
 
         <Section icon={Trash2} title="Supprimer mon compte" hint="Action définitive." danger>

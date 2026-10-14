@@ -67,7 +67,9 @@ export async function managersOf(memberId, familyId) {
     .select(userCols)
     .from(documentRoles)
     .innerJoin(users, eq(users.id, documentRoles.userId))
-    .where(and(eq(documentRoles.memberId, memberId), eq(documentRoles.role, "gestionnaire")));
+    // Gestionnaire suspendu par le support (UC-52) : écarté, les parents
+    // prennent le relais s'il était le seul.
+    .where(and(eq(documentRoles.memberId, memberId), eq(documentRoles.role, "gestionnaire"), isNull(users.suspendedAt)));
   const managers = await withAccess(designated, memberId, canWrite);
   if (managers.length > 0) return managers;
   // Sans gestionnaire désigné, les administrateurs du foyer prennent le relais.

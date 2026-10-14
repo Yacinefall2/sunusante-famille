@@ -212,6 +212,16 @@ export const users = pgTable("users", {
   seniorMode: boolean("senior_mode").default(false).notNull(),
   seniorModeSetByUserId: integer("senior_mode_set_by_user_id").references(() => users.id, { onDelete: "set null" }),
   seniorModeUpdatedAt: timestamp("senior_mode_updated_at"),
+  // Dernière connexion réussie (métadonnée technique, visible du support).
+  lastLoginAt: timestamp("last_login_at"),
+  // Suspension par le support (UC-52) : blocage TEMPORAIRE et RÉVERSIBLE
+  // d'un compte signalé. Connexion et sessions refusées ; données, fiche et
+  // rôles intacts. suspended_until NULL = jusqu'à nouvel ordre ; à cette
+  // date, le worker lève la suspension (lib/suspension.js).
+  suspendedAt: timestamp("suspended_at", { precision: 3 }),
+  suspendedUntil: timestamp("suspended_until", { precision: 3 }),
+  suspensionReason: text("suspension_reason"),
+  suspendedBy: integer("suspended_by").references(() => supportUsers.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -771,4 +781,157 @@ export const intakeActionTokens = pgTable(
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (t) => [index("intake_action_tokens_expiry_idx").on(t.expiresAt)]
+);
+
+// ── Administration de la plateforme / support (acteur A5, M13, UC-50 à 53) ───
+// Cloisonnement absolu : le support agit sur les COMPTES et les MÉTADONNÉES
+// techniques, jamais sur les dossiers. Aucune de ces tables ne contient — ni
+// ne doit contenir — de donnée médicale.
+
+// Comptes support : SÉPARÉS des comptes famille (jamais membres d'une
+// famille), créés uniquement en ligne de commande (scripts/creerSupport.js).
+// Connexion par mot de passe + code à usage unique (TOTP, RFC 6238).
+export const supportUsers = pgTable("support_users", {
+  id: serial("id").primaryKey(),
+  email: varchar("email", { length: 255 }).notNull().unique(),
+  name: varchar("name", { length: 150 }).notNull(),
+  passwordHash: varchar("password_hash", { length: 255 }).notNull(),
+  // Secret TOTP chiffré (AES-256-GCM, lib/totp.js) : jamais en clair en base.
+  totpSecretEncrypted: text("totp_secret_encrypted").notNull(),
+  // Dernier pas de temps (30 s) accepté : un code ne sert qu'une fois.
+  totpLastStep: bigint("totp_last_step", { mode: "number" }),
+  active: boolean("active").default(true).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  lastLoginAt: timestamp("last_login_at"),
+});
+
+// Sessions du support : jeton aléatoire (cookie admin_token, seule son
+// empreinte est gardée), 30 minutes glissantes, sans jeton de rafraîchissement.
+export const supportSessions = pgTable(
+  "support_sessions",
+  {
+    id: serial("id").primaryKey(),
+    supportUserId: integer("support_user_id")
+      .references(() => supportUsers.id, { onDelete: "cascade" })
+      .notNull(),
+    tokenHash: varchar("token_hash", { length: 64 }).notNull().unique(),
+    expiresAt: timestamp("expires_at", { precision: 3 }).notNull(),
+    revokedAt: timestamp("revoked_at", { precision: 3 }),
+    createdAt: timestamp("created_at", { precision: 3 }).defaultNow().notNull(),
+  },
+  (t) => [index("support_sessions_user_idx").on(t.supportUserId)]
+);
+
+// Demandes adressées au support. type : recovery (UC-50) | data_deletion
+// (UC-51) | report (UC-52) | other. statut : unverified (identité pas encore
+// confirmée par le lien reçu) | open | in_progress | resolved | rejected.
+export const supportRequests = pgTable(
+  "support_requests",
+  {
+    id: serial("id").primaryKey(),
+    // Référence lisible, ex. SUP-2026-0042
+    reference: varchar("reference", { length: 30 }).unique(),
+    type: varchar("type", { length: 20 }).notNull(),
+    status: varchar("status", { length: 20 }).default("unverified").notNull(),
+    // Compte concerné (récupération, suppression) ou compte SIGNALÉ (report)
+    userId: integer("user_id").references(() => users.id, { onDelete: "set null" }),
+    // Adresse du compte concerné au moment de la demande (instantané)
+    accountEmail: varchar("account_email", { length: 255 }),
+    // Auteur de la demande quand il est connu (compte connecté, ou compte
+    // dont la récupération est demandée) : il la voit dans « Mes demandes ».
+    requesterUserId: integer("requester_user_id").references(() => users.id, { onDelete: "set null" }),
+    // Adresse où envoyer les réponses du support
+    contactEmail: varchar("contact_email", { length: 255 }).notNull(),
+    // Récupération : nouvelle adresse proposée si l'ancienne boîte est perdue
+    newEmail: varchar("new_email", { length: 255 }),
+    // Signalement : famille où le compte a été signalé, et motif
+    familyId: integer("family_id").references(() => families.id, { onDelete: "set null" }),
+    // abusive | usurped | other
+    reportReason: varchar("report_reason", { length: 20 }),
+    description: text("description").notNull(),
+    // Suppression : la personne demande AUSSI l'effacement de sa fiche médicale
+    deleteMedicalRecord: boolean("delete_medical_record").default(false).notNull(),
+    // Confirmation d'identité par lien à usage unique (24 h) envoyé à
+    // l'adresse du compte : la demande passe alors de unverified à open.
+    verificationTokenHash: varchar("verification_token_hash", { length: 64 }).unique(),
+    verificationExpiresAt: timestamp("verification_expires_at", { precision: 3 }),
+    verifiedAt: timestamp("verified_at", { precision: 3 }),
+    // Identité vérifiée HORS application par le support (boîte perdue)
+    verifiedOfflineAt: timestamp("verified_offline_at", { precision: 3 }),
+    assignedTo: integer("assigned_to").references(() => supportUsers.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { precision: 3 }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { precision: 3 }).defaultNow().notNull(),
+    resolvedAt: timestamp("resolved_at", { precision: 3 }),
+  },
+  (t) => [
+    index("support_requests_status_idx").on(t.status, t.type),
+    index("support_requests_user_idx").on(t.userId),
+    index("support_requests_requester_idx").on(t.requesterUserId),
+  ]
+);
+
+// Échanges d'une demande (support ↔ utilisateur).
+export const supportRequestMessages = pgTable(
+  "support_request_messages",
+  {
+    id: serial("id").primaryKey(),
+    requestId: integer("request_id")
+      .references(() => supportRequests.id, { onDelete: "cascade" })
+      .notNull(),
+    // "support" | "user"
+    authorType: varchar("author_type", { length: 10 }).notNull(),
+    supportUserId: integer("support_user_id").references(() => supportUsers.id, { onDelete: "set null" }),
+    userId: integer("user_id").references(() => users.id, { onDelete: "set null" }),
+    authorName: varchar("author_name", { length: 150 }),
+    body: text("body").notNull(),
+    createdAt: timestamp("created_at", { precision: 3 }).defaultNow().notNull(),
+  },
+  (t) => [index("support_request_messages_request_idx").on(t.requestId, t.createdAt)]
+);
+
+// Journal d'audit du support : INEFFAÇABLE (déclencheurs de la migration
+// 0021 : ni modification ni suppression). Une ligne par action d'un compte
+// support. Les cibles sont des INSTANTANÉS (identifiant + adresse) sans clé
+// étrangère : la suppression d'un compte ne touche jamais au journal.
+export const supportAudit = pgTable(
+  "support_audit",
+  {
+    id: serial("id").primaryKey(),
+    occurredAt: timestamp("occurred_at", { precision: 3 }).defaultNow().notNull(),
+    // NULL : action automatique (levée d'une suspension échue par le worker)
+    // ou tentative de connexion avec une adresse inconnue
+    supportUserId: integer("support_user_id"),
+    supportEmail: varchar("support_email", { length: 255 }),
+    action: varchar("action", { length: 60 }).notNull(),
+    targetUserId: integer("target_user_id"),
+    targetEmail: varchar("target_email", { length: 255 }),
+    requestId: integer("request_id"),
+    reason: text("reason"),
+    // Données non médicales : statut, durée, filtres de recherche…
+    details: jsonb("details"),
+    ip: varchar("ip", { length: 64 }),
+  },
+  (t) => [index("support_audit_occurred_idx").on(t.occurredAt.desc(), t.id.desc())]
+);
+
+// Journaux techniques (UC-53) : niveau, catégorie, message, métadonnées NON
+// médicales (route sans paramètres, méthode, statut, durée, id de compte,
+// adresse IP tronquée, navigateur). Jamais de corps de requête ni de réponse.
+// Purgés après 90 jours par le worker (lib/technicalLog.js).
+export const technicalLogs = pgTable(
+  "technical_logs",
+  {
+    id: serial("id").primaryKey(),
+    occurredAt: timestamp("occurred_at", { precision: 3 }).defaultNow().notNull(),
+    // info | warn | error
+    level: varchar("level", { length: 10 }).notNull(),
+    // auth | http_error | email | worker | push | security | support
+    category: varchar("category", { length: 20 }).notNull(),
+    message: varchar("message", { length: 500 }).notNull(),
+    metadata: jsonb("metadata"),
+  },
+  (t) => [
+    index("technical_logs_occurred_idx").on(t.occurredAt.desc(), t.id.desc()),
+    index("technical_logs_category_idx").on(t.category, t.occurredAt.desc()),
+  ]
 );

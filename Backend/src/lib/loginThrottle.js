@@ -1,4 +1,5 @@
 import { WindowCounter, resetAllRateLimits } from "./rateLimit.js";
+import { logTechnicalLater, truncateIp } from "./technicalLog.js";
 
 // Limite des tentatives de mot de passe (connexion, et vérification du mot de
 // passe actuel dans « Mon compte »). Trois compteurs, en mémoire et bornés
@@ -53,9 +54,20 @@ export function lockedMinutes(email, ip, now = Date.now()) {
 }
 
 export function recordFailure(email, ip, now = Date.now()) {
+  const wasLocked = lockedMinutes(email, ip, now) > 0;
   byEmailAndIp.add(pairKey(email, ip), now);
   byEmail.add(email, now);
   byIp.add(ipKey(ip), now);
+  // Journal technique (UC-53) : blocage déclenché (adresse IP tronquée,
+  // jamais l'adresse courriel).
+  if (!wasLocked && lockedMinutes(email, ip, now) > 0) {
+    logTechnicalLater({ level: "warn", category: "security", message: "Tentatives de connexion bloquées (trop d'échecs)", metadata: { ip: truncateIp(ip), limiter: "connexion" } });
+  }
+}
+
+// Échecs comptés pour cette adresse (toutes IP confondues) dans la fenêtre en cours.
+export function failureCount(email, now = Date.now()) {
+  return byEmail.count(email, now);
 }
 
 // Tentative réussie : les compteurs de cette adresse repartent de zéro. Celui

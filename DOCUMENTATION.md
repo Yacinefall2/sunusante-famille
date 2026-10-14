@@ -174,6 +174,8 @@ refuse de démarrer sans elle.
 | `COOKIE_SECURE` | Cookies envoyés en HTTPS uniquement — `true` obligatoire en production | `true` (Docker) |
 | `EMERGENCY_TOKEN_KEY` | Clé de chiffrement des jetons de fiche d'urgence (facultative ; dérivée de `JWT_ACCESS_SECRET` à défaut) | chaîne aléatoire |
 | `DOCUMENTS_ENCRYPTION_KEY` | Clé maîtresse du chiffrement des documents et des archives d'export (32 octets, base64 ou hexadécimal) — **obligatoire en production** ; en développement, dérivée de `JWT_ACCESS_SECRET` à défaut. **Sa perte rend les documents irrécupérables** : la sauvegarder à part (§9) | `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"` |
+| `SUPPORT_TOTP_KEY` | Clé de chiffrement des secrets du double facteur (TOTP) des comptes support (facultative ; dérivée de `JWT_ACCESS_SECRET` à défaut — changer ce dernier oblige alors à réinitialiser le double facteur de chaque compte support, §10) | chaîne aléatoire |
+| `SUPPORT_CONTACT_EMAIL` | Adresse « Répondre à » des courriels du support (suspension, réponses aux demandes) — facultative | — |
 | `DOCUMENTS_ENCRYPTION_KEY_PREVIOUS` | Ancienne clé maîtresse, pour relire les fichiers chiffrés avant une rotation (facultative, §9.1) | — |
 | `FRONTEND_URL` | Adresse publique de l'application : liens des courriels, seule origine autorisée (CORS, contrôle d'origine) | `http://localhost:8080` |
 | `APP_TIMEZONE` | Fuseau des rappels (« aujourd'hui », heures de prise) | `Africa/Dakar` |
@@ -527,3 +529,164 @@ prolongeable), jetons stockés sous forme d'empreinte (et chiffrés pour la fich
 d'urgence), lien médecin ouvert seulement par un clic (pas par les robots des
 messageries), objet des courriels de rappel sans donnée de santé, quota de 500 Mo de
 fichiers par famille.
+
+---
+
+## 10. Espace support — administration de la plateforme (acteur A5, M13, UC-50 à 53)
+
+> « Cloisonnement absolu : le support n'accède jamais au contenu médical. Il agit sur
+> les comptes et les métadonnées techniques, jamais sur les dossiers. »
+
+### 10.1 Architecture
+
+| Élément | Fichier |
+|---|---|
+| Comptes support (création, désactivation, double facteur) | `Backend/src/lib/supportAccounts.js`, commande `Backend/scripts/creerSupport.js` |
+| Codes TOTP (RFC 6238, HMAC-SHA1, 6 chiffres, pas de 30 s, fenêtre ±1) et chiffrement du secret | `Backend/src/lib/totp.js` (module `crypto` natif, sans dépendance) |
+| Session support (cookie `admin_token`) | `Backend/src/middleware/supportAuth.js` |
+| Connexion / déconnexion | `Backend/src/routes/adminAuth.js` (`/api/admin/auth/*`) |
+| Routes du support | `Backend/src/routes/admin.js` (`/api/admin/*`) |
+| Demandes côté utilisateur | `Backend/src/routes/support.js` (`/api/support/*`, `/api/support/public/*`), `Backend/src/lib/supportRequests.js` |
+| Suspension | `Backend/src/lib/suspension.js`, `Backend/src/lib/suspensionStatus.js` |
+| Suppression d'un compte (règles communes avec « Mon compte ») | `Backend/src/lib/accountDeletion.js` |
+| Journal d'audit (ineffaçable) | table `support_audit`, `Backend/src/lib/supportAudit.js` |
+| Journaux techniques | table `technical_logs`, `Backend/src/lib/technicalLog.js` |
+| Passage du worker (levée des suspensions échues, rappels, purge 90 jours) | `Backend/src/reminders/cycle.js` |
+| Interface | `Frontend/src/admin/` (application séparée, choisie dans `main.jsx` pour toute adresse `/admin…`) |
+
+Tables (migration `0021_support_plateforme`) : `support_users`, `support_sessions`,
+`support_requests`, `support_request_messages`, `support_audit`, `technical_logs`, et
+colonnes `users.last_login_at`, `users.suspended_at`, `users.suspended_until`,
+`users.suspension_reason`, `users.suspended_by`.
+
+### 10.2 Comptes support et double facteur
+
+- Table `support_users`, **séparée** de `users` : un compte support n'est jamais membre
+  d'une famille et ne peut pas se connecter à l'application famille.
+- Création **uniquement** en ligne de commande :
+  ```bash
+  docker compose exec backend npm run support:creer -- --email support@exemple.sn --nom "Awa Ndiaye"
+  ```
+  La commande génère un mot de passe fort (24 caractères, affiché une seule fois — à
+  transmettre par un canal sûr) et un secret TOTP, et affiche l'adresse `otpauth://` et
+  son QR code dans le terminal, à scanner dans une application d'authentification.
+  `qrcode` est une dépendance de **production** du backend : la commande fonctionne dans
+  l'image Docker (installée avec `--omit=dev`).
+- `npm run support:desactiver -- --email …` : connexion refusée, sessions fermées (le
+  compte n'est jamais supprimé : le journal d'audit le désigne).
+- `npm run support:reinitialiser-2fa -- --email …` : nouveau secret (téléphone perdu),
+  l'ancien cesse de fonctionner, sessions fermées.
+- Le secret TOTP est **chiffré** en base (AES-256-GCM, clé dérivée par HKDF de
+  `SUPPORT_TOTP_KEY`, sinon de `JWT_ACCESS_SECRET`, et liée à l'adresse du compte). Une
+  copie de la base ne suffit donc pas à produire des codes. Changer la clé source rend
+  les secrets illisibles : réinitialiser alors le double facteur de chaque compte.
+- Connexion `POST /api/admin/auth/login { email, password, code }` : mot de passe **et**
+  code à 6 chiffres. Un code ne sert qu'une fois (le dernier pas de temps utilisé est
+  mémorisé, mise à jour conditionnelle). Limiteur dédié : 5 échecs (par adresse ou par
+  adresse IP) bloquent 15 minutes. Chaque connexion, réussie ou échouée, est auditée.
+- Session : jeton aléatoire opaque dans le cookie `admin_token` (`HttpOnly`,
+  `SameSite=Strict`, `Path=/api/admin`, `Secure` selon `COOKIE_SECURE`), seule son
+  empreinte est en base (`support_sessions`). **30 minutes glissantes** (prolongées à
+  chaque requête), sans jeton de rafraîchissement. L'interface déconnecte aussi après
+  30 minutes sans activité.
+- **Étanchéité des sessions** : `requireAuth` (familles) ne lit que `access_token` ;
+  `requireSupport` ne lit que `admin_token`. L'intercepteur `fetch`
+  (`Frontend/src/lib/session.js`) ne tente jamais `/api/auth/refresh` pour `/api/admin`,
+  et le service worker ne sert ni ne garde `/admin` et `/api/admin`.
+
+### 10.3 Demandes
+
+| Type | Origine | Confirmation d'identité |
+|---|---|---|
+| `recovery` (UC-50) | Écran de connexion › « Je n'arrive plus à accéder à mon compte » (`/support/acces`, public) | Lien à usage unique (24 h) envoyé **à l'adresse du compte**. Réponse identique que l'adresse existe ou non. Sans accès à la boîte : la demande reste « non vérifiée », le support vérifie l'identité **hors application** |
+| `data_deletion` (UC-51) | « Mon compte » › « Contacter le support » | Mot de passe ressaisi **et** lien de confirmation à l'adresse du compte |
+| `report` (UC-52) | « Comptes & invitations » › drapeau sur la ligne d'un compte de **sa** famille (jamais soi-même) | Session de l'auteur ; le compte signalé n'est pas prévenu |
+| `other` | « Mon compte » › « Contacter le support » | Session de l'auteur |
+
+Statuts : `unverified` → `open` → `in_progress` → `resolved` / `rejected`. Une demande
+non vérifiée ne peut être ouverte par le support qu'en cochant « Identité vérifiée hors
+application » avec un motif. La personne reçoit un courriel à chaque changement de
+statut et à chaque réponse du support ; elle suit ses demandes et répond dans « Mes
+demandes » (`/support`). Les formulaires rappellent : « N'indiquez aucune information
+médicale ». Limites : 10 demandes publiques par heure et par adresse IP, 3 par heure
+pour une même adresse de compte (en silence), 10 par heure pour un compte connecté.
+
+### 10.4 Actions du support
+
+Toutes exigent un **motif**, sont tracées au journal d'audit, et ne sont possibles que
+sur une demande vérifiée et ouverte — sauf mention.
+
+- **Lien de réinitialisation** (récupération) : mécanisme « Mot de passe oublié »
+  (`lib/passwordReset.js`), lien envoyé à l'adresse du compte. Le support ne voit ni ne
+  définit jamais de mot de passe.
+- **Déblocage de la connexion** (récupération) : remet à zéro le limiteur de
+  tentatives du compte.
+- **Changement d'adresse** (récupération, possible sur une demande non vérifiée) :
+  case « Identité vérifiée hors application » + motif détaillé (20 caractères
+  minimum). L'ancienne adresse reçoit un avis, la nouvelle un lien de vérification ;
+  toutes les sessions du compte sont fermées ; les liens en attente sont annulés.
+- **Suppression du compte** (UC-51) : `lib/accountDeletion.js`, mêmes règles que
+  « Supprimer mon compte » (fiche archivée et laissée à la famille, dossiers gérés seul
+  confiés à A1, refus expliqué si A1 d'un espace qui compte d'autres comptes). La fiche
+  médicale n'est effacée que si la personne l'a demandé dans sa demande. Double
+  confirmation : l'adresse du compte, retapée.
+- **Suspension** (UC-52, signalement) : blocage temporaire et réversible.
+  - Connexion refusée avec le message « Votre compte est suspendu jusqu'au … Motif : …
+    Pour contester : … » — **seulement après un mot de passe correct** (sinon
+    « Identifiants invalides », pour ne pas révéler les comptes suspendus).
+  - `requireAuth` et `/api/auth/refresh` refusent les jetons du compte ; ses sessions
+    sont révoquées ; ses appareils push supprimés ; ses liens médecin actifs révoqués.
+  - Données, fiche, rôles **intacts** (rien n'est supprimé ni archivé).
+  - Courriel à la personne (motif, durée, recours) ; l'administrateur familial (A1) de
+    chacune de ses familles est prévenu (notification + courriel) **sans le motif**.
+  - Le compte ne reçoit plus rien (`reminders/notify.js` l'écarte, les courriels en
+    attente passent à « skipped ») ; ses rappels de santé vont aux autres
+    (gestionnaires, à défaut parents).
+  - Levée manuelle (fiche du compte, motif) ou automatique à la date de fin (worker),
+    avec courriels à la personne et à A1.
+
+### 10.5 Cloisonnement
+
+`routes/admin.js` ne lit que : `users` (colonnes de compte), `family_memberships` /
+`families` (nom de la famille, rôle, administrateur oui/non), `push_subscriptions`
+(nombre), `refresh_tokens` (nombre de sessions), les tables `support_*` et
+`technical_logs`. La fiche d'un compte affiche : nom, adresse, vérifiée, créé le,
+dernière connexion, échecs récents, sessions, appareils push, familles, suspension,
+demandes liées. Jamais : fiches médicales, rendez-vous, traitements, vaccins,
+documents, notes, allergies, fiche d'urgence, journal d'activité, contenu des
+notifications. `test/supportCloisonnement.test.js` parcourt toutes les réponses JSON
+de `/api/admin/*` sur une famille remplie de données médicales et vérifie qu'aucune
+n'y apparaît ; il vérifie aussi que ces routes n'importent aucune table médicale.
+
+### 10.6 Journal d'audit
+
+Table `support_audit` : horodatage, compte support (identifiant + adresse), action,
+compte visé (identifiant + adresse, **instantanés sans clé étrangère**), demande, motif,
+détails non médicaux, adresse IP. Déclencheurs PostgreSQL (migration 0021) : toute
+modification ou suppression est refusée, y compris par la suppression d'un compte.
+Actions tracées : connexions (réussies, échouées), déconnexion, recherche et
+consultation de comptes, consultation de demandes, prise en charge, changements de
+statut, réponses, lien de réinitialisation, déblocage, changement d'adresse,
+suppression, suspension, levée (manuelle, automatique), consultation des journaux et
+de l'audit, et opérations en ligne de commande. Page `/admin/audit`.
+
+### 10.7 Journaux techniques (UC-53)
+
+Table `technical_logs` : niveau (`info`, `warn`, `error`), catégorie (`auth`,
+`http_error`, `email`, `worker`, `push`, `security`, `support`), message, métadonnées.
+Point d'écriture unique `logTechnical()` : seules des clés prévues sont gardées (route
+**sans paramètres de requête ni valeurs**, méthode, statut, durée, id de compte, IP
+**tronquée** — /24 en IPv4, /48 en IPv6 —, navigateur court, destinataire **masqué**
+`y***@gmail.com`, nom/code d'erreur, compteurs). **Jamais** de corps de requête ni de
+réponse, ni d'objet ou de contenu de courriel, ni de mot de passe.
+
+Sources : connexions réussies ou refusées (`routes/auth.js`), réponses 5xx (middleware
+`httpErrorLogger` + nom de l'erreur posé par le gestionnaire d'erreurs d'`app.js`),
+courriels envoyés ou échoués (`lib/mailer.js`), passages du worker (durée, rappels
+créés, erreurs — c'est aussi le « battement » de l'accueil du support), échecs push,
+limiteurs déclenchés (une entrée par blocage).
+
+**Rétention : 90 jours** — le worker purge les entrées plus anciennes à chaque passage
+(`purgeTechnicalLogs`). Page `/admin/journaux` : filtres niveau, catégorie, période,
+recherche, pagination (50 par page). Accueil `/admin` : demandes en attente par type,
+comptes suspendus, santé du worker, erreurs et courriels échoués des dernières 24 h.

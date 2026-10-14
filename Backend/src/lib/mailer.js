@@ -1,11 +1,12 @@
 import nodemailer from "nodemailer";
+import { logTechnical, maskEmail } from "./technicalLog.js";
 
 // Transport SMTP : MailHog en développement (docker compose --profile dev),
 // Gmail possible pour des essais réels. Pour passer à Brevo (ou tout autre
 // service), il suffit de changer SMTP_HOST / SMTP_USER / SMTP_PASS (relais
 // SMTP smtp-relay.brevo.com) ; les rebonds signalés ensuite par le service
 // arrivent sur /api/webhooks/mail (voir routes/mailWebhooks.js).
-const transporter = nodemailer.createTransport({
+const smtp = nodemailer.createTransport({
   host: process.env.SMTP_HOST || "localhost",
   port: parseInt(process.env.SMTP_PORT || "1025"),
   secure: process.env.SMTP_SECURE === "true",
@@ -13,6 +14,28 @@ const transporter = nodemailer.createTransport({
     ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
     : undefined,
 });
+
+// Tout envoi passe par ici : chaque courriel envoyé ou échoué est noté au
+// journal technique (UC-53) avec le destinataire MASQUÉ (y***@gmail.com),
+// jamais l'objet ni le contenu.
+const transporter = {
+  async sendMail(message) {
+    const to = maskEmail(String(message.to ?? ""));
+    try {
+      const info = await smtp.sendMail(message);
+      await logTechnical({ category: "email", message: "Courriel envoyé", metadata: { to } });
+      return info;
+    } catch (error) {
+      await logTechnical({
+        level: "error",
+        category: "email",
+        message: "Échec d'envoi d'un courriel",
+        metadata: { to, errorName: error?.name, errorCode: typeof error?.code === "string" ? error.code : undefined },
+      });
+      throw error;
+    }
+  },
+};
 
 const FROM = process.env.SMTP_FROM || "SunuSanté Famille <no-reply@santefamille.local>";
 const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:5173";
@@ -326,4 +349,173 @@ export function buildNotificationEmail({ category, heading, lines = [], link, bu
 export async function sendNotificationEmail({ to, ...details }) {
   const info = await transporter.sendMail({ from: FROM, to, ...buildNotificationEmail(details) });
   return info.messageId ?? null;
+}
+
+// ── Support de la plateforme (acteur A5, UC-50 à 52) ─────────────────────────
+// Aucun de ces courriels ne contient de donnée médicale. Réponse possible au
+// support : adresse SUPPORT_CONTACT_EMAIL (facultative) en « Répondre à ».
+const SUPPORT_REPLY_TO = process.env.SUPPORT_CONTACT_EMAIL?.trim() || undefined;
+const supportMail = (message) => transporter.sendMail({ from: FROM, replyTo: SUPPORT_REPLY_TO, ...message });
+
+export const SUPPORT_TYPE_LABELS = {
+  recovery: "récupération de l'accès au compte",
+  data_deletion: "suppression de vos données",
+  report: "signalement d'un compte",
+  other: "question au support",
+};
+export const SUPPORT_STATUS_LABELS = {
+  unverified: "en attente de confirmation",
+  open: "ouverte",
+  in_progress: "en cours de traitement",
+  resolved: "traitée",
+  rejected: "refusée",
+};
+
+// Lien de confirmation d'identité (24 h, usage unique), envoyé à l'adresse
+// DU COMPTE : la demande n'est traitée qu'une fois ce lien suivi.
+export function buildSupportConfirmationEmail({ name, token, reference, type }) {
+  return {
+    subject: `Confirmez votre demande ${reference} — SunuSanté Famille`,
+    html: accessButtonTemplate({
+      heading: `Bonjour ${escapeHtml(name)}`,
+      bodyHtml: `<p>Une demande de <strong>${SUPPORT_TYPE_LABELS[type] ?? "support"}</strong> (référence
+        <strong>${escapeHtml(reference)}</strong>) a été adressée au support de SunuSanté Famille pour ce compte.</p>
+        <p>Pour confirmer qu'elle vient bien de vous, cliquez sur le bouton ci-dessous. Le support ne la traitera
+        qu'après cette confirmation.</p>`,
+      link: `${FRONTEND_URL}/support/confirmer/${token}`,
+      buttonLabel: "Confirmer ma demande",
+      validityLabel: "Ce lien expire dans 24 heures et ne sert qu'une fois.",
+      footer: "Si vous n'êtes pas à l'origine de cette demande, ignorez ce courriel : rien ne sera fait sur votre compte.",
+    }),
+  };
+}
+
+export async function sendSupportConfirmationEmail({ to, ...details }) {
+  await supportMail({ to, ...buildSupportConfirmationEmail(details) });
+}
+
+// Changement de statut d'une demande, ou réponse du support (texte du support).
+export function buildSupportUpdateEmail({ name, reference, status, message }) {
+  const statusLine = status
+    ? `<p>Votre demande <strong>${escapeHtml(reference)}</strong> est désormais <strong>${SUPPORT_STATUS_LABELS[status] ?? status}</strong>.</p>`
+    : `<p>Le support a répondu à votre demande <strong>${escapeHtml(reference)}</strong> :</p>`;
+  const body = message
+    ? `<blockquote style="border-left:3px solid #0d9488;margin:0;padding:8px 12px;color:#374151;white-space:pre-wrap;">${escapeHtml(message)}</blockquote>`
+    : "";
+  return {
+    subject: `Votre demande ${reference} — Support SunuSanté Famille`,
+    html: accessButtonTemplate({
+      heading: `Bonjour ${escapeHtml(name ?? "")}`,
+      bodyHtml: `${statusLine}${body}<p>Retrouvez vos demandes et répondez au support dans « Mon compte », rubrique « Mes demandes ».</p>`,
+      link: `${FRONTEND_URL}/support`,
+      buttonLabel: "Voir mes demandes",
+      validityLabel: "N'indiquez jamais d'information médicale dans vos échanges avec le support.",
+      footer: "",
+    }),
+  };
+}
+
+export async function sendSupportUpdateEmail({ to, ...details }) {
+  await supportMail({ to, ...buildSupportUpdateEmail(details) });
+}
+
+// Adresse du compte changée par le support (UC-50) : avis à l'ANCIENNE adresse.
+export function buildSupportEmailChangedNotice({ name, newEmailMasked }) {
+  return {
+    subject: "L'adresse de votre compte SunuSanté Famille a été changée",
+    html: accessButtonTemplate({
+      heading: `Bonjour ${escapeHtml(name)}`,
+      bodyHtml: `<p>À la suite d'une demande de récupération de compte, le support de SunuSanté Famille a remplacé
+        l'adresse de votre compte par <strong>${escapeHtml(newEmailMasked)}</strong>, après avoir vérifié l'identité de
+        la personne. Toutes les sessions ouvertes ont été fermées.</p>
+        <p><strong>Si vous n'êtes pas à l'origine de cette demande</strong>, contactez immédiatement le support.</p>`,
+      link: `${FRONTEND_URL}/support/acces`,
+      buttonLabel: "Contacter le support",
+      validityLabel: "",
+      footer: "",
+    }),
+  };
+}
+
+export async function sendSupportEmailChangedNotice({ to, ...details }) {
+  await supportMail({ to, ...buildSupportEmailChangedNotice(details) });
+}
+
+// Suspension (UC-52) : à la personne, avec le motif, la durée et le recours.
+export function buildAccountSuspendedEmail({ name, reason, endLabel }) {
+  return {
+    subject: "Votre compte SunuSanté Famille est suspendu",
+    html: accessButtonTemplate({
+      heading: `Bonjour ${escapeHtml(name)}`,
+      bodyHtml: `<p>À la suite d'un signalement, le support de SunuSanté Famille a <strong>suspendu votre compte
+        ${escapeHtml(endLabel)}</strong>.</p>
+        <p><strong>Motif :</strong> ${escapeHtml(reason)}</p>
+        <p>Pendant la suspension, vous ne pouvez plus vous connecter et vous ne recevez plus de notifications. Vos
+        données, votre fiche et vos rôles dans votre famille restent intacts.</p>
+        <p><strong>Pour contester</strong> : répondez à ce courriel, ou contactez le support avec le bouton ci-dessous.</p>`,
+      link: `${FRONTEND_URL}/support/acces`,
+      buttonLabel: "Contacter le support",
+      validityLabel: "",
+      footer: "",
+    }),
+  };
+}
+
+export async function sendAccountSuspendedEmail({ to, ...details }) {
+  await supportMail({ to, ...buildAccountSuspendedEmail(details) });
+}
+
+export async function sendAccountReinstatedEmail({ to, name }) {
+  await supportMail({
+    to,
+    subject: "Votre compte SunuSanté Famille est de nouveau actif",
+    html: accessButtonTemplate({
+      heading: `Bonjour ${escapeHtml(name)}`,
+      bodyHtml: `<p>La suspension de votre compte a été levée : vous pouvez de nouveau vous connecter et recevoir vos
+        notifications. Pensez à réactiver les notifications sur vos appareils (« Mon compte »).</p>`,
+      link: `${FRONTEND_URL}/login`,
+      buttonLabel: "Me connecter",
+      validityLabel: "",
+      footer: "",
+    }),
+  });
+}
+
+// À l'Administrateur familial (A1) : un compte de sa famille est suspendu —
+// SANS le motif détaillé, qui ne regarde que la personne et le support.
+export function buildFamilyAccountSuspendedEmail({ name, memberName, familyName }) {
+  return {
+    subject: "Un compte de votre famille est suspendu — SunuSanté Famille",
+    html: accessButtonTemplate({
+      heading: `Bonjour ${escapeHtml(name)}`,
+      bodyHtml: `<p>Le compte de <strong>${escapeHtml(memberName)}</strong>, dans la famille
+        <strong>${escapeHtml(familyName)}</strong>, a été suspendu par le support de SunuSanté Famille.</p>
+        <p>Ses données et sa fiche restent intactes. Les rappels de santé de ses proches continuent d'arriver à leurs
+        autres gestionnaires.</p>`,
+      link: `${FRONTEND_URL}/famille`,
+      buttonLabel: "Voir les comptes de la famille",
+      validityLabel: "",
+      footer: "",
+    }),
+  };
+}
+
+export async function sendFamilyAccountSuspendedEmail({ to, ...details }) {
+  await supportMail({ to, ...buildFamilyAccountSuspendedEmail(details) });
+}
+
+export async function sendFamilyAccountReinstatedEmail({ to, name, memberName, familyName }) {
+  await supportMail({
+    to,
+    subject: "Un compte de votre famille est de nouveau actif — SunuSanté Famille",
+    html: accessButtonTemplate({
+      heading: `Bonjour ${escapeHtml(name)}`,
+      bodyHtml: `<p>La suspension du compte de <strong>${escapeHtml(memberName)}</strong>, dans la famille
+        <strong>${escapeHtml(familyName)}</strong>, a été levée.</p>`,
+      link: `${FRONTEND_URL}/famille`,
+      buttonLabel: "Voir les comptes de la famille",
+      validityLabel: "",
+      footer: "",
+    }),
+  });
 }

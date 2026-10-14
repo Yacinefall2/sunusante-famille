@@ -1,12 +1,10 @@
 import { Router } from "express";
-import { and, eq, inArray, isNull, ne } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { db } from "../db/index.js";
 import {
   appointments,
   documents,
   emailChangeTokens,
-  families,
-  familyMemberships,
   members,
   refreshTokens,
   treatmentMedications,
@@ -18,12 +16,7 @@ import { hashPassword } from "../lib/password.js";
 import { generateToken } from "../lib/token.js";
 import { signAccessToken, signRefreshToken, REFRESH_TOKEN_TTL_MS } from "../lib/jwt.js";
 import { clearAuthCookies, hashToken, setAuthCookies } from "../lib/session.js";
-import { ADULT_AGE, ageOn } from "../lib/family.js";
-import { documentFilesOf, removeFiles } from "../lib/documentFiles.js";
-import { archiveFicheOfLeavingAccount } from "../lib/archive.js";
-import { logActivity } from "../lib/activityLog.js";
-import { setDocumentRole } from "../lib/documentAccess.js";
-import { soleManagedFiches } from "../lib/management.js";
+import { deleteAccount, membershipsOf } from "../lib/accountDeletion.js";
 import { SENIOR_MODE_INVALID, setSeniorMode } from "../lib/seniorMode.js";
 import { sendEmailChangeEmail, sendEmailChangeNotice, sendPasswordChangedAlert } from "../lib/mailer.js";
 // Vérification du mot de passe actuel, avec la limite de tentatives de la
@@ -42,24 +35,6 @@ const EMAIL_CHANGE_TTL_MS = 24 * 60 * 60 * 1000;
 async function fullUser(id) {
   const [user] = await db.select().from(users).where(eq(users.id, id));
   return user;
-}
-
-// Espaces familiaux du compte, avec ce qui bloquerait sa suppression.
-async function membershipsOf(userId) {
-  const rows = await db
-    .select({ membership: familyMemberships, familyName: families.name })
-    .from(familyMemberships)
-    .innerJoin(families, eq(families.id, familyMemberships.familyId))
-    .where(eq(familyMemberships.userId, userId));
-  const out = [];
-  for (const { membership, familyName } of rows) {
-    const others = await db
-      .select({ id: familyMemberships.id })
-      .from(familyMemberships)
-      .where(and(eq(familyMemberships.familyId, membership.familyId), ne(familyMemberships.userId, userId)));
-    out.push({ membership, familyName, otherAccounts: others.length });
-  }
-  return out;
 }
 
 router.get("/", async (req, res) => {
@@ -235,87 +210,14 @@ router.get("/export", async (req, res) => {
   }
 });
 
-// Suppression du compte. L'administrateur d'un espace qui compte d'autres
-// comptes doit d'abord les retirer ou supprimer l'espace ; seul compte d'un
-// espace, il supprime l'espace avec lui. Un adulte peut aussi faire effacer
-// sa fiche médicale ; sinon elle reste à la famille, archivée (lib/archive.js).
-// Les dossiers dont il était le seul gestionnaire sont confiés à A1 (UC-06).
+// Suppression du compte. Règles communes avec la suppression faite par le
+// support à la demande de la personne (UC-51) : lib/accountDeletion.js.
 router.delete("/", async (req, res) => {
   try {
     const user = await checkPassword(req, res);
     if (!user) return;
-    const spaces = await membershipsOf(user.id);
-
-    const blocking = spaces.filter((s) => s.membership.isPrimaryAdmin && s.otherAccounts > 0);
-    if (blocking.length > 0) {
-      return res.status(409).json({
-        error: `Vous administrez « ${blocking.map((s) => s.familyName).join(" », « ")} », qui compte d'autres comptes : retirez-les ou supprimez l'espace avant de supprimer votre compte.`,
-      });
-    }
-
-    const familiesToDelete = spaces.filter((s) => s.membership.isPrimaryAdmin).map((s) => s.membership.familyId);
-    const memberIdsToDelete = [];
-    if (familiesToDelete.length > 0) {
-      const rows = await db.select({ id: members.id }).from(members).where(inArray(members.familyId, familiesToDelete));
-      memberIdsToDelete.push(...rows.map((r) => r.id));
-    }
-    if (req.body.deleteMyFiche) {
-      for (const { membership } of spaces) {
-        if (!membership.linkedMemberId || familiesToDelete.includes(membership.familyId)) continue;
-        const [fiche] = await db.select().from(members).where(eq(members.id, membership.linkedMemberId));
-        if (fiche && (ageOn(fiche.dateOfBirth) ?? ADULT_AGE) >= ADULT_AGE) memberIdsToDelete.push(fiche.id);
-      }
-    }
-
-    // Fiches qui restent dans une famille : archivées (gelées, plus lisibles
-    // par personne), comme lorsqu'un compte est retiré de l'espace. Le
-    // journal de ces familles garde la trace du départ (le nom du compte y
-    // reste, suivi de « compte supprimé »).
-    //
-    // Dossiers dont ce compte était le SEUL gestionnaire (UC-06) : confiés
-    // automatiquement à l'Administrateur familial A1, sans lui demander —
-    // la personne part d'elle-même, et un dossier géré ne doit jamais rester
-    // sans gestionnaire. Une entrée de journal par dossier confié.
-    for (const { membership } of spaces) {
-      if (familiesToDelete.includes(membership.familyId)) continue;
-      const actor = { id: user.id, name: user.name };
-      await logActivity({ familyId: membership.familyId, actor, action: "account_deleted" });
-      const [a1] = await db
-        .select({ userId: familyMemberships.userId })
-        .from(familyMemberships)
-        .where(and(eq(familyMemberships.familyId, membership.familyId), eq(familyMemberships.isPrimaryAdmin, true)));
-      if (a1 && a1.userId !== user.id) {
-        for (const fiche of await soleManagedFiches(user.id, membership.familyId)) {
-          await setDocumentRole(fiche.id, a1.userId, "gestionnaire");
-          await logActivity({
-            familyId: membership.familyId,
-            actor,
-            action: "management_reassigned",
-            member: fiche.id,
-            target: a1.userId,
-            details: { reason: "account_deleted" },
-          });
-        }
-      }
-      if (memberIdsToDelete.includes(membership.linkedMemberId)) {
-        await logActivity({
-          familyId: membership.familyId,
-          actor,
-          action: "member_deleted",
-          member: membership.linkedMemberId,
-          details: { withAccount: true },
-        });
-        continue;
-      }
-      await archiveFicheOfLeavingAccount(membership, { actor, reason: "account_deleted" });
-    }
-
-    const files = await documentFilesOf(memberIdsToDelete);
-    if (familiesToDelete.length > 0) await db.delete(families).where(inArray(families.id, familiesToDelete));
-    if (memberIdsToDelete.length > 0) await db.delete(members).where(inArray(members.id, memberIdsToDelete));
-    await db.delete(users).where(eq(users.id, user.id));
-    await removeFiles(files);
-
+    const result = await deleteAccount(user, { deleteMyFiche: Boolean(req.body.deleteMyFiche) });
+    if (!result.ok) return res.status(409).json({ error: result.error });
     clearAuthCookies(res);
     res.json({ success: true });
   } catch (error) {

@@ -7,6 +7,8 @@
 // au-delà de maxEntries, les plus anciennes sont oubliées — un afflux de clés
 // différentes (adresses IP, courriels inventés) ne peut pas saturer la mémoire.
 
+import { logTechnicalLater, requestMeta } from "./technicalLog.js";
+
 const PURGE_INTERVAL_MS = 60 * 1000;
 
 // Tous les compteurs créés, pour pouvoir les vider d'un coup (tests).
@@ -73,6 +75,11 @@ export class WindowCounter {
     if (e.count >= this.max) e.lockedUntil = now + this.lockMs;
   }
 
+  // Événements comptés pour cette clé dans la fenêtre (ou le blocage) en cours.
+  count(key, now = Date.now()) {
+    return this.#current(key, now)?.count ?? 0;
+  }
+
   delete(key) {
     this.entries.delete(key);
   }
@@ -94,12 +101,18 @@ export class WindowCounter {
 // Middleware Express : au plus `max` requêtes par adresse IP et par fenêtre.
 // L'adresse est req.ip, qui tient compte de X-Forwarded-For posé par nginx
 // (app.set("trust proxy", 1) dans app.js).
-export function ipRateLimit({ windowMs, max, message }) {
+export function ipRateLimit({ windowMs, max, message, name = "ip" }) {
   const counter = new WindowCounter({ windowMs, max: max + 1, lockMs: windowMs });
   const middleware = (req, res, next) => {
     const key = req.ip || "inconnue";
+    const wasBlocked = counter.blockedMs(key) > 0;
     counter.add(key);
     const blocked = counter.blockedMs(key);
+    // Journal technique (UC-53) : le déclenchement du limiteur, une fois par
+    // blocage (pas à chaque requête refusée ensuite).
+    if (blocked > 0 && !wasBlocked) {
+      logTechnicalLater({ level: "warn", category: "security", message: "Limite de requêtes atteinte", metadata: { ...requestMeta(req), limiter: name } });
+    }
     if (blocked > 0) {
       res.set("Retry-After", String(Math.ceil(blocked / 1000)));
       return res.status(429).json({ error: message });

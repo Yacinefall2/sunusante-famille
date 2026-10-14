@@ -89,7 +89,8 @@ export function AuthProvider({ children }) {
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      throw new Error(err.error || "Échec de la connexion");
+      // code : ACCOUNT_SUSPENDED (compte suspendu par le support, UC-52)
+      throw Object.assign(new Error(err.error || "Échec de la connexion"), { code: err.code });
     }
     const data = await res.json();
     markSessionFresh();

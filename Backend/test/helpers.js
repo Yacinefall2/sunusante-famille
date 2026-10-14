@@ -27,7 +27,8 @@ export async function resetDatabase() {
       medication_intakes, notification_preferences, relay_tasks, relay_events,
       doctor_shares, emergency_cards, emergency_card_views, password_reset_tokens, email_change_tokens,
       activity_log, consent_attestations, role_transfers, family_reminder_settings, family_exports,
-      push_subscriptions, intake_action_tokens
+      push_subscriptions, intake_action_tokens,
+      support_users, support_sessions, support_requests, support_request_messages, support_audit, technical_logs
     restart identity cascade
   `);
   resetLoginThrottle();
@@ -140,4 +141,28 @@ export async function createFamilyWithAdmins(name = "Famille") {
   const a2Membership = await addMembership(a2, family, "parent");
   const adultMembership = await addMembership(adult, family, "adult");
   return { family, a1, a2, adult, a1Membership, a2Membership, adultMembership };
+}
+
+// ── Support de la plateforme (acteur A5) ─────────────────────────────────────
+let supportCounter = 0;
+
+// Compte support créé comme par la commande serveur (scripts/creerSupport.js).
+export async function createSupport(name = "Agent Support") {
+  supportCounter += 1;
+  const { createSupportUser } = await import("../src/lib/supportAccounts.js");
+  return createSupportUser({ email: `support${supportCounter}-${Date.now()}@support.local`, name });
+}
+
+// Client HTTP authentifié comme compte support (session ouverte directement,
+// sans passer par le double facteur).
+export async function asSupport(supportUser) {
+  const { openSupportSession } = await import("../src/middleware/supportAuth.js");
+  const cookie = `admin_token=${await openSupportSession(supportUser.id)}`;
+  return {
+    cookie,
+    get: (url) => request(app).get(url).set("Cookie", cookie),
+    post: (url) => request(app).post(url).set("Cookie", cookie),
+    put: (url) => request(app).put(url).set("Cookie", cookie),
+    delete: (url) => request(app).delete(url).set("Cookie", cookie),
+  };
 }

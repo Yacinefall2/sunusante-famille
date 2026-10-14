@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import { Toaster } from "react-hot-toast";
 import App from "./App.jsx";
+import AdminApp from "./admin/AdminApp.jsx";
 import { AuthProvider, useAuth } from "./context/AuthContext.jsx";
 import { ErrorBoundary } from "./components/ErrorBoundary.jsx";
 import { installFetchInterceptor } from "./lib/session.js";
@@ -41,14 +42,25 @@ function AppToaster() {
   );
 }
 
+// Espace support (/admin) : application SÉPARÉE — ni AuthProvider, ni
+// FamilyProvider, ni écran « Ma fiche » ; sa propre session (AdminAuthContext).
+const isAdminSpace = window.location.pathname === "/admin" || window.location.pathname.startsWith("/admin/");
+
 createRoot(document.getElementById("root")).render(
   <StrictMode>
     <ErrorBoundary>
       <BrowserRouter>
-        <AuthProvider>
-          <App />
-          <AppToaster />
-        </AuthProvider>
+        {isAdminSpace ? (
+          <>
+            <AdminApp />
+            <Toaster position="top-right" toastOptions={{ style: { borderRadius: "10px", background: "#1f2937", color: "#fff", fontSize: "14px" } }} />
+          </>
+        ) : (
+          <AuthProvider>
+            <App />
+            <AppToaster />
+          </AuthProvider>
+        )}
       </BrowserRouter>
     </ErrorBoundary>
   </StrictMode>

@@ -1,7 +1,7 @@
 import "dotenv/config";
 import fs from "node:fs";
 import { pool } from "./src/db/index.js";
-import { runReminderTick } from "./src/reminders/engine.js";
+import { runWorkerCycle } from "./src/reminders/cycle.js";
 import { pushConfig } from "./src/lib/push.js";
 
 // Service « worker » : passe toutes les minutes sur le moteur de rappels.
@@ -31,7 +31,9 @@ async function tick() {
   if (running) return; // jamais deux passages simultanés
   running = true;
   try {
-    await runReminderTick();
+    // Rappels, levée des suspensions échues, purge des journaux techniques
+    // (90 jours) ; chaque passage est noté au journal technique (UC-53).
+    await runWorkerCycle();
   } catch (error) {
     console.error("Erreur du moteur de rappels :", error);
   } finally {
